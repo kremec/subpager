@@ -1,0 +1,47 @@
+{
+  "name": "subpager-app",
+  "version": "0.0.1",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start:staging": "APP_VARIANT=development expo start",
+    "start:prod": "expo start",
+    "run:staging:android": "APP_VARIANT=development expo run:android",
+    "run:prod:android": "expo run:android",
+    "run:staging:ios": "APP_VARIANT=development expo run:ios",
+    "run:prod:ios": "expo run:ios",
+    "eas:build:local": "eas build --platform android --profile preview --local",
+    "eas:build:prod:preview:android": "APP_VARIANT=production eas build --platform android --profile preview",
+    "eas:build": "eas build --platform android --profile production",
+    "eas:submit": "eas submit --platform android --profile production",
+    "eas:deploy": "eas build --platform android --profile production --auto-submit",
+    "lint": "oxlint src",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "tsc --noEmit",
+    "prepare": "git config --local include.path ../.githooks/.gitconfig"
+  },
+  "dependencies": {
+    "expo": "~57.0.27",
+    "expo-constants": "~57.0.21",
+    "expo-dev-client": "~57.0.19",
+    "expo-linking": "~57.0.12",
+    "expo-notifications": "~57.0.22",
+    "expo-router": "~57.0.25",
+    "expo-secure-store": "~57.0.4",
+    "expo-splash-screen": "~57.0.9",
+    "expo-sqlite": "~57.0.4",
+    "expo-system-ui": "~57.0.4",
+    "expo-updates": "~57.0.25",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "oxfmt": "^0.59.0",
+    "oxlint": "^1.74.0",
+    "typescript": "~6.0.3"
+  }
+}

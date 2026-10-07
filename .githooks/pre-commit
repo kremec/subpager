@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+
+bun run check
+bun run format:check
+bun run lint
+bunx expo-doctor@latest
