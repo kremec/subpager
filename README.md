@@ -13,14 +13,14 @@ bun install
 bun run check
 bun run lint
 bun run format:check
-bun test src/pager/history-backfill.test.ts
+bun run test
 bunx expo install --check
 bunx expo-doctor@latest
 ```
 
-The repository has not been built or tested on a phone. Type and dependency checks do not verify push delivery.
+The development build was verified on the Android emulator: onboarding, approved history, local timestamps, the settings bottom sheet and device-ID copying. Its new account is approved and has a registered Expo push token. This does not verify physical-phone behavior or notification delivery to the new development installation.
 
-Firebase authentication adds the native AsyncStorage module, and the approval screen adds Expo Clipboard. Install a new native build for this change; an OTA update alone cannot add these modules.
+The feed uses LegendList, and its three-dot settings menu uses the same Expo UI bottom sheet and Tabler icon style as Subsocial. Install a new native build for the native dependencies and Android permission changes. An OTA update alone cannot apply them. Subpager blocks the external storage read/write permissions inherited from Expo FileSystem; history and identity use private app storage.
 
 ## Firebase access and history
 
@@ -32,21 +32,29 @@ The Play tester list controls distribution. Firestore controls data access. Both
 2. Create the default Cloud Firestore database in production mode. Apply `../subpager-server/firestore.rules` before enabling the receiver's cloud integration. Do not use test-mode rules.
 3. Configure the receiver as described in `../subpager-server/README.md`. It uploads history and checks approval before sending each notification. Its service-account key stays on the receiver and is never bundled into this app.
 4. The app derives public Firebase client identifiers from the matching Android client in `google-services.json`, read through `GOOGLE_SERVICES_JSON` in EAS. This file contains client configuration, not privileged credentials. A build without a matching client displays a configuration error.
-5. Install the app. It silently creates an anonymous Firebase account and preserves it with AsyncStorage. Open **Settings and device ID**, then use **Copy device ID** to share its UID with the administrator.
+5. Install the app. It silently creates an anonymous Firebase account and preserves it with AsyncStorage. Use **Copy device ID** on the setup screen to share its UID with the administrator. After setup, the same control is in the three-dot settings menu.
 6. From the receiver repository, run `bun run member:approve FIREBASE_UID "Friend's name"`, or create `members/{uid}` with `approved: true` and a `label` in Firebase Console. Use `bun run member:list` to inspect approvals and `bun run member:revoke FIREBASE_UID` to revoke one. Only the administrator can change membership. One approval grants both history and notifications. A missing document or `approved: false` denies both.
-7. The app sees approval, fetches history and asks for OS notification permission. Leave **Alert RICs** empty for all alerts or set comma-separated addresses. RICs select alerts and never limit history.
+7. The app sees approval, opens history automatically and asks for OS notification permission. Onboarding and settings use the same device-ID row; tap it to copy the full ID. The app registers for all RICs, including when an older installation had saved an alert filter.
 
-An approved app writes only its own `devices/{uid}` document, containing `expoPushToken` and `rics`. It cannot modify messages or approvals, or list other members/devices. Notification permission disabled on the phone stores a null token when the app next resumes. History continues to work. Re-enabling permission registers the current token and receives future alerts; loading old history does not send old alerts.
+The search icon beside settings opens a modal like Subsocial. Search filters saved message text and RIC codes as you type, ignoring case and accents. Every entered word must match. It searches the full synced history.
+
+An approved app writes only its own `devices/{uid}` document, containing `expoPushToken` and `rics`. Within an approved session, unchanged tokens do not rewrite the document. Native token-change events pass their token directly to Expo, avoiding another native token fetch that would trigger the listener again. It cannot modify messages or approvals, or list other members/devices. Notification permission disabled on the phone stores a null token when the app next resumes. History continues to work. Re-enabling permission registers the current token and receives future alerts; loading old history does not send old alerts.
 
 New phones, clearing app data or reinstalling can create a new UID and require another approval. Never use the UID as a password: Firebase also requires proof that this app instance owns that identity. Revoking membership stops future server sends and cloud reads. The app erases SQLite history and dismisses displayed alerts when it observes revocation. Previously copied content and alerts already handed to the push provider cannot be recalled. An offline phone may retain its last known approval and cached messages until it reconnects.
 
-Messages are cached locally in SQLite. The newest 500 cached messages are shown offline, and the cache keeps at most 1,000. Online history can be paged with **Load older messages**. The app fills every page of a gap after reconnecting. When active, it refreshes every 20 seconds, on foreground entry, on an incoming notification or with pull-to-refresh. Notification taps fetch uncached message details from Firestore.
+After approval, Firestore listeners sync all history and RIC unit mappings into separate SQLite tables. Messages are immutable: the first confirmed server snapshot fills history, then the listener caches only new messages. Existing cached messages are never rewritten. Unit mappings still reflect renames and removals. Each new listener attachment can read the full collections again. SQLite keeps history without a message-count limit for offline viewing and search. Empty SDK memory-cache snapshots never replace saved history. Revocation clears both local tables. Pull-to-refresh reattaches the listeners.
+
+History listeners wait for connection initialization and reattach after a connection retry. Returning to the foreground retries only listeners that ended with an error; healthy listeners stay attached. Local lifecycle tests run in isolated Bun test environments so their native-module mocks cannot affect other test files.
+
+The receiver's SQLite database is authoritative. Edit its `ric_units (ric, unit_name)` table, then run `bun run ric:sync` from `../subpager-server` to publish definitions to `ricUnits` in Firestore. Message content is uploaded once and does not support later corrections. Approved reads of the mapping collection require the server `firestore.rules`.
+
+Feed and detail headings show the current unit name with the seven-digit RIC, or just the RIC if no mapping exists. Search matches unit names as well as RIC and message text. Content uses normal text weight; decoder markers such as `<LF>` display as spaces. Timestamps use the phone's timezone, day/month/year dates and a 24-hour clock. Notification taps open the shared live history, so an open detail view also receives unit-name changes.
 
 Neither phones nor Firebase connect to your Mac. The receiver needs only outbound access to Firebase and Expo. The app uses Firebase's internet-accessible endpoints with enforced authentication and whitelist rules. Receiver downtime delays cloud history; phone notification settings do not control history uploads.
 
 ## Set up Expo push
 
-The app uses the server's `content` field for history, details and cached messages. Android Firebase credentials are configured in EAS for `com.subbyte.subpager`. Push delivery still needs testing on an installed app. Apple signing and APNs credentials have not been configured.
+The app uses the server's `content` field for history, details and cached messages. Notifications use the seven-digit RIC and reception timestamp as their title, for example `0123456 · 08/10/2026, 12:07`, and the received content verbatim as their body. Notification timestamps use Ljubljana local time, including daylight saving changes. Android Firebase credentials are configured in EAS for `com.subbyte.subpager`. Push delivery still needs testing on an installed app. Apple signing and APNs credentials have not been configured.
 
 For a first Android installation, use the existing `preview` build profile. It produces a standalone, internally distributed APK using `com.subbyte.subpager`. It does not need Metro or Google Play publication. Expo Go is not the target for remote push testing. [Expo setup](https://docs.expo.dev/push-notifications/push-notifications-setup/), [internal distribution](https://docs.expo.dev/build/internal-distribution/).
 
@@ -76,7 +84,7 @@ Configured on 2026-10-08: Firebase project `subpager-subbyte`, Android package `
 bunx eas-cli@latest credentials --platform android
 ```
 
-If you later build the development variant, register `com.subbyte.subpager.dev` as another Android app in the same Firebase project. Use its matching client file and configure EAS push credentials for that app identifier too. Preview/production continue to use the base package.
+The development variant is registered as `com.subbyte.subpager.dev` (Subpager development) in the same Firebase project. Local `google-services.json` includes both production and development clients. EAS has a separate development package credential record with the same project's FCM v1 service account assigned. Run `bun run run:staging:android` to build and open it with Metro. Preview/production continue to use the base package. The emulator uses only the development installation and has its own approved account.
 
 ### Build and connect
 
@@ -138,7 +146,7 @@ These require an explicitly approved cloud setup and an installed phone build. T
 
 - Open an unapproved installation. Confirm its UID is stable after restarting and history stays blocked. Approve the UID and confirm history and notification registration become available without signing in.
 - Receive a real call while the app is open, locked and closed. Compare message content, time and RIC with the receiver. Tap an alert for a message that is not cached and confirm its details load.
-- Set matching and nonmatching RICs. Confirm alert filtering while history includes both.
+- Confirm alerts arrive for all RICs and that their title is the seven-digit RIC and reception time, with received content in the body.
 - Disable notification permission and resume. Confirm the device token becomes null while history keeps syncing. Enable permission, resume and confirm new alerts resume without replaying old ones.
 - Keep the phone offline for more than 50 new messages. Restore internet and confirm every gap is filled. Page older history and confirm refresh preserves loaded messages.
 - Disconnect the Mac from the internet. Confirm local receptions remain saved, then upload after reconnecting without a burst of delayed notifications.

@@ -1,6 +1,5 @@
 export interface Connection {
   uid: string;
-  rics: number[];
 }
 
 export interface PagerMessage {
@@ -13,7 +12,7 @@ export interface PagerMessage {
   duplicateOf: number | null;
 }
 
-export interface MessagePage {
-  messages: PagerMessage[];
-  nextCursor: number | null;
+export interface RicUnit {
+  ric: number;
+  unitName: string;
 }

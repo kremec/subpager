@@ -16,13 +16,17 @@
     "eas:submit": "eas submit --platform android --profile production",
     "eas:deploy": "eas build --platform android --profile production --auto-submit",
     "lint": "oxlint src",
+    "test": "bun test --isolate",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "check": "tsc --noEmit",
     "prepare": "git config --local include.path ../.githooks/.gitconfig"
   },
   "dependencies": {
+    "@expo/ui": "~57.0.22",
+    "@legendapp/list": "3.3.10",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@tabler/icons-react-native": "^3.44.0",
     "expo": "~57.0.27",
     "expo-clipboard": "~57.0.2",
     "expo-constants": "~57.0.21",
@@ -38,8 +42,12 @@
     "firebase": "^12",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.7.0",
-    "react-native-screens": "~4.26.0"
+    "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4",
+    "react-native-toast-message": "^2.4.0",
+    "react-native-worklets": "0.10.1"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

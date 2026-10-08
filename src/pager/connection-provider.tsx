@@ -17,15 +17,15 @@ import * as SecureStore from "expo-secure-store";
 import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
 
+import { showErrorToast } from "@/components/ui/toast";
 import { clearMessages, initializeDatabase } from "@/pager/database";
-import { getFirebase, normalizeRics } from "@/pager/firebase";
+import { getFirebase } from "@/pager/firebase";
 import type { Connection } from "@/pager/types";
 
 interface ConnectionContextValue {
   connection: Connection | null;
   uid: string | null;
   approved: boolean;
-  approvalChecked: boolean;
   ready: boolean;
   error: string | null;
   revision: number;
@@ -34,7 +34,6 @@ interface ConnectionContextValue {
   refresh: () => void;
   retry: () => void;
   hasAccess: (uid: string) => boolean;
-  saveRics: (rics: number[]) => Promise<void>;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -42,7 +41,6 @@ const STORAGE_KEY = "subpager.access";
 interface SavedAccess {
   uid: string;
   approved: boolean;
-  rics: number[];
 }
 interface ConnectionProviderProps {
   children: ReactNode;
@@ -51,8 +49,6 @@ interface ConnectionProviderProps {
 export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
   const [uid, setUid] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
-  const [approvalChecked, setApprovalChecked] = useState(false);
-  const [rics, setRics] = useState<number[]>([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
@@ -64,8 +60,8 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
     [],
   );
   const connection = useMemo<Connection | null>(
-    () => (approved && uid ? { uid, rics } : null),
-    [uid, approved, rics],
+    () => (approved && uid ? { uid } : null),
+    [uid, approved],
   );
 
   useEffect(() => {
@@ -90,8 +86,6 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
       if (cancelled) return;
       setUid(user.uid);
       setApproved(saved?.uid === user.uid && saved.approved);
-      setRics(saved?.uid === user.uid ? normalizeRics(saved.rics) : []);
-      setApprovalChecked(false);
       setError(null);
       unsubscribeMember = onSnapshot(
         doc(database, "members", user.uid),
@@ -103,14 +97,19 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
             snapshot.exists() && snapshot.data().approved === true;
           accessUid.current = allowed ? user.uid : null;
           if (!allowed) {
-            clearMessages();
-            void Notifications.dismissAllNotificationsAsync().catch(() => {});
-            void Notifications.clearLastNotificationResponseAsync().catch(
-              () => {},
+            try {
+              clearMessages();
+            } catch {
+              showErrorToast("Could not clear saved history.");
+            }
+            void Notifications.dismissAllNotificationsAsync().catch(() =>
+              showErrorToast("Could not clear notifications."),
+            );
+            void Notifications.clearLastNotificationResponseAsync().catch(() =>
+              showErrorToast("Could not clear notifications."),
             );
           }
           setApproved(allowed);
-          setApprovalChecked(true);
           setError(null);
         },
         (failure) => {
@@ -121,7 +120,11 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
         if (cancelled || nextUser?.uid === currentUid) return;
         accessUid.current = null;
         unsubscribeMember();
-        clearMessages();
+        try {
+          clearMessages();
+        } catch {
+          showErrorToast("Could not clear saved history.");
+        }
         setApproved(false);
         setUid(null);
         setError(
@@ -145,12 +148,16 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
   }, [attempt]);
 
   useEffect(() => {
+    if (error) showErrorToast(error);
+  }, [error]);
+
+  useEffect(() => {
     if (!uid) return;
     void SecureStore.setItemAsync(
       STORAGE_KEY,
-      JSON.stringify({ uid, approved, rics }),
+      JSON.stringify({ uid, approved }),
     ).catch((failure: Error) => setError(failure.message));
-  }, [uid, approved, rics]);
+  }, [uid, approved]);
 
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
   const retry = useCallback(() => {
@@ -167,24 +174,12 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
     return () => listener.remove();
   }, [error, refresh, retry]);
 
-  async function saveRics(value: number[]) {
-    const next = normalizeRics(value);
-    if (!uid || !hasAccess(uid))
-      throw new Error("This device needs administrator approval first.");
-    await SecureStore.setItemAsync(
-      STORAGE_KEY,
-      JSON.stringify({ uid, approved, rics: next }),
-    );
-    setRics(next);
-  }
-
   return (
     <ConnectionContext.Provider
       value={{
         connection,
         uid,
         approved,
-        approvalChecked,
         ready,
         error,
         revision,
@@ -193,7 +188,6 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
         refresh,
         retry,
         hasAccess,
-        saveRics,
       }}
     >
       {props.children}

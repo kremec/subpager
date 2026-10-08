@@ -15,18 +15,14 @@ import {
 import {
   collection,
   doc,
-  getDocFromServer,
-  getDocsFromServer,
   getFirestore,
-  limit,
+  onSnapshot,
   orderBy,
   query,
   setDoc,
-  startAfter,
-  type QueryConstraint,
 } from "firebase/firestore";
 
-import type { MessagePage, PagerMessage } from "@/pager/types";
+import type { PagerMessage, RicUnit } from "@/pager/types";
 
 export function getFirebase() {
   const config = Constants.expoConfig?.extra
@@ -45,42 +41,54 @@ export function getFirebase() {
   return { auth, database: getFirestore(app) };
 }
 
-export async function getMessagePage(before?: number): Promise<MessagePage> {
+export function watchMessages(
+  onMessages: (messages: PagerMessage[]) => void,
+  onError: (error: Error) => void,
+) {
   const { database } = getFirebase();
-  const constraints: QueryConstraint[] = [orderBy("id", "desc"), limit(50)];
-  if (before !== undefined) constraints.push(startAfter(before));
-  const snapshot = await getDocsFromServer(
-    query(collection(database, "messages"), ...constraints),
+  let initialized = false;
+  return onSnapshot(
+    query(collection(database, "messages"), orderBy("id", "desc")),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      if (snapshot.metadata.fromCache) {
+        initialized = false;
+        return;
+      }
+      const documents = initialized
+        ? snapshot
+            .docChanges()
+            .filter((change) => change.type === "added")
+            .map((change) => change.doc)
+        : snapshot.docs;
+      initialized = true;
+      onMessages(documents.map((item) => item.data() as PagerMessage));
+    },
+    onError,
   );
-  const messages = snapshot.docs.map((item) => item.data() as PagerMessage);
-  return {
-    messages,
-    nextCursor: messages.length === 50 ? messages.at(-1)!.id : null,
-  };
 }
 
-export async function getMessage(id: number): Promise<PagerMessage> {
-  const snapshot = await getDocFromServer(
-    doc(getFirebase().database, "messages", String(id)),
+export function watchRicUnits(
+  onUnits: (units: RicUnit[]) => void,
+  onError: (error: Error) => void,
+) {
+  return onSnapshot(
+    collection(getFirebase().database, "ricUnits"),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      if (snapshot.metadata.fromCache) return;
+      onUnits(snapshot.docs.map((item) => item.data() as RicUnit));
+    },
+    onError,
   );
-  if (!snapshot.exists()) throw new Error("Message not found.");
-  return snapshot.data() as PagerMessage;
-}
-
-export function normalizeRics(rics: number[]) {
-  if (rics.length > 100) throw new Error("Use at most 100 alert RICs.");
-  if (rics.some((ric) => !Number.isInteger(ric) || ric < 0 || ric > 2097151))
-    throw new Error("RICs must be whole numbers from 0 to 2097151.");
-  return [...new Set(rics)];
 }
 
 export async function registerDevice(
   uid: string,
   expoPushToken: string | null,
-  rics: number[],
 ) {
   await setDoc(doc(getFirebase().database, "devices", uid), {
     expoPushToken,
-    rics,
+    rics: [],
   });
 }

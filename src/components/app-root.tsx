@@ -5,7 +5,6 @@ import { Stack } from "expo-router";
 
 import { Button } from "@/components/ui/button";
 import { Screen } from "@/components/ui/screen";
-import { Typography } from "@/components/ui/typography";
 import { useConnection } from "@/pager/connection-provider";
 import { useNotifications } from "@/pager/use-notifications";
 import { useTheme } from "@/theme/use-theme";
@@ -23,7 +22,6 @@ export const AppRoot: FC = () => {
   if (error && !uid)
     return (
       <Screen>
-        <Typography accessibilityRole="alert">{error}</Typography>
         <Button label="Retry" onPress={retry} />
       </Screen>
     );
@@ -36,10 +34,10 @@ export const AppRoot: FC = () => {
         statusBarStyle: theme.themeName === "dark" ? "light" : "dark",
       }}
     >
-      <Stack.Screen name="index" options={{ title: "subpager" }} />
+      <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen
-        name="settings"
-        options={{ title: "Settings", presentation: "modal" }}
+        name="search"
+        options={{ presentation: "modal", headerShown: false }}
       />
       <Stack.Screen name="message/[id]" options={{ title: "Pager message" }} />
     </Stack>

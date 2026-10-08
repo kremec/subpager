@@ -7,10 +7,11 @@ import { useTheme } from "@/theme/use-theme";
 
 interface ScreenProps {
   scroll?: boolean;
+  headerShown?: boolean;
   style?: StyleProp<ViewStyle>;
 }
 export const Screen: FC<PropsWithChildren<ScreenProps>> = (props) => {
-  const { children, scroll = false, style } = props;
+  const { children, scroll = false, headerShown = true, style } = props;
   const theme = useTheme();
   const contentStyle = {
     width: "100%" as const,
@@ -21,7 +22,7 @@ export const Screen: FC<PropsWithChildren<ScreenProps>> = (props) => {
   };
   return (
     <SafeAreaView
-      edges={["left", "right", "bottom"]}
+      edges={headerShown ? ["left", "right", "bottom"] : undefined}
       style={{ flex: 1, backgroundColor: theme.colors.background }}
     >
       {scroll ? (

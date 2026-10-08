@@ -5,6 +5,7 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 
+import { showErrorToast } from "@/components/ui/toast";
 import { useConnection } from "@/pager/connection-provider";
 import { registerDevice } from "@/pager/firebase";
 
@@ -35,7 +36,9 @@ export function useNotifications() {
         params: { id: String(messageId) },
       });
     }
-    void Notifications.clearLastNotificationResponseAsync();
+    void Notifications.clearLastNotificationResponseAsync().catch(() =>
+      showErrorToast("Could not clear notifications."),
+    );
   }, [connection, response, router]);
 
   useEffect(() => {
@@ -46,10 +49,19 @@ export function useNotifications() {
     let cancelled = false;
     let running = false;
     let pending = false;
-    async function register() {
+    let pendingDeviceToken: Notifications.DevicePushToken | undefined;
+    let registeredToken: string | null | undefined;
+    const uid = connection.uid;
+    async function saveToken(token: string | null) {
+      if (registeredToken === token) return;
+      await registerDevice(uid, token);
+      registeredToken = token;
+    }
+    async function register(devicePushToken?: Notifications.DevicePushToken) {
       if (cancelled || !connection) return;
       if (running) {
         pending = true;
+        if (devicePushToken) pendingDeviceToken = devicePushToken;
         return;
       }
       running = true;
@@ -58,7 +70,6 @@ export function useNotifications() {
           await Notifications.setNotificationChannelAsync("pager-alerts", {
             name: "Pager alerts",
             importance: Notifications.AndroidImportance.HIGH,
-            sound: "default",
             vibrationPattern: [0, 250, 250, 250],
           });
         let permission = await Notifications.getPermissionsAsync();
@@ -66,7 +77,7 @@ export function useNotifications() {
           permission = await Notifications.requestPermissionsAsync();
         if (cancelled) return;
         if (!permission.granted) {
-          await registerDevice(connection.uid, null, connection.rics);
+          await saveToken(null);
           if (!cancelled)
             setPushStatus("Notifications disabled in phone settings");
           return;
@@ -79,21 +90,28 @@ export function useNotifications() {
             "Install a development or release build to enable push notifications.",
           );
         const expoPushToken = (
-          await Notifications.getExpoPushTokenAsync({ projectId })
+          await Notifications.getExpoPushTokenAsync({
+            projectId,
+            devicePushToken,
+          })
         ).data;
         if (cancelled) return;
-        await registerDevice(connection.uid, expoPushToken, connection.rics);
+        await saveToken(expoPushToken);
         if (!cancelled) setPushStatus("Push notifications registered");
       } catch (error) {
-        if (!cancelled)
-          setPushStatus(
+        if (!cancelled) {
+          setPushStatus("Push notifications unavailable");
+          showErrorToast(
             error instanceof Error ? error.message : "Push registration failed",
           );
+        }
       } finally {
         running = false;
         if (pending) {
           pending = false;
-          void register();
+          const nextToken = pendingDeviceToken;
+          pendingDeviceToken = undefined;
+          void register(nextToken);
         }
       }
     }
@@ -105,8 +123,9 @@ export function useNotifications() {
       }
     });
     const received = Notifications.addNotificationReceivedListener(refresh);
-    const tokenChanged = Notifications.addPushTokenListener(() => {
-      void register();
+    const tokenChanged = Notifications.addPushTokenListener((token) => {
+      // Fetching the native token here would emit another token event.
+      void register(token);
     });
     return () => {
       cancelled = true;

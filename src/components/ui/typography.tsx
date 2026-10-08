@@ -70,7 +70,7 @@ export const Typography: FC<TypographyProps> = (props) => {
         return {
           fontSize: theme.typography.body,
           lineHeight: theme.typography.body + 6,
-          fontWeight: "500" as const,
+          fontWeight: "400" as const,
         };
     }
   })();

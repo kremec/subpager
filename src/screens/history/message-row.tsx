@@ -4,47 +4,56 @@ import { Pressable, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import { Typography } from "@/components/ui/typography";
+import {
+  formatMessageContent,
+  formatReceivedAt,
+  formatRicUnit,
+} from "@/pager/format-message";
 import type { PagerMessage } from "@/pager/types";
 import { useTheme } from "@/theme/use-theme";
 
 interface MessageRowProps {
   message: PagerMessage;
+  unitName?: string;
 }
 export const MessageRow: FC<MessageRowProps> = (props) => {
-  const { message } = props;
+  const { message, unitName } = props;
   const theme = useTheme();
   const router = useRouter();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Message for RIC ${message.ric}`}
+      accessibilityLabel={`Message for ${formatRicUnit(message.ric, unitName)}`}
       onPress={() =>
         router.push({
           pathname: "/message/[id]",
           params: { id: String(message.id) },
         })
       }
-      style={{
+      style={({ pressed }) => ({
+        opacity: pressed ? 0.65 : 1,
         padding: theme.spacing.lg,
-        borderRadius: theme.radius.md,
-        backgroundColor: theme.colors.surface,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
         gap: theme.spacing.sm,
-      }}
+      })}
     >
       <View
         style={{
           flexDirection: "row",
-          justifyContent: "space-between",
+          alignItems: "center",
           gap: theme.spacing.md,
         }}
       >
-        <Typography variant="bodyStrong">RIC {message.ric}</Typography>
+        <Typography variant="bodySmall" style={{ flex: 1, fontWeight: "600" }}>
+          {formatRicUnit(message.ric, unitName)}
+        </Typography>
         <Typography variant="caption" color={theme.colors.textSecondary}>
-          {new Date(message.receivedAt).toLocaleString()}
+          {formatReceivedAt(message.receivedAt)}
         </Typography>
       </View>
-      <Typography numberOfLines={4}>
-        {message.content || "Tone-only call"}
+      <Typography style={{ lineHeight: 23 }}>
+        {formatMessageContent(message.content) || "Tone-only call"}
       </Typography>
       {message.duplicateOf !== null && (
         <Typography variant="caption" color={theme.colors.textSecondary}>
