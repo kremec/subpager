@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function approved() {
+      return request.auth != null
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.approved == true;
+    }
+
+    match /members/{uid} {
+      allow get: if owner(uid);
+    }
+
+    match /messages/{id} {
+      allow read: if approved();
+    }
+
+    match /ricUnits/{id} {
+      allow read: if approved();
+    }
+
+    match /devices/{uid} {
+      allow get, delete: if owner(uid) && approved();
+      allow create, update: if owner(uid) && approved()
+        && request.resource.data.keys().hasOnly(['expoPushToken'])
+        && (request.resource.data.expoPushToken == null
+          || (request.resource.data.expoPushToken is string
+            && request.resource.data.expoPushToken.size() <= 256
+            && request.resource.data.expoPushToken.matches('(Expo|Exponent)PushToken\\[.+\\]')));
+    }
+  }
+}

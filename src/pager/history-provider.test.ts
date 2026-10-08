@@ -8,7 +8,13 @@ interface HistoryValue {
   unitNames: ReadonlyMap<number, string>;
   loading: boolean;
 }
-type State = PagerMessage[] | ReadonlyMap<number, string> | boolean | number;
+type State =
+  | PagerMessage[]
+  | ReadonlyMap<number, string>
+  | boolean
+  | number
+  | string
+  | undefined;
 const react = await import("react");
 const effects: EffectCallback[] = [];
 const states: State[] = [];
@@ -16,7 +22,7 @@ let stateIndex = 0;
 let cleanup: (() => void) | undefined;
 let foreground: ((state: string) => void) | undefined;
 let allowed = true;
-let authenticated = true;
+let uid = "test-device";
 let saved: { messages: PagerMessage[]; units: RicUnit[] } | null = null;
 let cacheFailure = false;
 const savedMessages: PagerMessage[][] = [];
@@ -34,7 +40,7 @@ const errors: string[] = [];
 mock.module("react", () => ({
   ...react,
   useEffect: (effect: EffectCallback) => effects.push(effect),
-  useState: <T extends State>(initial: T) => {
+  useState: <T extends State>(initial?: T) => {
     const index = stateIndex++;
     if (!(index in states)) states[index] = initial;
     return [
@@ -57,12 +63,9 @@ mock.module("react-native", () => ({
 }));
 mock.module("@/pager/connection-provider", () => ({
   useConnection: () => ({
-    connection: allowed ? { uid: "test-device" } : null,
-    hasAccess: () => allowed,
+    connection: allowed ? { uid } : null,
+    hasAccess: (value: string) => allowed && value === uid,
   }),
-}));
-mock.module("convex/react", () => ({
-  useConvexAuth: () => ({ isAuthenticated: authenticated }),
 }));
 mock.module("@/pager/database", () => ({
   cachedHistory: () => {
@@ -78,7 +81,7 @@ mock.module("@/pager/database", () => ({
     savedUnits.push(units);
   },
 }));
-mock.module("@/pager/convex", () => ({
+mock.module("@/pager/firebase", () => ({
   watchMessages: (
     success: (messages: PagerMessage[]) => void,
     failure: (error: Error) => void,
@@ -125,7 +128,7 @@ const message: PagerMessage = {
 beforeEach(() => {
   states.length = 0;
   allowed = true;
-  authenticated = true;
+  uid = "test-device";
   saved = null;
   cacheFailure = false;
   savedMessages.length = 0;
@@ -156,17 +159,17 @@ test("live query updates replace messages and include later locations", () => {
   expect(savedMessages.at(-1)?.[0]?.location).toBe("ŠOLI GOLO");
 });
 
-test("offline approved devices read saved history without cloud subscriptions", () => {
+test("saved history remains visible until confirmed cloud data arrives", () => {
   cleanup?.();
   cleanup = undefined;
-  authenticated = false;
   saved = { messages: [message], units: [{ ric: 123, unitName: "Golo" }] };
   render();
-  effects[0]!();
+  const result = effects[0]!();
+  if (typeof result === "function") cleanup = result;
   expect(render().messages).toEqual([message]);
   expect(render().unitNames.get(123)).toBe("Golo");
   expect(render().loading).toBe(false);
-  expect([messagesAttached, unitsAttached]).toEqual([1, 1]);
+  expect([messagesAttached, unitsAttached]).toEqual([2, 2]);
 });
 
 test("unapproved devices do not subscribe to history", () => {
@@ -238,4 +241,31 @@ test("cache failures do not prevent live query updates", () => {
   expect(render().loading).toBe(false);
   expect(errors).toContain("Could not read saved history.");
   expect(errors).toContain("Could not save message history.");
+});
+
+test("approved identity changes hide previous history before the replacement effect runs", () => {
+  onMessages?.([message]);
+  onUnits?.([{ ric: 123, unitName: "Previous unit" }]);
+  expect(render().messages).toEqual([message]);
+  const previousMessages = onMessages;
+  const previousUnits = onUnits;
+  uid = "replacement-device";
+  const replacement = { ...message, id: "replacement-message-id" };
+  saved = {
+    messages: [replacement],
+    units: [{ ric: 123, unitName: "Replacement unit" }],
+  };
+  const beforeEffect = render();
+  expect(beforeEffect.messages).toEqual([]);
+  expect(beforeEffect.unitNames.size).toBe(0);
+  previousMessages?.([message]);
+  previousUnits?.([{ ric: 123, unitName: "Late previous unit" }]);
+  expect(savedMessages).toEqual([[message]]);
+  expect(savedUnits).toEqual([[{ ric: 123, unitName: "Previous unit" }]]);
+  cleanup?.();
+  const result = effects[0]!();
+  if (typeof result === "function") cleanup = result;
+  const afterEffect = render();
+  expect(afterEffect.messages).toEqual([replacement]);
+  expect(afterEffect.unitNames.get(123)).toBe("Replacement unit");
 });

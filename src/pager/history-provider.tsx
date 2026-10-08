@@ -7,12 +7,10 @@ import {
 } from "react";
 import { AppState } from "react-native";
 
-import { useConvexAuth } from "convex/react";
-
 import { showErrorToast } from "@/components/ui/toast";
 import { useConnection } from "@/pager/connection-provider";
-import { watchMessages, watchRicUnits } from "@/pager/convex";
 import { cachedHistory, cacheMessages, cacheRicUnits } from "@/pager/database";
+import { watchMessages, watchRicUnits } from "@/pager/firebase";
 import type { PagerMessage } from "@/pager/types";
 import { HistoryContext } from "@/pager/use-message-history";
 
@@ -22,8 +20,8 @@ interface HistoryProviderProps {
 
 export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
   const { connection, hasAccess } = useConnection();
-  const { isAuthenticated } = useConvexAuth();
   const uid = connection?.uid;
+  const [historyUid, setHistoryUid] = useState<string>();
   const [messages, setMessages] = useState<PagerMessage[]>([]);
   const [unitNames, setUnitNames] = useState<ReadonlyMap<number, string>>(
     new Map(),
@@ -44,13 +42,14 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
       }
     }
     /* oxlint-disable react/set-state-in-effect */
+    setHistoryUid(uid);
     setMessages(saved?.messages ?? []);
     setUnitNames(
       new Map(saved?.units.map((unit) => [unit.ric, unit.unitName])),
     );
-    setLoading(!!uid && isAuthenticated && !saved?.messages.length);
+    setLoading(!!uid && !saved?.messages.length);
     /* oxlint-enable react/set-state-in-effect */
-    if (!uid || !isAuthenticated) return;
+    if (!uid) return;
 
     let messagesFailed = false;
     let unitsFailed = false;
@@ -113,14 +112,15 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
       unsubscribeUnits();
       appState.remove();
     };
-  }, [uid, hasAccess, isAuthenticated, attempt]);
+  }, [uid, hasAccess, attempt]);
 
+  const visible = !!uid && historyUid === uid && hasAccess(uid);
   return (
     <HistoryContext.Provider
       value={{
-        messages: uid && hasAccess(uid) ? messages : [],
-        unitNames: uid && hasAccess(uid) ? unitNames : new Map(),
-        loading,
+        messages: visible ? messages : [],
+        unitNames: visible ? unitNames : new Map(),
+        loading: visible && loading,
         refresh,
       }}
     >

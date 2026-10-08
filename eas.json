@@ -9,25 +9,18 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "APP_VARIANT": "development",
-        "EXPO_PUBLIC_CONVEX_URL": "https://clever-dinosaur-653.eu-west-1.convex.cloud"
+        "APP_VARIANT": "development"
       }
     },
     "preview": {
       "bun": "1.4.2",
       "distribution": "internal",
-      "channel": "preview",
-      "env": {
-        "EXPO_PUBLIC_CONVEX_URL": "https://clever-dinosaur-653.eu-west-1.convex.cloud"
-      }
+      "channel": "preview"
     },
     "production": {
       "bun": "1.4.2",
       "autoIncrement": true,
-      "channel": "production",
-      "env": {
-        "EXPO_PUBLIC_CONVEX_URL": "https://clever-dinosaur-653.eu-west-1.convex.cloud"
-      }
+      "channel": "production"
     }
   },
   "submit": {

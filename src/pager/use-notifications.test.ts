@@ -11,7 +11,6 @@ let conversionCalls = 0;
 let failWrites = 0;
 let granted = true;
 let approved = true;
-let authenticated = true;
 let permissionLookup: (() => Promise<void>) | undefined;
 let tokenLookup: (() => Promise<void>) | undefined;
 let response: {
@@ -23,6 +22,8 @@ let clearedResponses = 0;
 const openedRoutes: string[] = [];
 const writes: (string | null)[] = [];
 const failures: string[] = [];
+const statuses: string[] = [];
+let writeAcknowledgement: (() => Promise<void>) | undefined;
 
 mock.module("react", () => ({
   useEffect: (effect: EffectCallback) => effects.push(effect),
@@ -35,9 +36,6 @@ mock.module("react-native", () => ({
       return { remove: () => (appStateListener = undefined) };
     },
   },
-}));
-mock.module("convex/react", () => ({
-  useConvexAuth: () => ({ isAuthenticated: authenticated }),
 }));
 mock.module("expo-constants", () => ({
   default: { expoConfig: { extra: { eas: { projectId: "test-project" } } } },
@@ -77,11 +75,13 @@ mock.module("@/pager/connection-provider", () => ({
   useConnection: () => ({
     connection: approved ? { uid: "test-device" } : null,
     pushStatus: "",
-    setPushStatus: () => {},
+    setPushStatus: (status: string) => statuses.push(status),
   }),
 }));
-mock.module("@/pager/convex", () => ({
-  registerDevice: async (token: string | null) => {
+mock.module("@/pager/firebase", () => ({
+  registerDevice: async (uid: string, token: string | null) => {
+    expect(uid).toBe("test-device");
+    await writeAcknowledgement?.();
     writes.push(token);
     if (failWrites > 0) {
       failWrites--;
@@ -116,11 +116,12 @@ beforeEach(() => {
   effects.length = 0;
   writes.length = 0;
   failures.length = 0;
+  statuses.length = 0;
+  writeAcknowledgement = undefined;
   conversionCalls = 0;
   failWrites = 0;
   granted = true;
   approved = true;
-  authenticated = true;
   permissionLookup = undefined;
   tokenLookup = undefined;
   response = null;
@@ -159,14 +160,19 @@ test("push registration waits for an approved connection", async () => {
   expect(writes).toEqual(["ExpoPushToken[first]"]);
 });
 
-test("offline cached approval delays push registration until server authentication", async () => {
-  authenticated = false;
+test("push success waits for server acknowledgement of queued writes", async () => {
+  let acknowledge = () => {};
+  writeAcknowledgement = () =>
+    new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
   await mount();
-  expect(conversionCalls).toBe(0);
+  expect(statuses).not.toContain("Push notifications registered");
   expect(writes).toEqual([]);
-  authenticated = true;
-  effects.length = 0;
-  await mount();
+  writeAcknowledgement = undefined;
+  acknowledge();
+  await settle();
+  expect(statuses).toContain("Push notifications registered");
   expect(writes).toEqual(["ExpoPushToken[first]"]);
 });
 

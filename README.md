@@ -1,6 +1,6 @@
 # subpager app
 
-Private pager history and Expo push notifications, using Convex as the single backend database and for anonymous authentication. The receiver decodes radio messages and sends them through an authenticated Convex HTTP endpoint. A small disk outbox retains only unacknowledged uploads. Convex owns history, deduplication, push and location extraction.
+Private pager history and Expo push notifications with Firebase anonymous Auth and Firestore. Firestore is the only backend database. The receiver uploads decoded calls from a small filesystem outbox and handles durable push and location jobs independently. The app keeps one SQLite row for offline reading.
 
 ## Install and check
 
@@ -12,59 +12,55 @@ bun run format:check
 bun run test
 ```
 
-Use Bun. Do not start another Metro server if one is already running. Native dependencies and Android permission changes require a new native build. Subpager blocks external storage read/write permissions. Auth tokens use SecureStore. A small app SQLite cache keeps the last synced feed for offline reading; Convex remains the source of truth.
+Use Bun. Do not start another Metro server if one is running. Native dependency and permission changes require a new native build. Subpager blocks external storage read/write permissions. Firebase Auth persists the anonymous account in AsyncStorage.
 
-## Convex setup
+## Firebase setup
 
-The backend source lives in `convex/` in this repository. The receiver uses its HTTP endpoints and needs no Convex runtime dependency. Generated API types are checked into source control.
+The project is `subpager-subbyte`, with the default Firestore database in `europe-west3`. Enable anonymous Firebase Auth. The public client options come from the matching Android package in `google-services.json`, provided locally or through the EAS `GOOGLE_SERVICES_JSON` file variable. Keep service account credentials outside source control and mobile builds.
 
-The single production deployment is `https://clever-dinosaur-653.eu-west-1.convex.cloud`.
-
-Local Expo reads `EXPO_PUBLIC_CONVEX_URL` from `.env.local`. All EAS profiles use production. Build profiles retain their existing distribution and update channels. The separate Convex development deployment was backed up and deleted.
+Deploy the rules after signing into the Firebase CLI:
 
 ```sh
-bun run convex:deploy
+bunx firebase-tools deploy --only firestore:rules --project subpager-subbyte
 ```
 
-This deploys the backend to production. It does not build or publish the mobile app. For database inspection and function calls, use `bunx convex data --prod` and `bunx convex run --prod`. Do not run `convex dev`, which would create another development deployment.
+`firestore.rules` permits a device to read its own approval. Only approved devices can read messages and RIC mappings or register their own Expo token. Clients cannot approve members, write messages or access private jobs. The receiver uses the official Firebase Admin SDK with a private service account. See the receiver README for configuration.
 
-Configure `JWT_PRIVATE_KEY`, `JWKS`, `SITE_URL` and `RECEIVER_SECRET` in Convex production. Auth uses the built-in deployment `CONVEX_SITE_URL`. The receiver secret stays in a private file on the receiver. Optional `EXPO_ACCESS_TOKEN` belongs in Convex when Expo enhanced push security is enabled. `PUSH_MAX_AGE_SECONDS` defaults to 300.
-
-The app creates an anonymous account and persists its tokens with SecureStore. Copy the device ID from onboarding or the settings sheet. In the receiver repository:
+The app creates an anonymous account and displays its ID in onboarding and settings. In the receiver repository:
 
 ```sh
-bun run member:approve CONVEX_DEVICE_ID
+bun run member:approve FIREBASE_DEVICE_ID
 bun run member:list
-bun run member:revoke CONVEX_DEVICE_ID
+bun run member:revoke FIREBASE_DEVICE_ID
 ```
 
-Only administrators can approve devices or write messages. Approval permits history and notifications. Online, the app checks approval with Convex before syncing history. Offline, it permits the saved feed only for the same previously approved device ID. Revocation stops cloud reads and future sends; the app clears its saved feed and dismisses notifications when it observes the change. Clearing app data or reinstalling can require a new approval.
+Approval is `members/{uid}.approved`; push tokens are `devices/{uid}.expoPushToken`. Existing Firebase identities retain their ID. Convex identities do not grant Firebase access. Reinstalling or clearing app data can require a new approval.
 
-Firebase anonymous IDs cannot prove ownership of Convex accounts. Existing installations receive new IDs and require approval again. Old Firebase approval is never reused to grant new cloud access.
+Online, the app waits for server-confirmed approval before syncing history. Offline, it permits saved history only for the same previously approved Firebase UID. A server-confirmed revocation clears saved history and dismisses notifications. An offline phone retains its cache until it reconnects and observes revocation.
 
 ## History and locations
 
-Convex live queries provide full history and RIC unit mappings directly to the app. Location updates appear in the feed automatically. The app caches the last synced history and RIC mappings in one SQLite row for offline reading. New messages and location updates require internet. Messages use native Convex document IDs and a stable source key to make upload retries safe. Search matches message text, RICs and unit names, ignoring case and accents. RIC mappings live in Convex. The current feed reads full history in one query; pagination is needed before history reaches Convex transaction read limits.
+Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet. Search matches text, RIC and unit names without case or accent differences. Messages use string document IDs; imported history preserves its IDs and duplicate references.
 
-Convex schedules location extraction after saving the message, independently of push. It uses OpenAI Responses with `gpt-6-luna`, no reasoning, and structured output containing an exact message substring or null. Convex retains retry state and completed results. A later location update does not send another notification. An unavailable model leaves the original message readable and does not delay push.
+The receiver transaction saves each message and queues private `pushJobs` and `locationJobs`. Separate listeners process those jobs without repeated polling reads. The receiver must be running to finish background work. Durable retry times and leases allow recovery after restart. The receiver has no SQLite database, HTTP API, domain or tunnel.
 
-Extracted location text is underlined and opens a Google Maps search with Slovenia as context. Extraction identifies text; it does not verify coordinates or guarantee a correct Maps result. The app preserves the received text. Decoder markers such as `<LF>` display as spaces. Times use the phone timezone, day/month/year and a 24-hour clock. Connection errors are shown as toasts.
+Location extraction uses OpenAI Responses with `gpt-6-luna`, no reasoning and structured output containing an exact message substring or null. Set `OPENAI_API_KEY` in the receiver ignored `.env`. API billing is separate from ChatGPT subscriptions. Extraction does not delay the initial feed or push. Completed results update canonical messages and repeats without sending another alert.
 
-API billing is separate from ChatGPT subscriptions. Set `OPENAI_API_KEY` in Convex production, never in the app, source control or logs. The receiver needs no OpenAI credentials. ChatGPT Go's allowance for the benchmark subscription route is unverified; API mode avoids that dependency.
+Underlined location text opens Google Maps with Slovenia as context. Extraction does not verify coordinates or guarantee a correct Maps result. Message rows do not open a detail screen. Times use the phone timezone, day/month/year and a 24-hour clock. Connection errors appear as toasts.
 
-## Expo push and Firebase
+## Push delivery
 
-Firebase remains only for Android FCM delivery. Keep `google-services.json` configured through `GOOGLE_SERVICES_JSON` and keep the EAS FCM v1 credential. Firebase JS, Firestore and Firebase Authentication are no longer used by this app or receiver.
+The receiver sends through Expo, stores tickets, checks delayed receipts and conditionally clears invalid tokens. It retries transient errors and expires stale sends. Importing history creates no push or model jobs. A process crash between provider acceptance and the first database acknowledgement can repeat a request. Provider receipts do not prove that a phone displayed or sounded an alert.
 
-Convex sends through Expo, retains tickets, checks delayed receipts and clears invalid tokens only when the device still has that token version. It retries transient errors and expires stale sends. Notification taps open the feed. Message rows do not open a detail screen; only underlined locations open Maps. Importing old history never creates notification jobs. A provider receipt does not prove the phone displayed or sounded an alert.
-
-The Android packages remain `com.subbyte.subpager` and `com.subbyte.subpager.dev`. iOS still needs Apple signing and APNs credentials. No phone connects directly to the receiver, and no public receiver domain or tunnel is needed.
+Firebase Cloud Messaging remains the Android push transport. Keep `google-services.json` and the EAS FCM v1 credential. Android packages remain `com.subbyte.subpager` and `com.subbyte.subpager.dev`. iOS needs Apple signing and APNs credentials. Notification taps open the feed.
 
 ## Migration and rollback
 
-The pre-migration checkpoints are app `1cac205` and receiver `39829c3`. A consistent local SQLite backup and private configuration backup were saved outside both repositories before migration. Keep that private backup for rollback. The Firebase project remains for Android push delivery.
+The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The final Convex checkpoints are app `def4ee6` and receiver `6462a62`, also tagged `firebase-return-checkpoint-*`. Private exports and configuration are backed up outside both repositories.
 
-The 22 existing messages and their completed location results were migrated to Convex without sending notifications. Stable source keys prevent retry duplicates. The old receiver SQLite files and Firestore database were deleted after backup. The app has its own offline cache, separate from the receiver backup. The receiver's outbox is a delivery queue: it deletes a page only after Convex acknowledges its upload.
+A verified private SQLite migration backup holds all 22 messages, 14 completed locations, original Firebase approvals and device tokens, plus the complete Convex export. Firestore import is pending the free write quota reset. Importing these documents directly does not create notification or model jobs. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
+
+The backup is `firebase-return.sqlite` in the private migration backup directory. Its adjacent `restore-firestore.ts` imports the prepared documents atomically and checks the cloud readback. Run it with Bun after writes become available. The importer reports quota errors without a long SDK retry and can be rerun with the same document IDs. Stop the receiver during this history import; new pages can upload from its outbox afterwards. The Convex project was deleted after verifying the SQLite backup and full export.
 
 ## Google Play internal releases
 

@@ -5,11 +5,9 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 
-import { useConvexAuth } from "convex/react";
-
 import { showErrorToast } from "@/components/ui/toast";
 import { useConnection } from "@/pager/connection-provider";
-import { registerDevice } from "@/pager/convex";
+import { registerDevice } from "@/pager/firebase";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -22,7 +20,6 @@ Notifications.setNotificationHandler({
 
 export function useNotifications() {
   const { connection, pushStatus, setPushStatus } = useConnection();
-  const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const response = Notifications.useLastNotificationResponse();
 
@@ -39,10 +36,7 @@ export function useNotifications() {
       setPushStatus("Waiting for approval");
       return;
     }
-    if (!isAuthenticated) {
-      setPushStatus("Waiting for connection");
-      return;
-    }
+    const uid = connection.uid;
     let cancelled = false;
     let running = false;
     let pending = false;
@@ -50,7 +44,7 @@ export function useNotifications() {
     let registeredToken: string | null | undefined;
     async function saveToken(token: string | null) {
       if (registeredToken === token) return;
-      await registerDevice(token);
+      await registerDevice(uid, token);
       registeredToken = token;
     }
     async function register(devicePushToken?: Notifications.DevicePushToken) {
@@ -126,7 +120,7 @@ export function useNotifications() {
       appState.remove();
       tokenChanged.remove();
     };
-  }, [connection, isAuthenticated, setPushStatus]);
+  }, [connection, setPushStatus]);
 
   return pushStatus;
 }
