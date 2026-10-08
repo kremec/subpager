@@ -1,0 +1,14 @@
+node_modules/
+bin/
+config.json
+*-firebase-adminsdk-*.json
+receiver-service-account.json
+.env
+.env.*
+!.env.example
+data/
+*.sqlite*
+*.wav
+*.raw
+*.iq
+.DS_Store
