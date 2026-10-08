@@ -296,7 +296,7 @@ describe("raw audio capture", () => {
 });
 
 describe("decoder integration contract", () => {
-  test("preserves Slovenian characters and strips only trailing termination markers", () => {
+  test("preserves Slovenian characters and raw termination markers", () => {
     const line = JSON.stringify({
       demod_name: "POCSAG1200",
       address: 791393,
@@ -304,12 +304,12 @@ describe("decoder integration contract", () => {
       alpha: "ŽŠČ žšč<EOT><NUL>",
     });
     const call = parseDecoderLine(line, "2026-10-07T10:00:00.000Z")!;
-    expect(call.content).toBe("ŽŠČ žšč");
+    expect(call.content).toBe("ŽŠČ žšč<EOT><NUL>");
     expect(call.ric).toBe(791393);
     expect(call.receivedAt).toBe("2026-10-07T10:00:00.000Z");
   });
 
-  test("keeps internal markers and whitespace while normalizing each supported terminator", () => {
+  test("keeps decoded markers and whitespace for cloud normalization", () => {
     for (const ending of ["<EOT><NUL>", "<EOT>", "<NUL>", "\x04\x00"]) {
       const call = parseDecoderLine(
         JSON.stringify({
@@ -319,11 +319,11 @@ describe("decoder integration contract", () => {
           alpha: ` ČŠŽ<NUL> inside ${ending}`,
         }),
       )!;
-      expect(call.content).toBe(" ČŠŽ<NUL> inside ");
+      expect(call.content).toBe(` ČŠŽ<NUL> inside ${ending}`);
     }
   });
 
-  test("converts rendered and raw line breaks to spaces without doubling CRLF pairs", () => {
+  test("preserves rendered and raw line breaks for cloud normalization", () => {
     for (const separator of ["<LF>", "<CR><LF>", "<CR>", "\n", "\r\n", "\r"]) {
       const call = parseDecoderLine(
         JSON.stringify({
@@ -334,7 +334,7 @@ describe("decoder integration contract", () => {
         }),
       )!;
       expect(call.content).toBe(
-        " Test pozivnika. Prejem javi operativnemu vodji. ",
+        ` Test pozivnika.${separator}Prejem javi operativnemu vodji. <EOT><NUL>`,
       );
     }
   });

@@ -1,15 +1,16 @@
 import type { Config } from "./config";
-import type { Message, RicUnit, Store } from "./store";
+import type { Outbox, Reception } from "./outbox";
 
 export class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    service: string,
-  ) {
-    super(`${service} HTTP ${status}`);
+  constructor(readonly status: number) {
+    super(`Convex HTTP ${status}`);
   }
 }
 
+export interface RicUnit {
+  ric: number;
+  unitName: string;
+}
 export interface CloudDevice {
   uid: string;
   approved: boolean;
@@ -26,7 +27,7 @@ export class ConvexClient {
     ) => Promise<Response> = fetch,
   ) {}
 
-  static async open(config: NonNullable<Config["convex"]>) {
+  static async open(config: Config["convex"]) {
     const secret = (await Bun.file(config.secretPath).text()).trim();
     if (!secret) throw new Error("Convex receiver secret is empty");
     return new ConvexClient(config.siteUrl, secret);
@@ -43,18 +44,16 @@ export class ConvexClient {
       signal: AbortSignal.timeout(20_000),
     });
     if (!response.ok) {
-      await response.body?.cancel();
-      throw new HttpError(response.status, "Convex");
+      await response.body?.cancel().catch(() => {});
+      throw new HttpError(response.status);
     }
     return response;
   }
 
-  async ingest(messages: Message[], notify = true) {
-    await (await this.request("ingest", { messages, notify })).arrayBuffer();
-  }
-
-  async setLocation(id: number, location: string | null) {
-    await (await this.request("location", { id, location })).arrayBuffer();
+  async ingest(messages: Reception[]) {
+    await (
+      await this.request("ingest", { messages, notify: true })
+    ).arrayBuffer();
   }
 
   async syncRicUnits(units: RicUnit[]) {
@@ -74,36 +73,29 @@ export class ConvexWorker {
   lastError: string | null = null;
   private retryAt = 0;
   private failures = 0;
-  private busy = false;
+  private running: Promise<void> | undefined;
 
   constructor(
-    private store: Store,
+    private outbox: Outbox,
     private client: ConvexClient,
   ) {}
 
-  get cursor() {
-    return (
-      this.store.db
-        .query<{ id: number }, [string]>(
-          "SELECT message_id AS id FROM cloud_cursors WHERE deployment = ?",
-        )
-        .get(this.client.siteUrl)?.id ?? 0
-    );
+  tick(now = Date.now()): Promise<void> {
+    if (this.running) return this.running;
+    if (now < this.retryAt) return Promise.resolve();
+    this.running = this.upload(now).finally(() => {
+      this.running = undefined;
+    });
+    return this.running;
   }
 
-  async tick(now = Date.now(), notify = true) {
-    if (this.busy || now < this.retryAt) return;
-    this.busy = true;
+  private async upload(now: number) {
     const startedAt = Date.now();
     try {
-      const messages = this.store.cloudMessages(this.cursor);
-      if (messages.length) {
-        await this.client.ingest(messages, notify);
-        this.store.db
-          .query(`INSERT INTO cloud_cursors (deployment, message_id) VALUES (?, ?)
-          ON CONFLICT(deployment) DO UPDATE SET message_id = excluded.message_id`)
-          .run(this.client.siteUrl, messages.at(-1)!.id);
-      }
+      const pending = this.outbox.pending();
+      if (!pending.length) return;
+      await this.client.ingest(pending.map((item) => item.reception));
+      this.outbox.acknowledge(pending);
       this.lastError = null;
       this.failures = 0;
       this.retryAt = 0;
@@ -117,8 +109,6 @@ export class ConvexWorker {
         (error instanceof HttpError && [400, 401, 403].includes(error.status)
           ? 3_600_000
           : Math.min(300_000, 15_000 * 2 ** Math.min(this.failures - 1, 5)));
-    } finally {
-      this.busy = false;
     }
   }
 }

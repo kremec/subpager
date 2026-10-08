@@ -4,28 +4,70 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, initConfig, loadConfig } from "./config";
 import { wavPcm } from "./radio/audio";
-import { Store } from "./store";
 
 test.skipIf(process.platform === "win32")(
-  "Server archives recordings before staging cleanup and awaits push delivery on shutdown",
+  "receiver keeps decoded audio files and awaits an in-flight outbox upload on shutdown",
   async () => {
-    const directory = await mkdtemp(
-      join(tmpdir(), "subpager-message-archive-"),
-    );
-    const probe = Bun.serve({ port: 0, fetch: () => new Response(null) });
-    const port = probe.port;
-    await probe.stop(true);
+    const directory = await mkdtemp(join(tmpdir(), "subpager-receiver-"));
     const config = join(directory, "config.json");
     const clips = join(directory, "clips");
+    const outbox = join(directory, "outbox");
     const preload = join(directory, "transport.ts");
+    const secret = join(directory, "receiver-secret.txt");
     const rtl = join(directory, "receiver");
     const decoder = join(directory, "decoder");
     const rtlPid = join(directory, "receiver.pid");
     const decoderPid = join(directory, "decoder.pid");
+    const sending = join(directory, "sending");
+    const acknowledgement = join(directory, "acknowledged");
     let child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
-    let store: Store | undefined;
     const output: Promise<string>[] = [];
-    const start = (noRadio = false) => {
+    try {
+      await Bun.write(secret, "isolated-test-secret");
+      await Bun.write(
+        config,
+        JSON.stringify({
+          ...defaultConfig,
+          outbox,
+          convex: { siteUrl: "https://test.convex.site", secretPath: secret },
+          radio: {
+            ...defaultConfig.radio,
+            rtlFmPath: rtl,
+            multimonPath: decoder,
+          },
+          clips: {
+            ...defaultConfig.clips,
+            directory: clips,
+            preSeconds: 1,
+            postSeconds: 1,
+          },
+        }),
+      );
+      // Every outbound request is intercepted inside this fake-radio subprocess.
+      await Bun.write(
+        preload,
+        `globalThis.fetch = async (_url, options) => {
+        await Bun.write(${JSON.stringify(sending)}, options.body);
+        await Bun.sleep(2500);
+        await Bun.write(${JSON.stringify(acknowledgement)}, "ok");
+        return Response.json({inserted:1});
+      };`,
+      );
+      await Bun.write(
+        rtl,
+        `#!${process.execPath}\nawait Bun.write(${JSON.stringify(rtlPid)}, String(process.pid)); setInterval(() => process.stdout.write(Buffer.alloc(8820,42)),20);\n`,
+      );
+      const call = {
+        demod_name: "POCSAG1200",
+        address: 123456,
+        function: 3,
+        alpha: "TEST ČŠŽ<EOT><NUL>",
+      };
+      await Bun.write(
+        decoder,
+        `#!${process.execPath}\nawait Bun.write(${JSON.stringify(decoderPid)}, String(process.pid)); let sent=false; for await(const chunk of Bun.stdin.stream()) { if(!sent && chunk.length) {sent=true; console.log(${JSON.stringify(JSON.stringify(call))});} }\n`,
+      );
+      await Promise.all([chmod(rtl, 0o700), chmod(decoder, 0o700)]);
       child = Bun.spawn(
         [
           process.execPath,
@@ -40,7 +82,7 @@ test.skipIf(process.platform === "win32")(
           env: {
             ...process.env,
             SUBPAGER_CONFIG: config,
-            SUBPAGER_NO_RADIO: noRadio ? "1" : "0",
+            SUBPAGER_NO_RADIO: "0",
           },
         },
       );
@@ -48,197 +90,58 @@ test.skipIf(process.platform === "win32")(
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
       );
-      return child;
-    };
-    try {
-      await Bun.write(
-        config,
-        JSON.stringify({
-          ...defaultConfig,
-          database: "./history.sqlite",
-          api: { host: "127.0.0.1", port },
-          radio: {
-            ...defaultConfig.radio,
-            rtlFmPath: rtl,
-            multimonPath: decoder,
-          },
-          clips: {
-            ...defaultConfig.clips,
-            directory: clips,
-            preSeconds: 1,
-            postSeconds: 1,
-            continuous: false,
-          },
-        }),
+      for (
+        let attempt = 0;
+        attempt < 40 && !(await Bun.file(sending).exists());
+        attempt++
+      )
+        await Bun.sleep(50);
+      expect(await Bun.file(sending).exists()).toBe(true);
+      const payload = JSON.parse(await Bun.file(sending).text());
+      expect(payload.messages[0].content).toBe(call.alpha);
+      expect(payload.messages[0].sourceId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(payload.messages[0].id).toBeUndefined();
+      expect(
+        (await readdir(outbox)).filter((name) => name.endsWith(".json")),
+      ).toHaveLength(1);
+      await Bun.sleep(1200);
+      child.kill();
+      expect(await child.exited).toBe(0);
+      expect(await Bun.file(acknowledgement).exists()).toBe(true);
+      expect(await readdir(outbox)).toHaveLength(0);
+      const files = await readdir(clips);
+      const wavName = files.find((name) => name.endsWith(".wav"))!;
+      expect(wavName).toBeDefined();
+      const pcm = wavPcm(
+        Buffer.from(await Bun.file(join(clips, wavName)).bytes()),
       );
-      // Every outbound request is intercepted inside the subprocess.
-      await Bun.write(
-        preload,
-        `globalThis.fetch = async () => { throw new Error("Unexpected outbound request"); };`,
-      );
-      start();
-      const timeout = setTimeout(() => child?.kill(), 5000);
-      try {
-        expect(await child!.exited).toBe(1);
-      } finally {
-        clearTimeout(timeout);
-      }
-      store = new Store(join(directory, "history.sqlite"));
-      expect(store.list({ limit: 10 }).messages).toHaveLength(0);
-
-      const call = {
-        demod_name: "POCSAG1200",
-        address: 123456,
-        function: 3,
-        alpha: "TEST ČŠŽ",
-      };
-      await Bun.write(
-        rtl,
-        `#!${process.execPath}\nawait Bun.write(${JSON.stringify(rtlPid)}, String(process.pid)); setInterval(() => process.stdout.write(Buffer.alloc(8820, 42)), 20);\n`,
-      );
-      await Bun.write(
-        decoder,
-        `#!${process.execPath}\nawait Bun.write(${JSON.stringify(decoderPid)}, String(process.pid)); let sent=false; for await (const chunk of Bun.stdin.stream()) { if(!sent && chunk.length) { sent=true;console.log(${JSON.stringify(JSON.stringify(call))}); } }\n`,
-      );
-      await Promise.all([chmod(rtl, 0o700), chmod(decoder, 0o700)]);
-      start();
-      let archived = false;
-      for (let i = 0; i < 60; i++) {
-        const message = store.list({ limit: 10 }).messages[0];
-        if (
-          message &&
-          store.getRecording(message.id) &&
-          (await readdir(clips)).length === 0
-        ) {
-          archived = true;
-          break;
-        }
-        await Bun.sleep(100);
-      }
-      expect(archived).toBe(true);
-      child!.kill();
-      expect(await child!.exited).toBe(0);
-      const messages = store.list({ limit: 10 }).messages;
-      expect(messages).toHaveLength(1);
-      expect(messages[0]!.content).toBe(call.alpha);
-      const recording = store.getRecording(messages[0]!.id)!;
-      const pcm = wavPcm(Buffer.from(recording.wav));
       expect(pcm.length).toBeGreaterThanOrEqual(44100);
       expect(pcm).toEqual(Buffer.alloc(pcm.length, 42));
-      expect(await readdir(clips)).toEqual([]);
-      // Retry staging left behind after a successful DB commit but before unlink.
-      const retryPath = join(clips, "subpager-decoded-retry.wav");
-      await Bun.write(retryPath, recording.wav);
-      await Bun.write(
-        `${retryPath}.json`,
-        JSON.stringify({
-          path: join(directory, "stale-recording-location.wav"),
-          calls: [
-            {
-              ric: call.address,
-              function: call.function,
-              type: "alpha",
-              content: call.alpha,
-              receivedAt: messages[0]!.receivedAt,
-            },
-          ],
-        }),
-      );
-      start(true);
-      let retried = false;
-      for (let i = 0; i < 40; i++) {
-        if ((await readdir(clips)).length === 0) {
-          retried = true;
-          break;
-        }
-        await Bun.sleep(100);
-      }
-      expect(retried).toBe(true);
-      child!.kill();
-      expect(await child!.exited).toBe(0);
-      expect(store.getRecording(messages[0]!.id)).toEqual(recording);
-      expect(
-        store.db
-          .query<{ count: number }, []>(
-            "SELECT count(*) AS count FROM messages WHERE wav IS NOT NULL",
-          )
-          .get()!.count,
-      ).toBe(1);
-      // Shutdown must await a ticket already in flight, even after another tick.
-      const device = store.addDevice("shutdown test");
-      store.registerDevice(device.id, "ExpoPushToken[shutdown]");
-      const pushMessage = store.save(
-        {
-          ...messages[0]!,
-          receivedAt: new Date().toISOString(),
-          content: "shutdown",
-        },
-        30,
-        300,
-      );
-      const sending = join(directory, "sending");
-      await Bun.write(
-        preload,
-        `globalThis.fetch = async () => {
-          await Bun.write(${JSON.stringify(sending)}, "started");
-          await Bun.sleep(2500);
-          return Response.json({ data: [{ status: "ok", id: "shutdown-ticket" }] });
-        };`,
-      );
-      start(true);
-      for (let i = 0; i < 40 && !(await Bun.file(sending).exists()); i++)
-        await Bun.sleep(100);
-      expect(await Bun.file(sending).exists()).toBe(true);
-      await Bun.sleep(1200);
-      child!.kill();
-      expect(await child!.exited).toBe(0);
-      expect(
-        store.db
-          .query("SELECT state, ticket_id FROM push_jobs WHERE message_id = ?")
-          .get(pushMessage.id),
-      ).toEqual({ state: "receipt", ticket_id: "shutdown-ticket" });
-      store.disablePush(device.id);
-      // A failed live insert must stop the API and both native processes.
-      store.db.exec(`CREATE TRIGGER fail_call BEFORE INSERT ON messages
-        BEGIN SELECT RAISE(ABORT, 'simulated message storage failure'); END;`);
-      start();
-      const shutdownTimeout = setTimeout(() => child?.kill("SIGKILL"), 5000);
-      try {
-        expect(await child!.exited).toBe(1);
-      } finally {
-        clearTimeout(shutdownTimeout);
-      }
+      const metadata = await Bun.file(join(clips, `${wavName}.json`)).json();
+      expect(metadata.calls[0].content).toBe(call.alpha);
       for (const file of [rtlPid, decoderPid]) {
         const pid = Number(await Bun.file(file).text());
         expect(() => process.kill(pid, 0)).toThrow();
       }
-      expect(store.list({ limit: 10 }).messages).toHaveLength(2);
-      const logs = (await Promise.all(output)).join("\n");
-      expect(logs).toContain(
-        "Message storage failed: simulated message storage failure",
-      );
-      expect(logs).toMatch(
-        /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z INFO Received call 1; receivedAt=.*; RIC=0123456; function=3; type=alpha; content="TEST ČŠŽ"/,
-      );
     } finally {
       if (child && child.exitCode === null) {
         child.kill();
         await child.exited;
       }
-      store?.close();
+      await Promise.all(output);
       await rm(directory, { recursive: true, force: true });
     }
   },
-  15000,
+  10000,
 );
 
-test("package replay normalizes content without opening history", async () => {
+test("package replay preserves raw content without creating an outbox", async () => {
   const directory = await mkdtemp(join(tmpdir(), "subpager readonly replay-"));
   try {
-    const database = join(directory, "history.sqlite");
+    const outbox = join(directory, "outbox");
     const config = join(directory, "config.json");
     const input = join(directory, "pages.jsonl");
-    await Bun.write(config, JSON.stringify({ ...defaultConfig, database }));
+    await Bun.write(config, JSON.stringify({ ...defaultConfig, outbox }));
     await Bun.write(
       input,
       JSON.stringify({
@@ -258,8 +161,10 @@ test("package replay normalizes content without opening history", async () => {
     const output = await new Response(replay.stdout).text();
     await new Response(replay.stderr).text();
     expect(await replay.exited).toBe(0);
-    expect(JSON.parse(output.split("\n")[0]!).content).toBe("TEST ČŠŽ");
-    expect(await Bun.file(database).exists()).toBe(false);
+    expect(JSON.parse(output.split("\n")[0]!).content).toBe(
+      "TEST ČŠŽ<EOT><NUL>",
+    );
+    expect(await Bun.file(outbox).exists()).toBe(false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -282,9 +187,7 @@ test("config creation is exclusive and private, with a config-independent decode
       expect((await stat(file)).mode & 0o777).toBe(0o600);
     const config = await loadConfig(file);
     expect(config.radio.multimonPath).toBe(defaultConfig.radio.multimonPath);
-    expect(config.database).toBe(
-      join(directory, "nested", "data", "subpager.sqlite"),
-    );
+    expect(config.outbox).toBe(join(directory, "nested", "data", "outbox"));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

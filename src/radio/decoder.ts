@@ -32,13 +32,6 @@ export function isRic(value: unknown): value is number {
   );
 }
 
-export const normalizeContent = (content: string) =>
-  content
-    .replace(/<CR><LF>|<(?:CR|LF)>|\r\n?|\n/g, " ")
-    // POCSAG payloads can end in rendered markers or EOT/NUL control bytes.
-    // oxlint-disable-next-line no-control-regex
-    .replace(/(?:<(?:EOT|NUL)>|[\x00\x04])+$/, "");
-
 export function rtlFmArgs(config: RadioConfig): string[] {
   return [
     "-d",
@@ -112,7 +105,7 @@ export function parseDecoderLine(
     ric: address,
     function: fn,
     type,
-    content: normalizeContent(content),
+    content,
     receivedAt,
   };
 }

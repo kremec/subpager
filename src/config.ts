@@ -6,12 +6,8 @@ import { dirname, resolve } from "node:path";
 export interface Config {
   radio: RadioConfig & { device: string };
   clips: Required<ClipConfig>;
-  database: string;
-  api: { host: string; port: number };
-  dedupeSeconds: number;
-  pushMaxAgeSeconds: number;
-  convex?: { siteUrl: string; secretPath: string };
-  location?: { model?: string };
+  outbox: string;
+  convex: { siteUrl: string; secretPath: string };
 }
 
 export const defaultConfig: Config = {
@@ -38,10 +34,11 @@ export const defaultConfig: Config = {
     maxBytes: 256 * 1024 * 1024,
     continuous: false,
   },
-  database: "./data/subpager.sqlite",
-  api: { host: "127.0.0.1", port: 8787 },
-  dedupeSeconds: 30,
-  pushMaxAgeSeconds: 300,
+  outbox: "./data/outbox",
+  convex: {
+    siteUrl: "https://your-deployment.convex.site",
+    secretPath: "./receiver-secret.txt",
+  },
 };
 
 function numberIn(value: unknown, min: number, max: number): value is number {
@@ -58,39 +55,33 @@ export function validateConfig(value: unknown): asserts value is Config {
     !isObject(value) ||
     !isObject(value.radio) ||
     !isObject(value.clips) ||
-    !isObject(value.api)
+    !isObject(value.convex)
   ) {
     throw new Error(
-      "Config requires radio, clips and api objects. Run bun run init for an example.",
+      "Config requires radio, clips, outbox and convex. Run bun run init for an example.",
     );
   }
-  const { radio, clips, api } = value;
-  if (value.firebase !== undefined)
-    throw new Error(
-      "Replace firebase with convex in config.json before starting this version",
-    );
-  if (value.convex !== undefined) {
-    if (
-      !isObject(value.convex) ||
-      typeof value.convex.siteUrl !== "string" ||
-      !/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.convex\.site$/.test(
-        value.convex.siteUrl,
-      ) ||
-      typeof value.convex.secretPath !== "string" ||
-      !value.convex.secretPath
-    )
-      throw new Error(
-        "Convex requires an HTTPS convex.site URL and secretPath",
-      );
-  }
+  const { radio, clips, convex } = value;
   if (
-    value.location !== undefined &&
-    (!value.convex ||
-      !isObject(value.location) ||
-      (value.location.model !== undefined &&
-        (typeof value.location.model !== "string" || !value.location.model)))
+    value.firebase !== undefined ||
+    value.database !== undefined ||
+    value.api !== undefined ||
+    value.dedupeSeconds !== undefined ||
+    value.pushMaxAgeSeconds !== undefined ||
+    value.location !== undefined
   )
-    throw new Error("Location requires Convex; model is optional");
+    throw new Error(
+      "Remove legacy database, api, firebase, dedupe, push and location options; Convex owns these",
+    );
+  if (
+    typeof convex.siteUrl !== "string" ||
+    !/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.convex\.site$/.test(
+      convex.siteUrl,
+    ) ||
+    typeof convex.secretPath !== "string" ||
+    !convex.secretPath
+  )
+    throw new Error("Convex requires an HTTPS convex.site URL and secretPath");
   if (
     !numberIn(radio.frequencyHz, 24000000, 1766000000) ||
     typeof radio.device !== "string" ||
@@ -110,14 +101,8 @@ export function validateConfig(value: unknown): asserts value is Config {
     !numberIn(clips.maxFiles, 1, 10000) ||
     !Number.isInteger(clips.maxFiles) ||
     !numberIn(clips.maxBytes, 1048576, 10737418240) ||
-    typeof value.database !== "string" ||
-    !value.database ||
-    typeof api.host !== "string" ||
-    !api.host ||
-    !numberIn(api.port, 1, 65535) ||
-    !Number.isInteger(api.port) ||
-    !numberIn(value.dedupeSeconds, 0, 300) ||
-    !numberIn(value.pushMaxAgeSeconds, 1, 86400)
+    typeof value.outbox !== "string" ||
+    !value.outbox
   ) {
     throw new Error(
       "Invalid config values. Compare with the generated example; gain must be auto or 0–50 dB.",
@@ -133,10 +118,9 @@ export async function loadConfig(
     throw new Error(`Config not found: ${file}. Run bun run init.`);
   const config: unknown = await Bun.file(file).json();
   validateConfig(config);
-  config.database = resolve(dirname(file), config.database);
+  config.outbox = resolve(dirname(file), config.outbox);
   config.clips.directory = resolve(dirname(file), config.clips.directory);
-  if (config.convex)
-    config.convex.secretPath = resolve(dirname(file), config.convex.secretPath);
+  config.convex.secretPath = resolve(dirname(file), config.convex.secretPath);
   for (const key of ["rtlFmPath", "multimonPath"] as const) {
     if (config.radio[key].includes("/") || config.radio[key].includes("\\"))
       config.radio[key] = resolve(dirname(file), config.radio[key]);
