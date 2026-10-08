@@ -23,6 +23,9 @@
     "format:check": "oxfmt --check",
     "start:sync": "SUBPAGER_NO_RADIO=1 bun src/index.ts"
   },
+  "dependencies": {
+    "firebase-admin": "^14.5.0"
+  },
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "oxfmt": "^0.59.0",

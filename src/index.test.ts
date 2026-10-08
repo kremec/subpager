@@ -13,7 +13,6 @@ test.skipIf(process.platform === "win32")(
     const clips = join(directory, "clips");
     const outbox = join(directory, "outbox");
     const preload = join(directory, "transport.ts");
-    const secret = join(directory, "receiver-secret.txt");
     const rtl = join(directory, "receiver");
     const decoder = join(directory, "decoder");
     const rtlPid = join(directory, "receiver.pid");
@@ -23,13 +22,12 @@ test.skipIf(process.platform === "win32")(
     let child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
     const output: Promise<string>[] = [];
     try {
-      await Bun.write(secret, "isolated-test-secret");
       await Bun.write(
         config,
         JSON.stringify({
           ...defaultConfig,
           outbox,
-          convex: { siteUrl: "https://test.convex.site", secretPath: secret },
+          firebase: defaultConfig.firebase,
           radio: {
             ...defaultConfig.radio,
             rtlFmPath: rtl,
@@ -43,15 +41,21 @@ test.skipIf(process.platform === "win32")(
           },
         }),
       );
-      // Every outbound request is intercepted inside this fake-radio subprocess.
+      // The SDK backend and jobs processor are isolated from all cloud access.
       await Bun.write(
         preload,
-        `globalThis.fetch = async (_url, options) => {
-        await Bun.write(${JSON.stringify(sending)}, options.body);
-        await Bun.sleep(2500);
-        await Bun.write(${JSON.stringify(acknowledgement)}, "ok");
-        return Response.json({inserted:1});
-      };`,
+        `import { mock } from 'bun:test';
+        import { FirebaseBackend } from ${JSON.stringify(join(import.meta.dir, "firebase.ts"))};
+        const backend = new FirebaseBackend({terminate:async()=>{}});
+        backend.ingest = async (messages) => {
+          await Bun.write(${JSON.stringify(sending)}, JSON.stringify({messages}));
+          await Bun.sleep(2500);
+          await Bun.write(${JSON.stringify(acknowledgement)}, "ok");
+        };
+        FirebaseBackend.open = async () => backend;
+        mock.module(${JSON.stringify(join(import.meta.dir, "processor.ts"))}, () => ({
+          FirestoreJobsProcessor: class { start() {} async stop() {} }
+        }));`,
       );
       await Bun.write(
         rtl,

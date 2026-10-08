@@ -2,7 +2,7 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig, initConfig } from "../src/config";
 import { RadioReceiver, replayWav, surveyGains } from "../src/radio";
 import { parseDecoderLine, type Page } from "../src/radio/decoder";
-import { ConvexClient, type RicUnit } from "../src/convex";
+import { FirebaseBackend, type RicUnit } from "../src/firebase";
 import { isObject, isRic } from "../src/radio/decoder";
 
 export async function setup(configureUsb = false) {
@@ -224,7 +224,7 @@ export async function replay(filePath?: string) {
 
 async function cloudClient() {
   const config = await loadConfig();
-  return { config, client: await ConvexClient.open(config.convex) };
+  return { client: await FirebaseBackend.open(config.firebase) };
 }
 
 export async function setMember(uid: string | undefined, approved: boolean) {
@@ -233,7 +233,11 @@ export async function setMember(uid: string | undefined, approved: boolean) {
       `Usage: bun run member:${approved ? "approve" : "revoke"} DEVICE_UID`,
     );
   const { client } = await cloudClient();
-  await client.setMember(uid, approved);
+  try {
+    await client.setMember(uid, approved);
+  } finally {
+    await client.db.terminate();
+  }
   console.log(
     `${approved ? "Approved" : "Revoked"} ${uid} for history and notifications.`,
   );
@@ -241,10 +245,14 @@ export async function setMember(uid: string | undefined, approved: boolean) {
 
 export async function listMembers() {
   const { client } = await cloudClient();
-  for (const device of await client.devices())
-    console.log(
-      `${device.uid}\t${device.approved ? "approved" : "revoked"}\t${device.expoPushToken ? "push enabled" : "push disabled"}`,
-    );
+  try {
+    for (const device of await client.devices())
+      console.log(
+        `${device.uid}\t${device.approved ? "approved" : "revoked"}\t${device.expoPushToken ? "push enabled" : "push disabled"}`,
+      );
+  } finally {
+    await client.db.terminate();
+  }
 }
 
 export async function syncRicUnits(filePath?: string) {
@@ -265,7 +273,11 @@ export async function syncRicUnits(filePath?: string) {
   if (new Set(units.map((unit) => unit.ric)).size !== units.length)
     throw new Error("Mappings contain duplicate RICs");
   const { client } = await cloudClient();
-  await client.syncRicUnits(units);
+  try {
+    await client.syncRicUnits(units);
+  } finally {
+    await client.db.terminate();
+  }
   console.log(`RIC mappings: synchronized ${units.length}.`);
 }
 

@@ -1,6 +1,6 @@
 # Subpager server
 
-Receive Slovenian POCSAG pages with a Nooelec NESDR SMArt. This Bun/TypeScript process decodes radio pages, keeps unsent pages in a small filesystem outbox and forwards them to Convex. Convex owns message history, normalization, deduplication, anonymous authentication, device approval, notifications and location extraction. There is no receiver database or HTTP API. `rtl_fm` demodulates FM and pinned `multimon-ng 1.6.1` decodes POCSAG. There are zero runtime npm dependencies.
+Receive Slovenian POCSAG pages with a Nooelec NESDR SMArt. This Bun/TypeScript process decodes radio pages, keeps unsent pages in a small filesystem outbox and commits them to Firestore. Firebase Auth provides anonymous identities. Firestore owns message history, device approval and durable push/location jobs; this process uploads messages and handles those jobs independently. There is no receiver database or HTTP API. `rtl_fm` demodulates FM and pinned `multimon-ng 1.6.1` decodes POCSAG. The official Firebase Admin SDK is the only direct runtime dependency.
 
 ## Branches
 
@@ -58,7 +58,7 @@ cd ~/Projects/prod/subpager-server
 bun run start
 ```
 
-Keep that terminal open. Startup shows `Subpager Convex`, followed by `Receiver PCM resumed`; the second line confirms that audio samples arrived. Received calls print their reception UUID and RIC. Stop with Ctrl+C before disconnecting the receiver/antenna or running doctor, record or calibrate. Reconnect and run the same start command when ready. Config changes require a restart. There is no local listener to probe; use the receiver's terminal output.
+Keep that terminal open. Startup shows `Subpager Firestore`, followed by `Receiver PCM resumed`; the second line confirms that audio samples arrived. Received calls print their reception UUID and RIC. Stop with Ctrl+C before disconnecting the receiver/antenna or running doctor, record or calibrate. Reconnect and run the same start command when ready. Config changes require a restart. There is no local listener to probe; use the receiver's terminal output.
 
 This MacBook currently has AC system sleep disabled, so `bun run start` is enough while plugged in with the lid open. If the power settings change, or you need to prevent idle sleep on battery, use temporary idle-sleep prevention:
 
@@ -74,31 +74,35 @@ The receiver watchdog restarts its native processes after 30 seconds without PCM
 
 Each reception gets a UUID before it is written to `outbox`, default `./data/outbox`. The receiver writes one private JSON file per unsent page, syncs its contents, renames it atomically and syncs the directory on POSIX systems. Windows uses the file sync and atomic rename because Node cannot sync directories there. Complete temporary files left before a rename are recovered at startup. Incomplete temporary files are renamed with an `.incomplete` suffix and their paths are logged. Their bytes are retained without blocking reception or valid queued uploads. A storage failure stops reception with an error.
 
-Uploads use batches of at most 100 pages, ordered by reception time with UUID ties. One upload runs at a time. Files are deleted only after a successful Convex response has been fully read. A connection failure, lost acknowledgement or restart retains the same UUID, so Convex can recognize retries without creating duplicate messages or notification jobs. Transient failures back off from 15 seconds to five minutes; malformed requests and authentication failures pause uploads for one hour. Shutdown waits for an upload already in flight. Unsent files are never removed by recording retention. Run only one receiver process against an outbox. When moving computers, copy pending outbox files before starting reception on the new computer.
+Uploads use batches of at most 100 pages, ordered by reception time with UUID ties. One upload runs at a time. Files are deleted only after all messages in the batch have committed to Firestore. A connection failure, lost acknowledgement or restart retains the same UUID, so Firestore transactions can recognize retries without creating duplicate messages or notification jobs. Transient failures back off from 15 seconds to five minutes; invalid data and authentication failures pause uploads for one hour. Shutdown waits for an upload already in flight. Unsent files are never removed by recording retention. Run only one receiver process against an outbox. When moving computers, copy pending outbox files before starting reception on the new computer.
 
-Decoded-call audio stays in `clips.directory` as WAV files with adjacent JSON metadata. Defaults retain eight seconds before decoding and four seconds after. Nearby calls can share a clip. `clips.maxFiles`, default 500, and `clips.maxBytes`, default 256 MiB, bound those recordings by deleting older clips and their metadata. `clips.continuous` remains false. Manual captures outside this generated clip naming scheme need manual cleanup. Audio is not uploaded to Convex. Existing SQLite history and recordings are retained in the migration backup, but this receiver version does not read or change them.
+Decoded-call audio stays in `clips.directory` as WAV files with adjacent JSON metadata. Defaults retain eight seconds before decoding and four seconds after. Nearby calls can share a clip. `clips.maxFiles`, default 500, and `clips.maxBytes`, default 256 MiB, bound those recordings by deleting older clips and their metadata. `clips.continuous` remains false. Manual captures outside this generated clip naming scheme need manual cleanup. Audio is not uploaded to Firestore. Existing SQLite history and recordings are retained in the migration backup, but this receiver version does not read or change them.
 
 Server output uses UTC timestamps and severity. Received-call logs include UUID, reception time, RIC, function, type and raw content. Known tuner startup diagnostics and continuous-clip success logs are suppressed. Repeated errors print at most once every five minutes; changed failures and recovery print immediately. Control characters are escaped and log lines are bounded.
 
-## Convex configuration
+## Firebase configuration
 
-Backend source lives in `subpager-app/convex`. Keep the `radio` and `clips` settings and configure the receiver's outbox and deployment HTTP actions URL:
+Keep the `radio` and `clips` settings and configure the receiver's outbox and Firebase project:
 
 ```json
 {
   "outbox": "./data/outbox",
-  "convex": {
-    "siteUrl": "https://your-deployment.convex.site",
-    "secretPath": "/private/path/receiver-secret.txt"
+  "firebase": {
+    "projectId": "your-firebase-project",
+    "serviceAccountPath": "/private/path/receiver-service-account.json"
   }
 }
 ```
 
-The private text file must contain the same secret as the deployment's `RECEIVER_SECRET` environment variable. Paths can be absolute or relative to `config.json`. Keep the secret out of the app and Git. Remove the former `database`, `api`, `firebase`, `dedupeSeconds`, `pushMaxAgeSeconds` and `location` options; old configurations fail clearly. The receiver requires outbound internet access only, with no domain, tunnel or inbound port.
+Download a service account JSON from Firebase project settings, then store it outside Git with private file permissions. Its project must match `projectId`. Paths can be absolute or relative to `config.json`. Remove the former `database`, `api`, `convex`, `dedupeSeconds`, `pushMaxAgeSeconds` and `location` options. The receiver needs outbound internet access only, with no domain, tunnel or inbound port. Enable anonymous Firebase Auth and deploy the app's Firestore security rules separately.
 
-The ingest request contains `sourceId`, reception timestamp, RIC, function, type and raw content. Convex stores the message and queues notification/location work independently. It owns the deduplication window and notification expiry. The receiver does not poll devices, send notifications, call OpenAI or retain uploaded history. Configure `OPENAI_API_KEY` and optional enhanced Expo push credentials on the Convex deployment.
+Each page is normalized and stored in a Firestore transaction. Matching repeats within 30 seconds of the original canonical message are retained with `duplicateOf`, without creating another push or model job. Only canonical messages less than five minutes old queue notifications for approved members with a push token. Empty and tone pages skip location inference. Message writes commit independently of push and OpenAI calls, so model latency does not delay the live feed or notifications.
 
-The app silently creates a Convex anonymous identity. Approve the device ID shown in its settings:
+`pushJobs` and `locationJobs` are private Firestore collections. The process listens for active jobs rather than repeatedly reading them on a timer. Persistent retry times and fenced leases allow unfinished jobs to resume after a restart. Location results are saved before publication, then copied to the canonical message and its repeats. Expo tokens that are no longer valid are cleared only if the device still has the same token and update time. Run one receiver/job processor for this project.
+
+Add `OPENAI_API_KEY` to the receiver's ignored `.env` file to enable location extraction. Bun loads `.env` automatically. Optional `EXPO_ACCESS_TOKEN` enables enhanced Expo push security. Keep both values out of Git and restart the receiver after changing them. Missing model credentials do not block reception, message upload or push processing.
+
+The app silently creates a Firebase anonymous identity. Approve the device ID shown in its settings:
 
 ```sh
 bun run member:approve DEVICE_UID
@@ -106,17 +110,17 @@ bun run member:revoke DEVICE_UID
 bun run member:list
 ```
 
-Old Firebase IDs do not transfer approval to a new identity. Reinstalling or clearing app data can create an identity that needs approval again. Revocation stops cloud reads and future notifications. Notifications already submitted to Expo cannot be recalled; an offline phone can keep cached history until it reconnects and receives revocation. Firebase is used only for Expo's Android FCM transport.
+Approval is stored in `members/{uid}`; push tokens are stored separately in `devices/{uid}`. Reinstalling or clearing app data can create an identity that needs approval again. Revocation stops cloud reads and future notifications. Notifications already submitted to Expo cannot be recalled; an offline phone can keep cached history until it reconnects and receives revocation. Firebase Cloud Messaging remains Expo's Android transport.
 
 ### RIC unit mappings
 
-Edit mappings directly in Convex, or publish a complete JSON array with `bun run ric:sync FILE`:
+Edit mappings directly in Firestore, or publish a complete JSON array with `bun run ric:sync FILE`:
 
 ```json
 [{ "ric": 90473, "unitName": "Unit name" }]
 ```
 
-The file replaces the complete cloud mapping list. An empty array clears it. RICs must be unique integers from 0 to 2097151 and names must be nonempty. The command validates the file before calling Convex. Phones subscribe to mappings independently, so a renamed unit updates existing history without rewriting messages.
+The file atomically replaces the complete cloud mapping list, with a maximum of 500 writes per synchronization. An empty array clears it. RICs must be unique integers from 0 to 2097151 and names must be nonempty. The command validates the file before writing to Firestore. Phones subscribe to mappings independently, so a renamed unit updates existing history without rewriting messages.
 
 ## Verified reception
 
@@ -126,11 +130,11 @@ A macOS 524288-byte stdout buffer previously delayed PCM by about 12 seconds. Th
 
 ## Message fields
 
-The receiver preserves decoded `content`, including rendered markers and raw line breaks. Convex removes trailing `<EOT>`/`<NUL>` padding and replaces rendered or raw LF/CR line breaks with spaces once, preserving Slovenian characters and other content. Each decoded recording's JSON metadata contains the raw calls; its WAV contains original audio for replay. A reception's `sourceId` UUID makes network retries idempotent. Convex assigns the message's native document ID.
+The receiver preserves decoded `content`, including rendered markers and raw line breaks. The receiver removes trailing `<EOT>`/`<NUL>` padding and replaces rendered or raw LF/CR line breaks with spaces once, preserving Slovenian characters and other content. Each decoded recording's JSON metadata contains the raw calls; its WAV contains original audio for replay. A reception's `sourceId` UUID makes network retries idempotent. New Firestore message document IDs are reception UUIDs; imported history keeps its existing document IDs.
 
 `function` is the transmitted two-bit function value, 0–3, often called A–D. Its meaning depends on pager programming; it is not a known incident priority or unit label. All three verified calls used 3. `type` is `alpha` for text, `numeric` for numeric payload, or `tone` for an address-only alert with no content. The configured decoder forces alphanumeric interpretation for local paging, so `type` and function are not interchangeable. See the [pinned decoder implementation](https://github.com/EliasOenal/multimon-ng/blob/1.6.1/pocsag.c).
 
-Numeric RIC remains the transmitted destination address and can filter history. Optional unit names come from the separately maintained Convex RIC mappings.
+Numeric RIC remains the transmitted destination address and can filter history. Optional unit names come from the separately maintained Firestore RIC mappings.
 
 ## Development checks
 
@@ -141,4 +145,4 @@ bun run format:check
 bun test
 ```
 
-Tests use temporary directories, generated inputs, simulated native processes and mocked upload responses. They verify atomic outbox recovery, stable retry UUIDs, upload ordering, replay isolation, recording boundaries and process cleanup. They do not prove RF coverage or real phone delivery and do not install drivers or start host services.
+Tests use temporary directories, generated inputs, simulated native processes and mocked SDK operations. They verify atomic outbox recovery, stable retry UUIDs, upload ordering, replay isolation, recording boundaries and process cleanup. They do not prove RF coverage or real phone delivery and do not install drivers or start host services.

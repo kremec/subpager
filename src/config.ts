@@ -7,7 +7,7 @@ export interface Config {
   radio: RadioConfig & { device: string };
   clips: Required<ClipConfig>;
   outbox: string;
-  convex: { siteUrl: string; secretPath: string };
+  firebase: { projectId: string; serviceAccountPath: string };
 }
 
 export const defaultConfig: Config = {
@@ -35,9 +35,9 @@ export const defaultConfig: Config = {
     continuous: false,
   },
   outbox: "./data/outbox",
-  convex: {
-    siteUrl: "https://your-deployment.convex.site",
-    secretPath: "./receiver-secret.txt",
+  firebase: {
+    projectId: "your-firebase-project",
+    serviceAccountPath: "./receiver-service-account.json",
   },
 };
 
@@ -55,15 +55,15 @@ export function validateConfig(value: unknown): asserts value is Config {
     !isObject(value) ||
     !isObject(value.radio) ||
     !isObject(value.clips) ||
-    !isObject(value.convex)
+    !isObject(value.firebase)
   ) {
     throw new Error(
-      "Config requires radio, clips, outbox and convex. Run bun run init for an example.",
+      "Config requires radio, clips, outbox and firebase. Run bun run init for an example.",
     );
   }
-  const { radio, clips, convex } = value;
+  const { radio, clips, firebase } = value;
   if (
-    value.firebase !== undefined ||
+    value.convex !== undefined ||
     value.database !== undefined ||
     value.api !== undefined ||
     value.dedupeSeconds !== undefined ||
@@ -71,17 +71,15 @@ export function validateConfig(value: unknown): asserts value is Config {
     value.location !== undefined
   )
     throw new Error(
-      "Remove legacy database, api, firebase, dedupe, push and location options; Convex owns these",
+      "Remove legacy database, api and convex options; use the Firebase receiver configuration",
     );
   if (
-    typeof convex.siteUrl !== "string" ||
-    !/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.convex\.site$/.test(
-      convex.siteUrl,
-    ) ||
-    typeof convex.secretPath !== "string" ||
-    !convex.secretPath
+    typeof firebase.projectId !== "string" ||
+    !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(firebase.projectId) ||
+    typeof firebase.serviceAccountPath !== "string" ||
+    !firebase.serviceAccountPath
   )
-    throw new Error("Convex requires an HTTPS convex.site URL and secretPath");
+    throw new Error("Firebase requires projectId and serviceAccountPath");
   if (
     !numberIn(radio.frequencyHz, 24000000, 1766000000) ||
     typeof radio.device !== "string" ||
@@ -120,7 +118,10 @@ export async function loadConfig(
   validateConfig(config);
   config.outbox = resolve(dirname(file), config.outbox);
   config.clips.directory = resolve(dirname(file), config.clips.directory);
-  config.convex.secretPath = resolve(dirname(file), config.convex.secretPath);
+  config.firebase.serviceAccountPath = resolve(
+    dirname(file),
+    config.firebase.serviceAccountPath,
+  );
   for (const key of ["rtlFmPath", "multimonPath"] as const) {
     if (config.radio[key].includes("/") || config.radio[key].includes("\\"))
       config.radio[key] = resolve(dirname(file), config.radio[key]);

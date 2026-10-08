@@ -1,19 +1,24 @@
 import { loadConfig } from "./config";
 import { RadioReceiver } from "./radio";
 import { Outbox } from "./outbox";
-import { ConvexClient, ConvexWorker } from "./convex";
+import { FirebaseBackend, FirebaseWorker } from "./firebase";
+import { FirestoreJobsProcessor } from "./processor";
 import { createErrorReporter, logError, logInfo } from "./log";
 
 async function main() {
   const config = await loadConfig();
   const noRadio = process.env.SUBPAGER_NO_RADIO === "1";
-  const client = await ConvexClient.open(config.convex);
+  const client = await FirebaseBackend.open(config.firebase);
   const outbox = new Outbox(config.outbox);
-  const worker = new ConvexWorker(outbox, client);
+  const worker = new FirebaseWorker(outbox, client);
+  const processor = new FirestoreJobsProcessor(client.db, {
+    openaiApiKey: process.env.OPENAI_API_KEY,
+    expoAccessToken: process.env.EXPO_ACCESS_TOKEN,
+  });
   let receiver: RadioReceiver | undefined;
   let stopping = false;
   let delivery = Promise.resolve();
-  const reportCloud = createErrorReporter("Convex sync");
+  const reportCloud = createErrorReporter("Firestore sync");
   const reportReceiver = createErrorReporter("Receiver");
   const reportRadioLog = createErrorReporter("Radio diagnostic");
   const tick = () => {
@@ -22,12 +27,15 @@ async function main() {
   };
   const timer = setInterval(tick, 1000);
   logInfo(
-    `Subpager Convex: ${client.siteUrl}. Radio: ${noRadio ? "disabled" : config.radio.frequencyHz}; outbox=${config.outbox}`,
+    `Subpager Firestore: ${config.firebase.projectId}. Radio: ${noRadio ? "disabled" : config.radio.frequencyHz}; outbox=${config.outbox}`,
   );
   const cleanup = async () => {
     clearInterval(timer);
+    const jobsStopping = processor.stop();
     await receiver?.stop();
     await delivery;
+    await jobsStopping;
+    await client.db.terminate();
   };
   const stop = async (exitCode = 0) => {
     if (stopping) return;
@@ -42,6 +50,7 @@ async function main() {
   process.once("SIGTERM", () => {
     void stop();
   });
+  processor.start();
   tick();
   if (!noRadio) {
     receiver = new RadioReceiver({

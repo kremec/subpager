@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConvexClient, ConvexWorker } from "./convex";
+import { FirebaseWorker } from "./firebase";
 import { Outbox } from "./outbox";
 import type { Reception } from "./outbox";
 import type { Page } from "./radio/decoder";
@@ -83,33 +83,18 @@ test("lost acknowledgements retry the persisted UUID after restart and only then
   const reception = outbox.save(page());
   const calls: Reception[][] = [];
   let lost = true;
-  const client = new ConvexClient(
-    "https://test.convex.site",
-    "isolated-secret",
-    async (_url, options) => {
-      const body = JSON.parse(String(options.body)) as {
-        messages: Reception[];
-        notify: boolean;
-      };
-      calls.push(body.messages);
-      expect(body.notify).toBe(true);
-      if (lost)
-        return new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.error(new Error("acknowledgement lost"));
-            },
-          }),
-        );
-      return Response.json({ inserted: 0 });
+  const client = {
+    ingest: async (messages: Reception[]) => {
+      calls.push(messages);
+      if (lost) throw new Error("acknowledgement lost");
     },
-  );
-  let worker = new ConvexWorker(outbox, client);
+  };
+  let worker = new FirebaseWorker(outbox, client);
   await worker.tick();
   expect(outbox.pending()).toHaveLength(1);
   expect(worker.lastError).toBe("acknowledgement lost");
   outbox = new Outbox(directory);
-  worker = new ConvexWorker(outbox, client);
+  worker = new FirebaseWorker(outbox, client);
   lost = false;
   await worker.tick();
   expect(calls.map((messages) => messages[0]!.sourceId)).toEqual([
@@ -123,23 +108,21 @@ test("lost acknowledgements retry the persisted UUID after restart and only then
 test("singleflight upload preserves pages received while a batch is in flight", async () => {
   const outbox = new Outbox(temporary());
   outbox.save(page());
-  const pending = Promise.withResolvers<Response>();
+  const pending = Promise.withResolvers<void>();
   let calls = 0;
-  const client = new ConvexClient(
-    "https://test.convex.site",
-    "isolated-secret",
-    async () => {
+  const client = {
+    ingest: async () => {
       calls++;
-      return calls === 1 ? pending.promise : Response.json({ inserted: 1 });
+      if (calls === 1) await pending.promise;
     },
-  );
-  const worker = new ConvexWorker(outbox, client);
+  };
+  const worker = new FirebaseWorker(outbox, client);
   const first = worker.tick();
   expect(worker.tick()).toBe(first);
   const later = outbox.save(page(1));
   expect(calls).toBe(1);
   expect(outbox.pending()).toHaveLength(2);
-  pending.resolve(Response.json({ inserted: 1 }));
+  pending.resolve();
   await first;
   expect(outbox.pending().map((item) => item.reception.sourceId)).toEqual([
     later.sourceId,
@@ -154,20 +137,13 @@ test("upload batches preserve reception order and retries back off without delet
   for (let index = 119; index >= 0; index--) outbox.save(page(index));
   let fail = true;
   const calls: Reception[][] = [];
-  const client = new ConvexClient(
-    "https://test.convex.site",
-    "isolated-secret",
-    async (_url, options) => {
-      calls.push(
-        (JSON.parse(String(options.body)) as { messages: Reception[] })
-          .messages,
-      );
-      return fail
-        ? new Response(null, { status: 503 })
-        : Response.json({ inserted: 1 });
+  const client = {
+    ingest: async (messages: Reception[]) => {
+      calls.push(messages);
+      if (fail) throw new Error("temporarily unavailable");
     },
-  );
-  const worker = new ConvexWorker(outbox, client);
+  };
+  const worker = new FirebaseWorker(outbox, client);
   await worker.tick(0);
   await worker.tick(1000);
   expect(calls).toHaveLength(1);
