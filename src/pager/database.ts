@@ -1,76 +1,92 @@
-import { openDatabaseSync } from "expo-sqlite";
+import { deleteDatabaseSync, openDatabaseSync } from "expo-sqlite";
 
 import type { PagerMessage, RicUnit } from "@/pager/types";
 
-const database = openDatabaseSync("subpager-convex.db");
-const listeners = new Set<() => void>();
+let database: ReturnType<typeof openDatabaseSync> | undefined;
+const DATABASE_NAME = "subpager-cache.db";
 
-export function subscribeToMessages(listener: () => void) {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
+function getDatabase() {
+  if (!database) {
+    const opened = openDatabaseSync(DATABASE_NAME);
+    try {
+      opened.execSync(
+        `CREATE TABLE IF NOT EXISTS history (
+          slot INTEGER PRIMARY KEY CHECK (slot = 1),
+          uid TEXT NOT NULL,
+          messages TEXT NOT NULL,
+          units TEXT NOT NULL
+        );`,
+      );
+    } catch (error) {
+      opened.closeSync();
+      throw error;
+    }
+    database = opened;
+  }
+  return database;
 }
 
 export function initializeDatabase() {
-  database.execSync(
-    `PRAGMA journal_mode = WAL;
-     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, json TEXT NOT NULL);
-     CREATE TABLE IF NOT EXISTS ric_units (ric INTEGER PRIMARY KEY, unit_name TEXT NOT NULL);`,
+  getDatabase();
+}
+
+export function cachedApproval(uid: string) {
+  const database = getDatabase();
+  return (
+    database.getFirstSync("SELECT uid FROM history WHERE uid = ?", uid) !== null
   );
 }
 
-export function cacheMessages(messages: PagerMessage[]) {
-  if (messages.length === 0) return;
-  let changed = 0;
-  database.withTransactionSync(() => {
-    for (const message of messages)
-      changed += database.runSync(
-        `INSERT INTO messages (id, json) VALUES (?, ?)
-         ON CONFLICT(id) DO UPDATE SET json = excluded.json
-         WHERE messages.json <> excluded.json`,
-        message.id,
-        JSON.stringify(message),
-      ).changes;
+export function cacheApproval(uid: string, approved: boolean) {
+  const cache = getDatabase();
+  if (!approved) {
+    if (!cachedApproval(uid)) return;
+    try {
+      cache.runSync("DELETE FROM history WHERE uid = ?", uid);
+    } catch {
+      cache.closeSync();
+      database = undefined;
+      deleteDatabaseSync(DATABASE_NAME);
+    }
+    return;
+  }
+  if (cachedApproval(uid)) return;
+  cache.withTransactionSync(() => {
+    cache.runSync("DELETE FROM history");
+    cache.runSync(
+      "INSERT INTO history (slot, uid, messages, units) VALUES (1, ?, '[]', '[]')",
+      uid,
+    );
   });
-  if (changed > 0) for (const listener of listeners) listener();
 }
 
-export function cacheRicUnits(units: RicUnit[]) {
-  database.withTransactionSync(() => {
-    database.runSync("DELETE FROM ric_units");
-    for (const unit of units)
-      database.runSync(
-        "INSERT INTO ric_units (ric, unit_name) VALUES (?, ?)",
-        unit.ric,
-        unit.unitName,
-      );
-  });
-  for (const listener of listeners) listener();
+export function cachedHistory(uid: string) {
+  const database = getDatabase();
+  const row = database.getFirstSync<{ messages: string; units: string }>(
+    "SELECT messages, units FROM history WHERE uid = ?",
+    uid,
+  );
+  if (!row) return null;
+  return {
+    messages: JSON.parse(row.messages) as PagerMessage[],
+    units: JSON.parse(row.units) as RicUnit[],
+  };
 }
 
-export function cachedRicUnits(): Map<number, string> {
-  return new Map(
-    database
-      .getAllSync<RicUnit>(
-        "SELECT ric, unit_name AS unitName FROM ric_units ORDER BY ric",
-      )
-      .map((unit) => [unit.ric, unit.unitName]),
+export function cacheMessages(uid: string, messages: PagerMessage[]) {
+  const database = getDatabase();
+  database.runSync(
+    "UPDATE history SET messages = ? WHERE uid = ?",
+    JSON.stringify(messages),
+    uid,
   );
 }
 
-export function cachedMessages(): PagerMessage[] {
-  return database
-    .getAllSync<{ json: string }>(
-      "SELECT json FROM messages ORDER BY json_extract(json, '$.receivedAt') DESC, id DESC",
-    )
-    .map((row) => JSON.parse(row.json) as PagerMessage);
-}
-
-export function clearMessages() {
-  database.withTransactionSync(() => {
-    database.runSync("DELETE FROM messages");
-    database.runSync("DELETE FROM ric_units");
-  });
-  for (const listener of listeners) listener();
+export function cacheRicUnits(uid: string, units: RicUnit[]) {
+  const database = getDatabase();
+  database.runSync(
+    "UPDATE history SET units = ? WHERE uid = ?",
+    JSON.stringify(units),
+    uid,
+  );
 }

@@ -41,13 +41,6 @@ const receiver = httpAction(async (ctx, request) => {
           body as { messages: PagerMessage[]; notify: boolean },
         ),
       );
-    if (path === "/receiver/location")
-      return Response.json(
-        await ctx.runMutation(
-          internal.receiver.location,
-          body as { id: number; location: string | null },
-        ),
-      );
     if (path === "/receiver/ric-units")
       return Response.json(
         await ctx.runMutation(
@@ -90,7 +83,7 @@ const receiver = httpAction(async (ctx, request) => {
   }
 });
 
-for (const path of ["ingest", "location", "ric-units", "members"])
+for (const path of ["ingest", "ric-units", "members"])
   http.route({ path: `/receiver/${path}`, method: "POST", handler: receiver });
 http.route({ path: "/receiver/devices", method: "GET", handler: receiver });
 export default http;

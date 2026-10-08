@@ -21,7 +21,7 @@ Notifications.setNotificationHandler({
 });
 
 export function useNotifications() {
-  const { connection, refresh, pushStatus, setPushStatus } = useConnection();
+  const { connection, pushStatus, setPushStatus } = useConnection();
   const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const response = Notifications.useLastNotificationResponse();
@@ -114,11 +114,9 @@ export function useNotifications() {
     void register();
     const appState = AppState.addEventListener("change", (state) => {
       if (state === "active") {
-        refresh();
         void register();
       }
     });
-    const received = Notifications.addNotificationReceivedListener(refresh);
     const tokenChanged = Notifications.addPushTokenListener((token) => {
       // Fetching the native token here would emit another token event.
       void register(token);
@@ -126,10 +124,9 @@ export function useNotifications() {
     return () => {
       cancelled = true;
       appState.remove();
-      received.remove();
       tokenChanged.remove();
     };
-  }, [connection, isAuthenticated, refresh, setPushStatus]);
+  }, [connection, isAuthenticated, setPushStatus]);
 
   return pushStatus;
 }

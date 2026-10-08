@@ -12,11 +12,27 @@ export default defineSchema({
     expoPushToken: v.optional(v.string()),
     tokenVersion: v.number(),
   }).index("by_user", ["userId"]),
-  messages: defineTable(messageFields).index("by_received_at", ["receivedAt"]),
-  receiverMessages: defineTable({
-    receiverId: v.number(),
-    messageId: v.id("messages"),
-  }).index("by_receiverId", ["receiverId"]),
+  messages: defineTable({
+    ...messageFields,
+    sourceId: v.string(),
+    enrichment: v.optional(
+      v.object({
+        state: v.union(
+          v.literal("pending"),
+          v.literal("running"),
+          v.literal("failed"),
+        ),
+        attempt: v.number(),
+        failures: v.optional(v.number()),
+        nextAttempt: v.number(),
+        error: v.optional(v.string()),
+      }),
+    ),
+  })
+    .index("by_received_at", ["receivedAt"])
+    .index("by_source", ["sourceId"])
+    .index("by_call", ["ric", "function", "type", "content", "receivedAt"])
+    .index("by_duplicate", ["duplicateOf"]),
   ricUnits: defineTable({ ric: v.number(), unitName: v.string() }).index(
     "by_ric",
     ["ric"],

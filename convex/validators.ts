@@ -11,9 +11,12 @@ export const messageFields = {
 };
 
 export const messageValidator = v.object({
-  ...messageFields,
-  id: v.number(),
-  duplicateOf: v.union(v.number(), v.null()),
+  sourceId: v.string(),
+  receivedAt: messageFields.receivedAt,
+  ric: messageFields.ric,
+  function: messageFields.function,
+  type: messageFields.type,
+  content: messageFields.content,
 });
 export type PagerMessage = Infer<typeof messageValidator>;
 export const unitValidator = v.object({

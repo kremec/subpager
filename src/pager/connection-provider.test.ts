@@ -1,38 +1,40 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import type { EffectCallback, ReactElement } from "react";
+import type { DependencyList, EffectCallback, ReactElement } from "react";
 
-interface SavedAccess {
+interface DeviceAccess {
   uid: string;
   approved: boolean;
 }
-type State = SavedAccess | string | number | boolean | null;
+type State = DeviceAccess | string | number | boolean | null;
 interface AccessContext {
   uid: string | null;
   approved: boolean;
   ready: boolean;
+  error: string | null;
   hasAccess: (uid: string) => boolean;
 }
 
 const react = await import("react");
 const states: State[] = [];
-const refs: { current: string | boolean | Promise<void> | null }[] = [];
+const refs: { current: string | boolean | null }[] = [];
 const effects: EffectCallback[] = [];
-const layouts: EffectCallback[] = [];
+const layouts: { effect: EffectCallback; dependencies?: DependencyList }[] = [];
+const previousLayouts: (DependencyList | undefined)[] = [];
 let stateIndex = 0;
 let refIndex = 0;
 let cleanup: (() => void) | undefined;
 let token: string | null;
 let loading = false;
 let backendAuthenticated = true;
-let saved: SavedAccess | null;
-let currentDevice: SavedAccess | null | undefined;
+let currentDevice: DeviceAccess | null | undefined;
+let queryFailure: Error | undefined;
 let update: (() => void) | undefined;
-let cleared = 0;
 let dismissed = 0;
 let signIns = 0;
 let registrations = 0;
-let holdApprovalWrite: (() => Promise<void>) | undefined;
-const persisted: SavedAccess[] = [];
+const errors: string[] = [];
+let cachedUid: string | null = null;
+let cacheFailure = false;
 
 mock.module("react", () => ({
   ...react,
@@ -47,13 +49,14 @@ mock.module("react", () => ({
       },
     ];
   },
-  useRef: <T extends string | boolean | Promise<void> | null>(initial: T) => {
+  useRef: <T extends string | boolean | null>(initial: T) => {
     const index = refIndex++;
     refs[index] ??= { current: initial };
     return refs[index] as { current: T };
   },
   useEffect: (effect: EffectCallback) => effects.push(effect),
-  useLayoutEffect: (effect: EffectCallback) => layouts.push(effect),
+  useLayoutEffect: (effect: EffectCallback, dependencies?: DependencyList) =>
+    layouts.push({ effect, dependencies }),
   useMemo: <T>(callback: () => T) => callback(),
   useCallback: <T>(callback: T) => callback,
 }));
@@ -75,32 +78,19 @@ mock.module("@convex-dev/auth/react", () => ({
 mock.module("convex/react", () => ({
   useConvexAuth: () => ({ isAuthenticated: backendAuthenticated }),
 }));
-mock.module("expo-secure-store", () => ({
-  getItemAsync: async () => saved && JSON.stringify(saved),
-  setItemAsync: async (_key: string, value: string) => {
-    const next = JSON.parse(value) as SavedAccess;
-    if (next.approved) await holdApprovalWrite?.();
-    saved = next;
-    persisted.push(saved);
-  },
-}));
 mock.module("expo-notifications", () => ({
   dismissAllNotificationsAsync: async () => {
     dismissed++;
   },
   clearLastNotificationResponseAsync: async () => {},
 }));
-mock.module("@/pager/database", () => ({
-  initializeDatabase: () => {},
-  clearMessages: () => {
-    cleared++;
-  },
-}));
 mock.module("@/pager/convex", () => ({
   getConvex: () => ({
-    url: "https://test.convex.cloud",
     watchQuery: () => ({
-      localQueryResult: () => currentDevice,
+      localQueryResult: () => {
+        if (queryFailure) throw queryFailure;
+        return currentDevice;
+      },
       onUpdate: (callback: () => void) => {
         update = callback;
         return () => {
@@ -113,7 +103,19 @@ mock.module("@/pager/convex", () => ({
     },
   }),
 }));
-mock.module("@/components/ui/toast", () => ({ showErrorToast: () => {} }));
+mock.module("@/pager/database", () => ({
+  initializeDatabase: () => {
+    if (cacheFailure) throw new Error("Cache unavailable");
+  },
+  cachedApproval: (uid: string) => uid === cachedUid,
+  cacheApproval: (uid: string, approved: boolean) => {
+    if (cacheFailure) throw new Error("Cache unavailable");
+    cachedUid = approved ? uid : null;
+  },
+}));
+mock.module("@/components/ui/toast", () => ({
+  showErrorToast: (message: string) => errors.push(message),
+}));
 
 const { ConnectionProvider } = await import("@/pager/connection-provider");
 
@@ -129,121 +131,135 @@ function render() {
   const element = ConnectionProvider({ children: null }) as ReactElement<{
     value: AccessContext;
   }>;
-  for (const effect of layouts) effect();
+  layouts.forEach((layout, index) => {
+    const previous = previousLayouts[index];
+    if (
+      !layout.dependencies ||
+      !previous ||
+      layout.dependencies.some(
+        (value, position) => !Object.is(value, previous[position]),
+      )
+    )
+      layout.effect();
+    previousLayouts[index] = layout.dependencies;
+  });
   return element.props.value;
 }
 async function initialize() {
   render();
   effects[0]!();
   const result = effects[1]!();
+  if (typeof result === "function") cleanup = result;
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  render();
-  const watchCleanup = effects[2]!();
-  cleanup = () => {
-    if (typeof result === "function") result();
-    if (typeof watchCleanup === "function") watchCleanup();
-  };
   return render();
 }
 
 beforeEach(() => {
   states.length = 0;
   refs.length = 0;
-  token = identity("approved-device");
+  previousLayouts.length = 0;
+  token = identity("test-device");
   loading = false;
   backendAuthenticated = true;
-  saved = { uid: "approved-device", approved: true };
   currentDevice = undefined;
-  cleared = 0;
+  queryFailure = undefined;
   dismissed = 0;
   signIns = 0;
   registrations = 0;
-  holdApprovalWrite = undefined;
-  persisted.length = 0;
+  errors.length = 0;
+  cachedUid = null;
+  cacheFailure = false;
 });
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
 });
 
-test("auth storage loading does not erase offline history", async () => {
+test("auth token loading waits before sign-in or device registration", async () => {
   loading = true;
   token = null;
   const access = await initialize();
   expect(access.ready).toBe(false);
-  expect(cleared).toBe(0);
   expect(signIns).toBe(0);
+  expect(registrations).toBe(0);
 });
 
-test("cached approval opens offline history only for the same identity", async () => {
-  backendAuthenticated = false;
+test("an identity without cached approval requires live approval", async () => {
   const access = await initialize();
   expect(access.ready).toBe(true);
+  expect(access.uid).toBe("test-device");
+  expect(access.approved).toBe(false);
+  currentDevice = { uid: "test-device", approved: true };
+  update?.();
+  expect(render().approved).toBe(true);
+  expect(render().hasAccess("test-device")).toBe(true);
+});
+
+test("offline access requires the same previously approved identity", async () => {
+  backendAuthenticated = false;
+  cachedUid = "test-device";
+  const access = await initialize();
   expect(access.approved).toBe(true);
-  expect(access.hasAccess("approved-device")).toBe(true);
-  expect(cleared).toBe(0);
+  expect(access.hasAccess("test-device")).toBe(true);
+  expect(registrations).toBe(0);
+  token = identity("new-device");
+  render();
+  expect(render().approved).toBe(false);
+  expect(render().hasAccess("test-device")).toBe(false);
+});
+
+test("backend authentication gates device registration and approval", async () => {
+  backendAuthenticated = false;
+  const access = await initialize();
+  expect(access.approved).toBe(false);
   expect(update).toBeUndefined();
   expect(registrations).toBe(0);
 });
 
-test("server authentication starts cloud registration without blocking cached access", async () => {
-  backendAuthenticated = false;
-  await initialize();
-  backendAuthenticated = true;
-  expect(render().approved).toBe(true);
-  const stop = effects[2]!();
-  expect(registrations).toBe(1);
-  expect(cleared).toBe(0);
-  if (typeof stop === "function") stop();
-});
-
-test("null or another identity from the server is not evidence of revocation", async () => {
+test("null or another identity cannot grant or revoke approval", async () => {
+  currentDevice = { uid: "test-device", approved: true };
   await initialize();
   currentDevice = null;
   update?.();
   currentDevice = { uid: "other-device", approved: false };
   update?.();
-  expect(render().hasAccess("approved-device")).toBe(true);
-  expect(render().approved).toBe(true);
-  expect(cleared).toBe(0);
+  expect(render().hasAccess("test-device")).toBe(true);
   expect(dismissed).toBe(0);
-  expect(persisted).toEqual([]);
 });
 
-test("new anonymous identities clear cached history and require approval", async () => {
-  token = identity("new-device");
-  const access = await initialize();
-  expect(access.approved).toBe(false);
-  expect(access.hasAccess("approved-device")).toBe(false);
-  expect(cleared).toBe(1);
-});
-
-test("revocation blocks access and erases history and pending notifications", async () => {
+test("revocation immediately blocks history and dismisses notifications", async () => {
+  currentDevice = { uid: "test-device", approved: true };
   await initialize();
-  currentDevice = { uid: "approved-device", approved: false };
+  currentDevice = { uid: "test-device", approved: false };
   update?.();
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   const access = render();
   expect(access.approved).toBe(false);
-  expect(access.hasAccess("approved-device")).toBe(false);
-  expect(cleared).toBe(1);
+  expect(access.hasAccess("test-device")).toBe(false);
   expect(dismissed).toBe(1);
-  expect(persisted).toEqual([{ uid: "approved-device", approved: false }]);
+  expect(cachedUid).toBeNull();
 });
 
 test("identity changes and cleanup reject late approval callbacks", async () => {
+  currentDevice = { uid: "test-device", approved: true };
   await initialize();
   const lateUpdate = update;
   token = identity("new-device");
-  currentDevice = { uid: "approved-device", approved: true };
   const access = render();
   lateUpdate?.();
-  expect(access.hasAccess("approved-device")).toBe(false);
-  expect(persisted).toEqual([]);
+  expect(access.approved).toBe(false);
+  expect(access.hasAccess("test-device")).toBe(false);
   cleanup?.();
   cleanup = undefined;
   lateUpdate?.();
-  expect(persisted).toEqual([]);
+  expect(render().approved).toBe(false);
+});
+
+test("approval query failures become toasts while history remains blocked", async () => {
+  queryFailure = new Error("Approval lookup failed");
+  const access = await initialize();
+  effects[2]!();
+  expect(access.approved).toBe(false);
+  expect(errors).toEqual(["Approval lookup failed"]);
 });
 
 test("unreadable persisted identities show a recoverable error instead of waiting forever", async () => {
@@ -254,22 +270,12 @@ test("unreadable persisted identities show a recoverable error instead of waitin
   expect(access.approved).toBe(false);
 });
 
-test("a slow approval write cannot overwrite a later persisted revocation", async () => {
+test("unavailable offline storage does not block live approved access", async () => {
+  cacheFailure = true;
+  currentDevice = { uid: "test-device", approved: true };
   await initialize();
-  let finish = () => {};
-  holdApprovalWrite = () =>
-    new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-  currentDevice = { uid: "approved-device", approved: true };
-  update?.();
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  currentDevice = { uid: "approved-device", approved: false };
-  update?.();
-  expect(render().hasAccess("approved-device")).toBe(false);
-  expect(persisted).toEqual([]);
-  finish();
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  expect(persisted.map((access) => access.approved)).toEqual([true, false]);
-  expect(saved?.approved).toBe(false);
+  expect(render().approved).toBe(true);
+  expect(render().hasAccess("test-device")).toBe(true);
+  expect(errors).toContain("Could not read saved device approval.");
+  expect(errors).toContain("Could not save device approval.");
 });

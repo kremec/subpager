@@ -12,13 +12,7 @@ import { useConvexAuth } from "convex/react";
 import { showErrorToast } from "@/components/ui/toast";
 import { useConnection } from "@/pager/connection-provider";
 import { watchMessages, watchRicUnits } from "@/pager/convex";
-import {
-  cachedMessages,
-  cachedRicUnits,
-  cacheMessages,
-  cacheRicUnits,
-  subscribeToMessages,
-} from "@/pager/database";
+import { cachedHistory, cacheMessages, cacheRicUnits } from "@/pager/database";
 import type { PagerMessage } from "@/pager/types";
 import { HistoryContext } from "@/pager/use-message-history";
 
@@ -27,9 +21,9 @@ interface HistoryProviderProps {
 }
 
 export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
-  const { connection, hasAccess, ready } = useConnection();
+  const { connection, hasAccess } = useConnection();
   const { isAuthenticated } = useConvexAuth();
-  const uid = ready ? connection?.uid : undefined;
+  const uid = connection?.uid;
   const [messages, setMessages] = useState<PagerMessage[]>([]);
   const [unitNames, setUnitNames] = useState<ReadonlyMap<number, string>>(
     new Map(),
@@ -41,26 +35,22 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
   useEffect(() => {
     let cancelled = false;
     const allowed = () => !cancelled && !!uid && hasAccess(uid);
-    const update = () => {
+    let saved: ReturnType<typeof cachedHistory> = null;
+    if (uid && hasAccess(uid)) {
       try {
-        const nextMessages = allowed() ? cachedMessages() : [];
-        const nextUnitNames = allowed() ? cachedRicUnits() : new Map();
-        setMessages(nextMessages);
-        setUnitNames(nextUnitNames);
-        return nextMessages.length;
+        saved = cachedHistory(uid);
       } catch {
         showErrorToast("Could not read saved history.");
-        return null;
       }
-    };
-    // Read the external SQLite cache when access changes.
-    const cachedCount = update();
-    // Reset status while attaching listeners for the current device.
+    }
     /* oxlint-disable react/set-state-in-effect */
-    setLoading(!!uid && isAuthenticated && cachedCount === 0);
+    setMessages(saved?.messages ?? []);
+    setUnitNames(
+      new Map(saved?.units.map((unit) => [unit.ric, unit.unitName])),
+    );
+    setLoading(!!uid && isAuthenticated && !saved?.messages.length);
     /* oxlint-enable react/set-state-in-effect */
-    const unsubscribeCache = subscribeToMessages(update);
-    if (!uid || !isAuthenticated) return unsubscribeCache;
+    if (!uid || !isAuthenticated) return;
 
     let messagesFailed = false;
     let unitsFailed = false;
@@ -72,12 +62,13 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
       unsubscribeMessages = watchMessages(
         (next) => {
           if (!allowed()) return;
+          setMessages(next);
+          setLoading(false);
           try {
-            cacheMessages(next);
+            cacheMessages(uid, next);
           } catch {
             showErrorToast("Could not save message history.");
           }
-          setLoading(false);
         },
         (error) => {
           if (cancelled) return;
@@ -94,8 +85,9 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
       unsubscribeUnits = watchRicUnits(
         (next) => {
           if (!allowed()) return;
+          setUnitNames(new Map(next.map((unit) => [unit.ric, unit.unitName])));
           try {
-            cacheRicUnits(next);
+            cacheRicUnits(uid, next);
           } catch {
             showErrorToast("Could not save unit names.");
           }
@@ -117,7 +109,6 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
     });
     return () => {
       cancelled = true;
-      unsubscribeCache();
       unsubscribeMessages();
       unsubscribeUnits();
       appState.remove();
@@ -127,8 +118,8 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
   return (
     <HistoryContext.Provider
       value={{
-        messages,
-        unitNames,
+        messages: uid && hasAccess(uid) ? messages : [],
+        unitNames: uid && hasAccess(uid) ? unitNames : new Map(),
         loading,
         refresh,
       }}

@@ -11,7 +11,13 @@ export const list = query({
       .order("desc")
       .collect();
     return messages.map((document) => {
-      const { _id, _creationTime, ...message } = document;
+      const {
+        _id,
+        _creationTime,
+        sourceId: _sourceId,
+        enrichment: _enrichment,
+        ...message
+      } = document;
       return { ...message, id: _id };
     });
   },

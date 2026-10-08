@@ -68,7 +68,6 @@ mock.module("expo-notifications", () => ({
     await tokenLookup?.();
     return { data: `ExpoPushToken[${token.data}]` };
   },
-  addNotificationReceivedListener: () => ({ remove: () => {} }),
   addPushTokenListener: (listener: (token: DevicePushToken) => void) => {
     tokenListener = listener;
     return { remove: () => (tokenListener = undefined) };
@@ -77,7 +76,6 @@ mock.module("expo-notifications", () => ({
 mock.module("@/pager/connection-provider", () => ({
   useConnection: () => ({
     connection: approved ? { uid: "test-device" } : null,
-    refresh: () => {},
     pushStatus: "",
     setPushStatus: () => {},
   }),
@@ -150,7 +148,18 @@ test("native token lookup terminates and unchanged tokens write only once", asyn
   expect(failures).toEqual([]);
 });
 
-test("cached approval delays push registration until server authentication", async () => {
+test("push registration waits for an approved connection", async () => {
+  approved = false;
+  await mount();
+  expect(conversionCalls).toBe(0);
+  expect(writes).toEqual([]);
+  approved = true;
+  effects.length = 0;
+  await mount();
+  expect(writes).toEqual(["ExpoPushToken[first]"]);
+});
+
+test("offline cached approval delays push registration until server authentication", async () => {
   authenticated = false;
   await mount();
   expect(conversionCalls).toBe(0);

@@ -2,11 +2,7 @@ import { ConvexError, v } from "convex/values";
 
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import {
-  internalMutation,
-  internalQuery,
-  type MutationCtx,
-} from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import {
   messageValidator,
   unitValidator,
@@ -17,49 +13,31 @@ function invalid(message: string): never {
   throw new ConvexError({ code: "INVALID_INPUT", message });
 }
 
-function checkLocation(content: string, location: string | null) {
-  if (
-    location !== null &&
-    (!location.trim() ||
-      location !== location.trim() ||
-      !content.includes(location))
-  ) {
-    invalid("Location must be an exact message substring");
-  }
+function normalizeContent(content: string) {
+  return (
+    content
+      .replace(/<CR><LF>|<(?:CR|LF)>|\r\n?|\n/g, " ")
+      // POCSAG payloads may end in rendered terminators or EOT/NUL bytes.
+      // oxlint-disable-next-line no-control-regex
+      .replace(/(?:<(?:EOT|NUL)>|[\x00\x04])+$/, "")
+  );
 }
 
 function checkMessage(message: PagerMessage) {
   if (
-    !Number.isSafeInteger(message.id) ||
-    message.id < 1 ||
+    !/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|legacy:[1-9][0-9]*)$/i.test(
+      message.sourceId,
+    ) ||
     !Number.isFinite(Date.parse(message.receivedAt)) ||
     !Number.isInteger(message.ric) ||
     message.ric < 0 ||
     message.ric > 2097151 ||
     !Number.isInteger(message.function) ||
     message.function < 0 ||
-    message.function > 3 ||
-    (message.duplicateOf !== null &&
-      (!Number.isSafeInteger(message.duplicateOf) || message.duplicateOf < 1))
+    message.function > 3
   ) {
     invalid("Invalid pager message");
   }
-  if (message.location !== undefined)
-    checkLocation(message.content, message.location);
-}
-
-async function findMessage(ctx: MutationCtx, receiverId: number) {
-  const mapping = await ctx.db
-    .query("receiverMessages")
-    .withIndex("by_receiverId", (q) => q.eq("receiverId", receiverId))
-    .unique();
-  if (mapping) {
-    const message = await ctx.db.get(mapping.messageId);
-    if (!message)
-      throw new Error("Receiver message mapping points to a missing message");
-    return message;
-  }
-  return null;
 }
 
 export const ingest = internalMutation({
@@ -70,46 +48,87 @@ export const ingest = internalMutation({
     const maxAge = Number(process.env.PUSH_MAX_AGE_SECONDS ?? 300);
     if (!Number.isFinite(maxAge) || maxAge <= 0)
       throw new Error("Invalid push max age configuration");
+    const dedupeSeconds = Number(process.env.DEDUPE_SECONDS ?? 30);
+    if (!Number.isFinite(dedupeSeconds) || dedupeSeconds < 0)
+      throw new Error("Invalid dedupe configuration");
     const devices = args.notify ? await ctx.db.query("devices").collect() : [];
     let inserted = 0;
-    for (const message of args.messages) {
-      checkMessage(message);
-      const {
-        id: receiverId,
-        duplicateOf: receiverDuplicateOf,
-        ...content
-      } = message;
-      const source =
-        receiverDuplicateOf === null
-          ? null
-          : await findMessage(ctx, receiverDuplicateOf);
-      if (receiverDuplicateOf !== null && !source)
-        invalid("Ingest the duplicate source before its repeated message");
-      const duplicateOf = source?._id ?? null;
-      const existing = await findMessage(ctx, receiverId);
+    for (const raw of args.messages) {
+      checkMessage(raw);
+      const message = {
+        ...raw,
+        receivedAt: new Date(raw.receivedAt).toISOString(),
+        content: normalizeContent(raw.content),
+      };
+      const existing = await ctx.db
+        .query("messages")
+        .withIndex("by_source", (q) => q.eq("sourceId", message.sourceId))
+        .unique();
       if (existing) {
         if (
           existing.receivedAt !== message.receivedAt ||
           existing.ric !== message.ric ||
           existing.function !== message.function ||
           existing.type !== message.type ||
-          existing.content !== message.content ||
-          existing.duplicateOf !== duplicateOf
+          normalizeContent(existing.content) !== message.content
         ) {
-          invalid(`Message ID ${message.id} already has different content`);
+          invalid(
+            `Source ID ${message.sourceId} already has different content`,
+          );
         }
-        if (existing.location === undefined && message.location !== undefined)
-          await ctx.db.patch(existing._id, { location: message.location });
         continue;
       }
+      const source =
+        dedupeSeconds > 0
+          ? await ctx.db
+              .query("messages")
+              .withIndex("by_call", (q) =>
+                q
+                  .eq("ric", message.ric)
+                  .eq("function", message.function)
+                  .eq("type", message.type)
+                  .eq("content", message.content)
+                  .gte(
+                    "receivedAt",
+                    new Date(
+                      Date.parse(message.receivedAt) - dedupeSeconds * 1000,
+                    ).toISOString(),
+                  )
+                  .lte("receivedAt", message.receivedAt),
+              )
+              .filter((q) => q.eq(q.field("duplicateOf"), null))
+              .order("desc")
+              .first()
+          : null;
+      const duplicateOf = source?._id ?? null;
+      const needsLocation =
+        duplicateOf === null &&
+        message.type !== "tone" &&
+        message.content.trim().length !== 0 &&
+        args.notify;
       const messageId = await ctx.db.insert("messages", {
-        ...content,
+        ...message,
         duplicateOf,
+        ...(source?.location !== undefined
+          ? { location: source.location }
+          : {}),
+        ...(needsLocation
+          ? {
+              enrichment: {
+                state: "pending" as const,
+                attempt: 0,
+                nextAttempt: now,
+              },
+            }
+          : {}),
       });
-      await ctx.db.insert("receiverMessages", { receiverId, messageId });
       inserted++;
+      if (needsLocation)
+        await ctx.scheduler.runAfter(0, internal.location.dispatch, {
+          messageId,
+        });
       const expiresAt = Date.parse(message.receivedAt) + maxAge * 1000;
-      if (message.duplicateOf !== null || expiresAt <= now) continue;
+      if (duplicateOf !== null || expiresAt <= now) continue;
       const jobIds: Id<"pushJobs">[] = [];
       for (const device of devices) {
         if (!device.approved || !device.expoPushToken) continue;
@@ -133,21 +152,6 @@ export const ingest = internalMutation({
       }
     }
     return { inserted };
-  },
-});
-
-export const location = internalMutation({
-  args: { id: v.number(), location: v.union(v.string(), v.null()) },
-  handler: async (ctx, args) => {
-    const message = await findMessage(ctx, args.id);
-    if (!message)
-      throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "Message not found",
-      });
-    checkLocation(message.content, args.location);
-    await ctx.db.patch(message._id, { location: args.location });
-    return { updated: true };
   },
 });
 

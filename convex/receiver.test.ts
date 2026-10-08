@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { convexTest } from "convex-test";
 
 import { api, internal } from "./_generated/api";
+import { parseLocation, readLocationResponse } from "./location";
 import schema from "./schema";
 import type { PagerMessage } from "./validators";
 
@@ -11,6 +12,7 @@ const modules = {
   "./messages.ts": () => import("./messages"),
   "./units.ts": () => import("./units"),
   "./receiver.ts": () => import("./receiver"),
+  "./location.ts": () => import("./location"),
   "./push.ts": () => import("./push"),
   "./http.ts": () => import("./http"),
 };
@@ -29,13 +31,12 @@ afterEach(() => timerSpy.mockRestore());
 
 function message(id = 1): PagerMessage {
   return {
-    id,
+    sourceId: `legacy:${id}`,
     receivedAt: new Date().toISOString(),
     ric: 790793,
     function: 3,
     type: "alpha",
-    content: "GORI V ŠOLI GOLO",
-    duplicateOf: null,
+    content: "GORI V ŠOLI GOLO" + (id === 1 ? "" : ` (${id})`),
   };
 }
 
@@ -120,8 +121,11 @@ test("import and ingest retries do not queue old or duplicate alerts; enrichment
   expect(await t.run((ctx) => ctx.db.query("pushJobs").collect())).toHaveLength(
     1,
   );
-  await t.mutation(internal.receiver.location, {
-    id: 2,
+  const enriched = (await identity.query(api.messages.list, {}))[0]!;
+  await t.mutation(internal.location.dispatch, { messageId: enriched.id });
+  await t.mutation(internal.location.complete, {
+    messageId: enriched.id,
+    attempt: 1,
     location: "ŠOLI GOLO",
   });
   await t.mutation(internal.receiver.ingest, {
@@ -135,8 +139,11 @@ test("import and ingest retries do not queue old or duplicate alerts; enrichment
     1,
   );
   await expect(
-    t.mutation(internal.receiver.location, { id: 2, location: "OŠ Golo" }),
-  ).rejects.toThrow("exact message substring");
+    t.mutation(internal.receiver.ingest, {
+      messages: [{ ...live, sourceId: "invalid" }],
+      notify: false,
+    }),
+  ).rejects.toThrow("Invalid pager message");
   await expect(
     t.mutation(internal.receiver.ingest, {
       messages: [{ ...live, content: "DIFFERENT" }],
@@ -149,7 +156,7 @@ test("native message IDs stay stable across receiver retries and duplicate refer
   const t = convexTest(schema, modules);
   const { identity } = await approvedDevice(t);
   const first = message(1);
-  const repeated = { ...first, id: 2, duplicateOf: 1 };
+  const repeated = { ...first, sourceId: "legacy:2" };
   await t.mutation(internal.receiver.ingest, {
     messages: [first, repeated],
     notify: false,
@@ -161,20 +168,216 @@ test("native message IDs stay stable across receiver retries and duplicate refer
     messages: [first, repeated],
     notify: true,
   });
-  await t.mutation(internal.receiver.location, { id: 2, location: "GOLO" });
   const latest = await identity.query(api.messages.list, {});
   expect(latest.map((entry) => entry.id)).toEqual(
     initial.map((entry) => entry.id),
   );
-  expect(latest[0]!.location).toBe("GOLO");
   expect(
-    await t.run((ctx) => ctx.db.query("receiverMessages").collect()),
-  ).toHaveLength(2);
+    latest.every((entry) => !("sourceId" in entry) && !("enrichment" in entry)),
+  ).toBe(true);
   const stored = await t.run((ctx) => ctx.db.query("messages").collect());
   expect(stored.every((entry) => !("id" in entry))).toBe(true);
   expect(await t.run((ctx) => ctx.db.query("pushJobs").collect())).toHaveLength(
     0,
   );
+});
+
+test("cloud dedupe normalizes markers and keeps the original fixed repeat window", async () => {
+  const t = convexTest(schema, modules);
+  await approvedDevice(t);
+  const first = message(1);
+  const startedAt = Date.parse(first.receivedAt);
+  await t.mutation(internal.receiver.ingest, {
+    messages: [
+      { ...first, content: "ŠOLA<LF>GOLO<EOT><NUL>" },
+      {
+        ...first,
+        sourceId: "legacy:2",
+        content: "ŠOLA GOLO",
+        receivedAt: new Date(startedAt + 20000).toISOString(),
+      },
+      {
+        ...first,
+        sourceId: "legacy:3",
+        content: "ŠOLA GOLO",
+        receivedAt: new Date(startedAt + 31000).toISOString(),
+      },
+      {
+        ...first,
+        sourceId: "legacy:4",
+        ric: first.ric + 1,
+        content: "ŠOLA GOLO",
+      },
+    ],
+    notify: true,
+  });
+  const rows = await t.run((ctx) =>
+    ctx.db.query("messages").withIndex("by_source").collect(),
+  );
+  const original = rows.find((entry) => entry.sourceId === "legacy:1")!;
+  expect(original.content).toBe("ŠOLA GOLO");
+  expect(rows.find((entry) => entry.sourceId === "legacy:2")?.duplicateOf).toBe(
+    original._id,
+  );
+  expect(
+    rows.find((entry) => entry.sourceId === "legacy:3")?.duplicateOf,
+  ).toBeNull();
+  expect(await t.run((ctx) => ctx.db.query("pushJobs").collect())).toHaveLength(
+    3,
+  );
+});
+
+function extractionResponse(location: string | null) {
+  const text = JSON.stringify({ location });
+  return new Response(
+    [
+      { type: "response.output_text.delta", delta: text },
+      { type: "response.output_text.done", text },
+      {
+        type: "response.completed",
+        response: { status: "completed", output: [] },
+      },
+    ]
+      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .join(""),
+  );
+}
+
+test("cloud extraction publishes one paid result to repeat rows without another push", async () => {
+  const t = convexTest(schema, modules);
+  await approvedDevice(t);
+  const first = message();
+  await t.mutation(internal.receiver.ingest, {
+    messages: [first, { ...first, sourceId: "legacy:2" }],
+    notify: true,
+  });
+  const canonical = (await t.run((ctx) =>
+    ctx.db
+      .query("messages")
+      .filter((q) => q.eq(q.field("duplicateOf"), null))
+      .first(),
+  ))!;
+  const previousKey = process.env.OPENAI_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = "isolated-test-key";
+  let requests = 0;
+  globalThis.fetch = Object.assign(
+    async () => {
+      requests++;
+      return extractionResponse("ŠOLI GOLO");
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+  try {
+    await t.mutation(internal.location.dispatch, { messageId: canonical._id });
+    await t.action(internal.location.extract, {
+      messageId: canonical._id,
+      attempt: 1,
+    });
+    await t.mutation(internal.location.recover, {
+      messageId: canonical._id,
+      attempt: 1,
+    });
+    await t.action(internal.location.extract, {
+      messageId: canonical._id,
+      attempt: 1,
+    });
+    expect(requests).toBe(1);
+    const completed = await t.run((ctx) => ctx.db.query("messages").collect());
+    expect(completed.every((entry) => entry.location === "ŠOLI GOLO")).toBe(
+      true,
+    );
+    expect(completed.every((entry) => entry.enrichment === undefined)).toBe(
+      true,
+    );
+    expect(
+      await t.run((ctx) => ctx.db.query("pushJobs").collect()),
+    ).toHaveLength(1);
+    await t.mutation(internal.receiver.ingest, {
+      messages: [{ ...first, sourceId: "legacy:3" }],
+      notify: true,
+    });
+    const repeated = await t.run((ctx) =>
+      ctx.db
+        .query("messages")
+        .withIndex("by_source", (q) => q.eq("sourceId", "legacy:3"))
+        .unique(),
+    );
+    expect(repeated?.location).toBe("ŠOLI GOLO");
+    expect(repeated?.enrichment).toBeUndefined();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+  }
+});
+
+test("failed extraction remains durable while pager push proceeds; stale claims cannot run", async () => {
+  const t = convexTest(schema, modules);
+  await approvedDevice(t);
+  await t.mutation(internal.receiver.ingest, {
+    messages: [message()],
+    notify: true,
+  });
+  const row = (await t.run((ctx) => ctx.db.query("messages").first()))!;
+  await t.mutation(internal.location.dispatch, { messageId: row._id });
+  await t.mutation(internal.location.failed, {
+    messageId: row._id,
+    attempt: 1,
+    error: "OpenAI HTTP 429",
+    status: 429,
+  });
+  const pending = await t.run((ctx) => ctx.db.get(row._id));
+  expect(pending?.enrichment?.state).toBe("pending");
+  expect(pending?.enrichment?.failures).toBe(0);
+  expect(pending!.enrichment!.nextAttempt - Date.now()).toBeGreaterThan(
+    3599000,
+  );
+  expect(await t.run((ctx) => ctx.db.query("pushJobs").collect())).toHaveLength(
+    1,
+  );
+  await t.run((ctx) =>
+    ctx.db.patch(row._id, {
+      enrichment: { ...pending!.enrichment!, nextAttempt: 0 },
+    }),
+  );
+  await t.mutation(internal.location.dispatch, { messageId: row._id });
+  expect(
+    await t.query(internal.location.job, { messageId: row._id, attempt: 1 }),
+  ).toBeNull();
+  await t.mutation(internal.location.complete, {
+    messageId: row._id,
+    attempt: 1,
+    location: "GOLO",
+  });
+  expect((await t.run((ctx) => ctx.db.get(row._id)))?.location).toBeUndefined();
+  await expect(
+    t.mutation(internal.location.complete, {
+      messageId: row._id,
+      attempt: 2,
+      location: "OŠ Golo",
+    }),
+  ).rejects.toThrow("exact source substring");
+  await t.mutation(internal.location.failed, {
+    messageId: row._id,
+    attempt: 2,
+    error: "Temporary network failure",
+  });
+  expect(
+    (await t.run((ctx) => ctx.db.get(row._id)))?.enrichment?.failures,
+  ).toBe(1);
+});
+
+test("location parser rejects rewritten destinations and incomplete streams", async () => {
+  expect(parseLocation('{"location":null}', "TEST")).toBeNull();
+  expect(() => parseLocation('{"location":"OŠ Golo"}', "ŠOLI GOLO")).toThrow();
+  await expect(
+    readLocationResponse(
+      new Response(
+        'data: {"type":"response.output_text.delta","delta":"null"}\n\n',
+      ),
+    ),
+  ).rejects.toThrow("complete consistently");
 });
 
 test("transport failure retries durably, revoked approval blocks send, and late results cannot overwrite retry", async () => {
@@ -223,6 +426,9 @@ test("transport failure retries durably, revoked approval blocks send, and late 
       jobs: [{ jobId: job._id, attempt: 1 }],
     }),
   ).toHaveLength(0);
+  await t.mutation(internal.push.recover, { jobId: job._id, attempt: 2 });
+  expect((await t.run((ctx) => ctx.db.get(job._id)))?.leased).toBe(true);
+  await t.run((ctx) => ctx.db.patch(job._id, { nextAttempt: 0 }));
   await t.mutation(internal.push.recover, { jobId: job._id, attempt: 2 });
   expect((await t.run((ctx) => ctx.db.get(job._id)))?.error).toBe(
     "Push action did not finish",

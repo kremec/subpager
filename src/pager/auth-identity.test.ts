@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { authIdentity } from "@/pager/auth-identity";
 
-test("offline approval is bound to the persisted auth identity", () => {
+test("the auth identity remains stable across sessions and distinguishes devices", () => {
   const token = (sub: string) =>
     `header.${btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}.signature`;
   expect(authIdentity(token("approved-device|session-1"))).toBe(

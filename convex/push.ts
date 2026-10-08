@@ -7,6 +7,7 @@ import {
   internalMutation,
   internalQuery,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 
 type TransportJob = Doc<"pushJobs"> & {
@@ -107,7 +108,11 @@ export const dispatch = internalMutation({
         );
         continue;
       }
-      await ctx.db.patch(jobId, { leased: true, attempts: job.attempts + 1 });
+      await ctx.db.patch(jobId, {
+        leased: true,
+        attempts: job.attempts + 1,
+        nextAttempt: Date.now() + 30000,
+      });
       (job.state === "pending" ? pending : receipts).push({
         jobId,
         attempt: job.attempts + 1,
@@ -128,33 +133,53 @@ export const recover = internalMutation({
   args: { jobId: v.id("pushJobs"), attempt: v.number() },
   handler: async (ctx, args) => {
     const job = await ctx.db.get(args.jobId);
-    if (job?.leased && job.attempts === args.attempt)
+    if (job?.leased && job.attempts === args.attempt) {
+      if (job.nextAttempt > Date.now()) {
+        await ctx.scheduler.runAt(job.nextAttempt, internal.push.recover, args);
+        return;
+      }
       await retry(ctx, job, "Push action did not finish");
+    }
   },
 });
 
+async function readTransportJobs(
+  ctx: QueryCtx,
+  claims: { jobId: Id<"pushJobs">; attempt: number }[],
+): Promise<TransportJob[]> {
+  const result: TransportJob[] = [];
+  for (const claim of claims) {
+    const job = await ctx.db.get(claim.jobId);
+    if (
+      !job?.leased ||
+      job.attempts !== claim.attempt ||
+      (job.state !== "pending" && job.state !== "receipt")
+    )
+      continue;
+    const device = await ctx.db.get(job.deviceId);
+    const message = await ctx.db.get(job.messageId);
+    if (!message) continue;
+    const authorized =
+      !!device?.approved &&
+      device.expoPushToken === job.expoPushToken &&
+      device.tokenVersion === job.tokenVersion;
+    result.push({ ...job, message, authorized });
+  }
+  return result;
+}
+
 export const transportJobs = internalQuery({
   args: claims,
+  handler: async (ctx, args) => readTransportJobs(ctx, args.jobs),
+});
+
+export const begin = internalMutation({
+  args: claims,
   handler: async (ctx, args) => {
-    const result: TransportJob[] = [];
-    for (const claim of args.jobs) {
-      const job = await ctx.db.get(claim.jobId);
-      if (
-        !job?.leased ||
-        job.attempts !== claim.attempt ||
-        (job.state !== "pending" && job.state !== "receipt")
-      )
-        continue;
-      const device = await ctx.db.get(job.deviceId);
-      const message = await ctx.db.get(job.messageId);
-      if (!message) continue;
-      const authorized =
-        !!device?.approved &&
-        device.expoPushToken === job.expoPushToken &&
-        device.tokenVersion === job.tokenVersion;
-      result.push({ ...job, message, authorized });
-    }
-    return result;
+    const jobs = await readTransportJobs(ctx, args.jobs);
+    for (const job of jobs)
+      await ctx.db.patch(job._id, { nextAttempt: Date.now() + 30000 });
+    return jobs;
   },
 });
 
@@ -290,8 +315,8 @@ async function post(
 export const deliver = internalAction({
   args: claims,
   handler: async (ctx, args) => {
-    const jobs: TransportJob[] = await ctx.runQuery(
-      internal.push.transportJobs,
+    const jobs: TransportJob[] = await ctx.runMutation(
+      internal.push.begin,
       args,
     );
     if (!jobs.length) return;

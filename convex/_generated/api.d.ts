@@ -12,6 +12,8 @@ import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as devices from "../devices.js";
 import type * as http from "../http.js";
+import type * as instructions from "../instructions.js";
+import type * as location from "../location.js";
 import type * as messages from "../messages.js";
 import type * as push from "../push.js";
 import type * as receiver from "../receiver.js";
@@ -29,6 +31,8 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   devices: typeof devices;
   http: typeof http;
+  instructions: typeof instructions;
+  location: typeof location;
   messages: typeof messages;
   push: typeof push;
   receiver: typeof receiver;

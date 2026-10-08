@@ -1,6 +1,6 @@
 # subpager app
 
-Private pager history and Expo push notifications, using Convex for the database and anonymous authentication. The receiver saves radio messages to local SQLite, then uploads them through an authenticated Convex HTTP endpoint. Convex publishes history and queues push independently of location extraction.
+Private pager history and Expo push notifications, using Convex as the single backend database and for anonymous authentication. The receiver decodes radio messages and sends them through an authenticated Convex HTTP endpoint. A small disk outbox retains only unacknowledged uploads. Convex owns history, deduplication, push and location extraction.
 
 ## Install and check
 
@@ -12,7 +12,7 @@ bun run format:check
 bun run test
 ```
 
-Use Bun. Do not start another Metro server if one is already running. Native dependencies and Android permission changes require a new native build. Subpager blocks external storage read/write permissions; identity and history use private app storage.
+Use Bun. Do not start another Metro server if one is already running. Native dependencies and Android permission changes require a new native build. Subpager blocks external storage read/write permissions. Auth tokens use SecureStore. A small app SQLite cache keeps the last synced feed for offline reading; Convex remains the source of truth.
 
 ## Convex setup
 
@@ -38,19 +38,19 @@ bun run member:list
 bun run member:revoke CONVEX_DEVICE_ID
 ```
 
-Only administrators can approve devices or write messages. Approval permits history and notifications. Revocation stops cloud reads and future sends; the online app clears cached history and dismisses displayed notifications when it observes the change. An offline phone retains its last known approval until reconnection. Clearing app data or reinstalling can require a new approval.
+Only administrators can approve devices or write messages. Approval permits history and notifications. Online, the app checks approval with Convex before syncing history. Offline, it permits the saved feed only for the same previously approved device ID. Revocation stops cloud reads and future sends; the app clears its saved feed and dismisses notifications when it observes the change. Clearing app data or reinstalling can require a new approval.
 
 Firebase anonymous IDs cannot prove ownership of Convex accounts. Existing installations receive new IDs and require approval again. Old Firebase approval is never reused to grant new cloud access.
 
 ## History and locations
 
-Convex live queries sync full history and RIC unit mappings into SQLite for offline viewing and search. Existing messages are upserted, so later location updates appear in the feed. Messages use native Convex document IDs; receiver numeric IDs stay in a separate ingestion mapping. Search matches message text, RICs and unit names, ignoring case and accents. Unit names are maintained in the receiver SQLite `ric_units` table and published with `bun run ric:sync`.
+Convex live queries provide full history and RIC unit mappings directly to the app. Location updates appear in the feed automatically. The app caches the last synced history and RIC mappings in one SQLite row for offline reading. New messages and location updates require internet. Messages use native Convex document IDs and a stable source key to make upload retries safe. Search matches message text, RICs and unit names, ignoring case and accents. RIC mappings live in Convex. The current feed reads full history in one query; pagination is needed before history reaches Convex transaction read limits.
 
-The receiver runs location extraction independently of message upload. It uses OpenAI Responses with `gpt-6-luna`, no reasoning, and structured output containing an exact message substring or null. The worker persists retries and completed extraction results. A later Convex location patch does not send another notification. An unavailable model leaves the original message readable and does not delay push.
+Convex schedules location extraction after saving the message, independently of push. It uses OpenAI Responses with `gpt-6-luna`, no reasoning, and structured output containing an exact message substring or null. Convex retains retry state and completed results. A later location update does not send another notification. An unavailable model leaves the original message readable and does not delay push.
 
 Extracted location text is underlined and opens a Google Maps search with Slovenia as context. Extraction identifies text; it does not verify coordinates or guarantee a correct Maps result. The app preserves the received text. Decoder markers such as `<LF>` display as spaces. Times use the phone timezone, day/month/year and a 24-hour clock. Connection errors are shown as toasts.
 
-API billing is separate from ChatGPT subscriptions. Set `OPENAI_API_KEY` in the receiver's ignored `.env` file, never in Convex, the app, source control or logs. Bun loads this file automatically. Restart the receiver after changing the key. ChatGPT Go's allowance for the benchmark subscription route is unverified; API mode avoids that dependency.
+API billing is separate from ChatGPT subscriptions. Set `OPENAI_API_KEY` in Convex production, never in the app, source control or logs. The receiver needs no OpenAI credentials. ChatGPT Go's allowance for the benchmark subscription route is unverified; API mode avoids that dependency.
 
 ## Expo push and Firebase
 
@@ -62,9 +62,9 @@ The Android packages remain `com.subbyte.subpager` and `com.subbyte.subpager.dev
 
 ## Migration and rollback
 
-The pre-migration checkpoints are app `1cac205` and receiver `39829c3`. A consistent local SQLite backup and private configuration backup were saved outside both repositories before migration. Keep that backup and the old Firebase project until device acceptance checks pass.
+The pre-migration checkpoints are app `1cac205` and receiver `39829c3`. A consistent local SQLite backup and private configuration backup were saved outside both repositories before migration. Keep that private backup for rollback. The Firebase project remains for Android push delivery.
 
-Use `bun run history:import` from the receiver repository with the intended Convex configuration to import local history without notifications. Ingest is idempotent and rejects an existing receiver ID with different message content. Never reset the receiver database against existing cloud history. Location backfill is explicit through `bun run location:backfill`.
+The 22 existing messages and their completed location results were migrated to Convex without sending notifications. Stable source keys prevent retry duplicates. The old receiver SQLite files and Firestore database were deleted after backup. The app has its own offline cache, separate from the receiver backup. The receiver's outbox is a delivery queue: it deletes a page only after Convex acknowledges its upload.
 
 ## Google Play internal releases
 
@@ -108,9 +108,9 @@ These require an explicitly approved cloud setup and an installed phone build. T
 - Receive a real call while the app is open, locked and closed. Compare message content, time and RIC with the receiver. Tap an alert and confirm the feed loads.
 - Confirm alerts arrive for all RICs and that their title is the seven-digit RIC and reception time, with received content in the body.
 - Disable notification permission and resume. Confirm the device token becomes null while history keeps syncing. Enable permission, resume and confirm new alerts resume without replaying old ones.
-- Keep the phone offline for more than 50 new messages. Restore internet and confirm every gap is filled and the full history remains available.
-- Disconnect the Mac from the internet. Confirm local receptions remain saved, then upload after reconnecting without a burst of delayed notifications.
-- Revoke the UID. Confirm cloud reads and new sends stop, and the online app clears cached history. Confirm that offline retained content cannot be remotely erased.
+- Open a previously approved app without internet. Confirm its last synced feed remains readable. Restore internet and confirm the feed updates.
+- Disconnect the receiver from the internet. Confirm receptions remain in its disk outbox, then upload after reconnecting without a burst of delayed notifications.
+- Revoke the UID. Confirm cloud reads and new sends stop, and the app removes displayed history and notifications.
 - Clear app data or install on another phone. Confirm the new UID has no access before manual approval.
 
 Type, lint and dependency checks do not prove deployed rules, cloud permissions, signing, store submission, physical-device behavior or push delivery.

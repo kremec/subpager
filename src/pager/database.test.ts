@@ -1,139 +1,106 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { expect, mock, test } from "bun:test";
+import { afterAll, expect, mock, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { PagerMessage } from "@/pager/types";
 
-const sqlite = new Database(":memory:");
+const directory = mkdtempSync(join(tmpdir(), "subpager-cache-test-"));
+const databasePath = join(directory, "subpager-cache.db");
+let sqlite: Database | undefined;
+afterAll(() => {
+  sqlite?.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+let opens = 0;
+let failOpen = true;
 mock.module("expo-sqlite", () => ({
-  openDatabaseSync: () => ({
-    execSync: (sql: string) => sqlite.exec(sql),
-    withTransactionSync: (task: () => void) => sqlite.transaction(task)(),
-    runSync: (sql: string, ...params: SQLQueryBindings[]) =>
-      sqlite.query(sql).run(...params),
-    getAllSync: <T>(sql: string, ...params: SQLQueryBindings[]) =>
-      sqlite.query<T, SQLQueryBindings[]>(sql).all(...params),
-    getFirstSync: <T>(sql: string, ...params: SQLQueryBindings[]) =>
-      sqlite.query<T, SQLQueryBindings[]>(sql).get(...params),
-  }),
+  openDatabaseSync: () => {
+    opens++;
+    if (failOpen) throw new Error("Cache unavailable");
+    const opened = new Database(databasePath);
+    sqlite = opened;
+    return {
+      closeSync: () => opened.close(),
+      execSync: (sql: string) => opened.exec(sql),
+      withTransactionSync: (task: () => void) => opened.transaction(task)(),
+      runSync: (sql: string, ...params: SQLQueryBindings[]) =>
+        opened.query(sql).run(...params),
+      getFirstSync: <T>(sql: string, ...params: SQLQueryBindings[]) =>
+        opened.query<T, SQLQueryBindings[]>(sql).get(...params),
+    };
+  },
+  deleteDatabaseSync: (name: string) => {
+    expect(name).toBe("subpager-cache.db");
+    rmSync(databasePath);
+  },
 }));
 
 const {
   initializeDatabase,
+  cachedApproval,
+  cacheApproval,
+  cachedHistory,
   cacheMessages,
-  cachedMessages,
-  clearMessages,
   cacheRicUnits,
-  cachedRicUnits,
-  subscribeToMessages,
 } = await import("@/pager/database");
 
-test("message batches retain full history and update existing messages", () => {
+test("optional storage opens lazily and can retry after an opening failure", () => {
+  expect(opens).toBe(0);
+  expect(initializeDatabase).toThrow("Cache unavailable");
+  failOpen = false;
   initializeDatabase();
-
-  const messages: PagerMessage[] = Array.from({ length: 1500 }, (_, index) => ({
-    id: `message-${index + 1}`,
-    receivedAt: new Date(
-      Date.parse("2026-10-08T10:00:00Z") + index * 1000,
-    ).toISOString(),
-    ric: 123,
-    function: 0,
-    type: "alpha",
-    content: String(index + 1),
-    duplicateOf: null,
-  }));
-  cacheMessages(messages);
-  expect(cachedMessages()).toHaveLength(1500);
-  expect(cachedMessages().at(-1)?.id).toBe("message-1");
-  cacheMessages([{ ...messages[0]!, content: "Changed content" }]);
-  expect(cachedMessages().at(-1)?.content).toBe("Changed content");
-  expect(cachedMessages()).toHaveLength(1500);
-
-  cacheMessages(messages.slice(1));
-  cacheMessages([]);
-  expect(cachedMessages()).toHaveLength(1500);
-  expect(cachedMessages().at(-1)?.id).toBe("message-1");
-
-  cacheMessages([
-    {
-      ...messages[0]!,
-      id: "message-new",
-      receivedAt: "2026-10-08T11:00:00Z",
-      content: "New message",
-    },
-  ]);
-  expect(cachedMessages()).toHaveLength(1501);
-  expect(cachedMessages()[0]?.content).toBe("New message");
-
-  clearMessages();
-  expect(cachedMessages()).toEqual([]);
 });
 
-test("open screens are notified after new message batches commit and access is revoked", () => {
-  const observed: number[] = [];
-  const unsubscribe = subscribeToMessages(() => {
-    observed.push(cachedMessages().length);
-  });
+test("offline snapshots require the same approved identity and retain location updates", () => {
   const message: PagerMessage = {
-    id: "message-1",
+    id: "native-message-id",
     receivedAt: "2026-10-08T10:00:00Z",
     ric: 123,
     function: 0,
     type: "alpha",
-    content: "Test",
+    content: "GORI V ŠOLI GOLO",
     duplicateOf: null,
   };
-  cacheMessages([message]);
-  cacheMessages([message]);
-  cacheMessages([{ ...message, location: "Test" }]);
-  cacheMessages([]);
-  expect(observed).toEqual([1, 1]);
-  expect(cachedMessages()[0]?.location).toBe("Test");
-  clearMessages();
-  expect(observed).toEqual([1, 1, 0]);
-  unsubscribe();
-  cacheMessages([]);
-  expect(observed).toEqual([1, 1, 0]);
+  cacheApproval("approved-device", true);
+  cacheMessages("approved-device", [message]);
+  cacheRicUnits("approved-device", [{ ric: 123, unitName: "Golo" }]);
+  expect(cachedApproval("approved-device")).toBe(true);
+  expect(cachedApproval("another-device")).toBe(false);
+  expect(cachedHistory("another-device")).toBeNull();
+  cacheMessages("approved-device", [{ ...message, location: "ŠOLI GOLO" }]);
+  cacheApproval("approved-device", true);
+  expect(cachedHistory("approved-device")).toEqual({
+    messages: [{ ...message, location: "ŠOLI GOLO" }],
+    units: [{ ric: 123, unitName: "Golo" }],
+  });
 });
 
-test("unit mappings are cached, renamed and removed separately, then erased on revocation", () => {
-  cacheRicUnits([
-    { ric: 123, unitName: "Old name" },
-    { ric: 456, unitName: "Another unit" },
-  ]);
-  expect(cachedRicUnits().get(123)).toBe("Old name");
-  cacheRicUnits([{ ric: 123, unitName: "New name" }]);
-  expect(cachedRicUnits().get(123)).toBe("New name");
-  expect(cachedRicUnits().has(456)).toBe(false);
-  expect(() =>
-    cacheRicUnits([
-      { ric: 123, unitName: "A" },
-      { ric: 123, unitName: "B" },
-    ]),
-  ).toThrow();
-  expect(cachedRicUnits().get(123)).toBe("New name");
-  clearMessages();
-  expect(cachedRicUnits().size).toBe(0);
+test("identity changes isolate snapshots and revocation removes approval and all data", () => {
+  cacheApproval("new-device", true);
+  cacheMessages("approved-device", []);
+  cacheRicUnits("approved-device", [{ ric: 123, unitName: "Stale unit" }]);
+  cacheApproval("approved-device", false);
+  expect(cachedHistory("approved-device")).toBeNull();
+  expect(cachedApproval("new-device")).toBe(true);
+  expect(cachedHistory("new-device")).toEqual({ messages: [], units: [] });
+  cacheApproval("new-device", false);
+  expect(cachedApproval("new-device")).toBe(false);
+  expect(cachedHistory("new-device")).toBeNull();
 });
 
-test("cached history uses receive time rather than native ID order", () => {
-  const message: PagerMessage = {
-    id: "zz-old",
-    receivedAt: "2026-10-08T09:00:00Z",
-    ric: 123,
-    function: 0,
-    type: "alpha",
-    content: "Old",
-    duplicateOf: null,
-  };
-  cacheMessages([
-    message,
-    {
-      ...message,
-      id: "aa-new",
-      receivedAt: "2026-10-08T10:00:00Z",
-      content: "New",
-    },
-  ]);
-  expect(cachedMessages().map((item) => item.id)).toEqual(["aa-new", "zz-old"]);
-  clearMessages();
+test("failed SQL revocation deletes the cache file without clearing another identity", () => {
+  cacheApproval("revoked-device", true);
+  cacheRicUnits("revoked-device", [{ ric: 123, unitName: "Golo" }]);
+  sqlite!.exec("PRAGMA query_only = ON");
+  cacheApproval("other-device", false);
+  expect(cachedApproval("revoked-device")).toBe(true);
+  expect(existsSync(databasePath)).toBe(true);
+  cacheApproval("revoked-device", false);
+  expect(existsSync(databasePath)).toBe(false);
+  expect(cachedApproval("revoked-device")).toBe(false);
+  expect(cachedHistory("revoked-device")).toBeNull();
+  cacheApproval("new-device", true);
+  expect(cachedApproval("new-device")).toBe(true);
 });
