@@ -5,6 +5,7 @@ import {
   type ReactNode,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -14,12 +15,18 @@ import { AppState } from "react-native";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 
-import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
-import { doc, onSnapshot } from "firebase/firestore";
+import {
+  useAuthActions,
+  useAuthToken,
+  useConvexAuth,
+} from "@convex-dev/auth/react";
+import { api } from "@convex/_generated/api";
+import { useConvexAuth as useBackendAuth } from "convex/react";
 
 import { showErrorToast } from "@/components/ui/toast";
+import { authIdentity } from "@/pager/auth-identity";
+import { getConvex } from "@/pager/convex";
 import { clearMessages, initializeDatabase } from "@/pager/database";
-import { getFirebase } from "@/pager/firebase";
 import type { Connection } from "@/pager/types";
 
 interface ConnectionContextValue {
@@ -37,7 +44,6 @@ interface ConnectionContextValue {
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
-const STORAGE_KEY = "subpager.access";
 interface SavedAccess {
   uid: string;
   approved: boolean;
@@ -47,117 +53,146 @@ interface ConnectionProviderProps {
 }
 
 export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
-  const [uid, setUid] = useState<string | null>(null);
-  const [approved, setApproved] = useState(false);
+  const { isLoading, isAuthenticated } = useConvexAuth();
+  const { isAuthenticated: backendAuthenticated } = useBackendAuth();
+  const { signIn } = useAuthActions();
+  const token = useAuthToken();
+  const uid = authIdentity(token);
+  const [access, setAccess] = useState<SavedAccess | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const [pushStatus, setPushStatus] = useState("Waiting for approval");
+  const currentUid = useRef(uid);
+  useLayoutEffect(() => {
+    currentUid.current = uid;
+  }, [uid]);
   const accessUid = useRef<string | null>(null);
+  const signingIn = useRef(false);
+  const accessWrite = useRef(Promise.resolve());
   const hasAccess = useCallback(
-    (value: string) => accessUid.current === value,
+    (value: string) =>
+      currentUid.current === value && accessUid.current === value,
     [],
   );
+  const approved = !!uid && access?.uid === uid && access.approved;
   const connection = useMemo<Connection | null>(
     () => (approved && uid ? { uid } : null),
     [uid, approved],
   );
+  const client = getConvex();
+  const storageKey = `subpager.convex-access.${new URL(client.url).hostname}`;
 
   useEffect(() => {
-    let cancelled = false;
-    let unsubscribeMember = () => {};
-    let unsubscribeAuth = () => {};
-    let currentUid: string | null = null;
-    async function initialize() {
-      initializeDatabase();
-      const { auth, database } = getFirebase();
-      await auth.authStateReady();
-      const user = auth.currentUser ?? (await signInAnonymously(auth)).user;
-      if (cancelled) return;
-      currentUid = user.uid;
-      const value = await SecureStore.getItemAsync(STORAGE_KEY);
-      if (cancelled) return;
-      const saved = value ? (JSON.parse(value) as SavedAccess) : null;
-      accessUid.current =
-        saved?.uid === user.uid && saved.approved ? user.uid : null;
-      if (saved?.uid !== user.uid || !saved.approved) clearMessages();
-      await SecureStore.deleteItemAsync("subpager.connection");
-      if (cancelled) return;
-      setUid(user.uid);
-      setApproved(saved?.uid === user.uid && saved.approved);
-      setError(null);
-      unsubscribeMember = onSnapshot(
-        doc(database, "members", user.uid),
-        { includeMetadataChanges: true },
-        (snapshot) => {
-          // An empty SDK memory cache is not evidence of revoked access.
-          if (cancelled || snapshot.metadata.fromCache) return;
-          const allowed =
-            snapshot.exists() && snapshot.data().approved === true;
-          accessUid.current = allowed ? user.uid : null;
-          if (!allowed) {
-            try {
-              clearMessages();
-            } catch {
-              showErrorToast("Could not clear saved history.");
-            }
-            void Notifications.dismissAllNotificationsAsync().catch(() =>
-              showErrorToast("Could not clear notifications."),
-            );
-            void Notifications.clearLastNotificationResponseAsync().catch(() =>
-              showErrorToast("Could not clear notifications."),
-            );
-          }
-          setApproved(allowed);
-          setError(null);
-        },
-        (failure) => {
-          if (!cancelled) setError(failure.message);
-        },
-      );
-      unsubscribeAuth = onAuthStateChanged(auth, (nextUser) => {
-        if (cancelled || nextUser?.uid === currentUid) return;
-        accessUid.current = null;
-        unsubscribeMember();
-        try {
-          clearMessages();
-        } catch {
-          showErrorToast("Could not clear saved history.");
-        }
-        setApproved(false);
-        setUid(null);
-        setError(
-          "This device identity is no longer available. Retry to request a new approval.",
-        );
-      });
-    }
-    void initialize()
+    if (isLoading || isAuthenticated || signingIn.current) return;
+    signingIn.current = true;
+    void signIn("anonymous")
       .catch((failure: Error) => {
-        if (!cancelled) setError(failure.message);
+        setError(failure.message);
+        setReady(true);
       })
       .finally(() => {
-        if (!cancelled) setReady(true);
+        signingIn.current = false;
       });
+  }, [isLoading, isAuthenticated, signIn, attempt]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    let cancelled = false;
+    accessUid.current = null;
+    const allowedIdentity = () => !cancelled && currentUid.current === uid;
+    async function initialize() {
+      initializeDatabase();
+      if (!uid) {
+        clearMessages();
+        setAccess(null);
+        if (isAuthenticated)
+          throw new Error(
+            "This device identity is unavailable. Retry to reconnect.",
+          );
+        return;
+      }
+      await accessWrite.current;
+      const value = await SecureStore.getItemAsync(storageKey);
+      if (!allowedIdentity()) return;
+      const saved = value ? (JSON.parse(value) as SavedAccess) : null;
+      const savedApproved = saved?.uid === uid && saved.approved === true;
+      accessUid.current = savedApproved ? uid : null;
+      if (!savedApproved) clearMessages();
+      setAccess({ uid, approved: savedApproved });
+      setError(null);
+      setReady(true);
+    }
+    void initialize().catch((failure: Error) => {
+      if (!allowedIdentity()) return;
+      setError(failure.message);
+      setReady(true);
+    });
     return () => {
       accessUid.current = null;
       cancelled = true;
-      unsubscribeMember();
-      unsubscribeAuth();
     };
-  }, [attempt]);
+  }, [uid, isLoading, isAuthenticated, attempt, storageKey]);
+
+  useEffect(() => {
+    if (!uid || !ready || !backendAuthenticated) return;
+    let cancelled = false;
+    const allowedIdentity = () => !cancelled && currentUid.current === uid;
+    const watch = client.watchQuery(api.devices.current, {});
+    const update = () => {
+      if (!allowedIdentity()) return;
+      try {
+        const device = watch.localQueryResult();
+        if (!device || device.uid !== uid) return;
+        const allowed = device.approved;
+        accessUid.current = allowed ? uid : null;
+        setAccess({ uid, approved: allowed });
+        if (!allowed) {
+          try {
+            clearMessages();
+          } catch {
+            showErrorToast("Could not clear saved history.");
+          }
+          void Notifications.dismissAllNotificationsAsync().catch(() =>
+            showErrorToast("Could not clear notifications."),
+          );
+          void Notifications.clearLastNotificationResponseAsync().catch(() =>
+            showErrorToast("Could not clear notifications."),
+          );
+        }
+        setError(null);
+        accessWrite.current = accessWrite.current
+          .then(() =>
+            SecureStore.setItemAsync(
+              storageKey,
+              JSON.stringify({ uid, approved: allowed }),
+            ),
+          )
+          .catch((failure: Error) => {
+            if (allowedIdentity()) setError(failure.message);
+          });
+      } catch (failure) {
+        if (allowedIdentity())
+          setError(
+            failure instanceof Error ? failure.message : "Connection failed.",
+          );
+      }
+    };
+    const unsubscribe = watch.onUpdate(update);
+    update();
+    void client.mutation(api.devices.register, {}).catch((failure: Error) => {
+      if (allowedIdentity()) setError(failure.message);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [uid, ready, backendAuthenticated, attempt, client, storageKey]);
 
   useEffect(() => {
     if (error) showErrorToast(error);
   }, [error]);
-
-  useEffect(() => {
-    if (!uid) return;
-    void SecureStore.setItemAsync(
-      STORAGE_KEY,
-      JSON.stringify({ uid, approved }),
-    ).catch((failure: Error) => setError(failure.message));
-  }, [uid, approved]);
 
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
   const retry = useCallback(() => {

@@ -3,13 +3,14 @@ export interface Connection {
 }
 
 export interface PagerMessage {
-  id: number;
+  id: string;
   receivedAt: string;
   ric: number;
   function: number;
   type: "alpha" | "numeric" | "tone";
   content: string;
-  duplicateOf: number | null;
+  duplicateOf: string | null;
+  location?: string | null;
 }
 
 export interface RicUnit {

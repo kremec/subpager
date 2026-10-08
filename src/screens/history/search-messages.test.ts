@@ -8,7 +8,7 @@ import {
 
 const messages: PagerMessage[] = [
   {
-    id: 3,
+    id: "message-3",
     receivedAt: "2026-10-08T10:00:00Z",
     ric: 123,
     function: 0,
@@ -17,7 +17,7 @@ const messages: PagerMessage[] = [
     duplicateOf: null,
   },
   {
-    id: 2,
+    id: "message-2",
     receivedAt: "2026-10-08T09:00:00Z",
     ric: 456,
     function: 0,
@@ -26,7 +26,7 @@ const messages: PagerMessage[] = [
     duplicateOf: null,
   },
   {
-    id: 1,
+    id: "message-1",
     receivedAt: "2026-10-08T08:00:00Z",
     ric: 123,
     function: 0,

@@ -47,7 +47,7 @@ export const MessageList: FC<MessageListProps> = (props) => {
       data={filtered}
       recycleItems
       extraData={unitNames}
-      keyExtractor={(message) => String(message.id)}
+      keyExtractor={(message) => message.id}
       renderItem={({ item }) => (
         <MessageRow message={item} unitName={unitNames.get(item.ric)} />
       )}

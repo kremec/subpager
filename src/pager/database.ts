@@ -2,7 +2,7 @@ import { openDatabaseSync } from "expo-sqlite";
 
 import type { PagerMessage, RicUnit } from "@/pager/types";
 
-const database = openDatabaseSync("subpager.db");
+const database = openDatabaseSync("subpager-convex.db");
 const listeners = new Set<() => void>();
 
 export function subscribeToMessages(listener: () => void) {
@@ -15,23 +15,25 @@ export function subscribeToMessages(listener: () => void) {
 export function initializeDatabase() {
   database.execSync(
     `PRAGMA journal_mode = WAL;
-     CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
+     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, json TEXT NOT NULL);
      CREATE TABLE IF NOT EXISTS ric_units (ric INTEGER PRIMARY KEY, unit_name TEXT NOT NULL);`,
   );
 }
 
 export function cacheMessages(messages: PagerMessage[]) {
   if (messages.length === 0) return;
-  let inserted = 0;
+  let changed = 0;
   database.withTransactionSync(() => {
     for (const message of messages)
-      inserted += database.runSync(
-        "INSERT OR IGNORE INTO messages (id, json) VALUES (?, ?)",
+      changed += database.runSync(
+        `INSERT INTO messages (id, json) VALUES (?, ?)
+         ON CONFLICT(id) DO UPDATE SET json = excluded.json
+         WHERE messages.json <> excluded.json`,
         message.id,
         JSON.stringify(message),
       ).changes;
   });
-  if (inserted > 0) for (const listener of listeners) listener();
+  if (changed > 0) for (const listener of listeners) listener();
 }
 
 export function cacheRicUnits(units: RicUnit[]) {
@@ -59,7 +61,9 @@ export function cachedRicUnits(): Map<number, string> {
 
 export function cachedMessages(): PagerMessage[] {
   return database
-    .getAllSync<{ json: string }>("SELECT json FROM messages ORDER BY id DESC")
+    .getAllSync<{ json: string }>(
+      "SELECT json FROM messages ORDER BY json_extract(json, '$.receivedAt') DESC, id DESC",
+    )
     .map((row) => JSON.parse(row.json) as PagerMessage);
 }
 

@@ -1,14 +1,9 @@
 import { type FC } from "react";
-import { Pressable, View } from "react-native";
-
-import { useRouter } from "expo-router";
+import { View } from "react-native";
 
 import { Typography } from "@/components/ui/typography";
-import {
-  formatMessageContent,
-  formatReceivedAt,
-  formatRicUnit,
-} from "@/pager/format-message";
+import { formatReceivedAt, formatRicUnit } from "@/pager/format-message";
+import { MessageContent } from "@/pager/message-content";
 import type { PagerMessage } from "@/pager/types";
 import { useTheme } from "@/theme/use-theme";
 
@@ -19,24 +14,14 @@ interface MessageRowProps {
 export const MessageRow: FC<MessageRowProps> = (props) => {
   const { message, unitName } = props;
   const theme = useTheme();
-  const router = useRouter();
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Message for ${formatRicUnit(message.ric, unitName)}`}
-      onPress={() =>
-        router.push({
-          pathname: "/message/[id]",
-          params: { id: String(message.id) },
-        })
-      }
-      style={({ pressed }) => ({
-        opacity: pressed ? 0.65 : 1,
+    <View
+      style={{
         padding: theme.spacing.lg,
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
         gap: theme.spacing.sm,
-      })}
+      }}
     >
       <View
         style={{
@@ -52,14 +37,12 @@ export const MessageRow: FC<MessageRowProps> = (props) => {
           {formatReceivedAt(message.receivedAt)}
         </Typography>
       </View>
-      <Typography style={{ lineHeight: 23 }}>
-        {formatMessageContent(message.content) || "Tone-only call"}
-      </Typography>
+      <MessageContent message={message} />
       {message.duplicateOf !== null && (
         <Typography variant="caption" color={theme.colors.textSecondary}>
           Repeated transmission
         </Typography>
       )}
-    </Pressable>
+    </View>
   );
 };

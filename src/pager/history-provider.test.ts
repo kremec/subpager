@@ -9,6 +9,7 @@ let cleanup: (() => void) | undefined;
 let foreground: ((state: string) => void) | undefined;
 let allowed = true;
 let ready = true;
+let authenticated = true;
 let messagesAttached = 0;
 let unitsAttached = 0;
 let messagesDetached = 0;
@@ -19,6 +20,7 @@ let messagesError: ((error: Error) => void) | undefined;
 let unitsError: ((error: Error) => void) | undefined;
 const savedMessages: PagerMessage[][] = [];
 const savedUnits: RicUnit[][] = [];
+let cachedReads = 0;
 
 mock.module("react", () => ({
   ...react,
@@ -34,6 +36,9 @@ mock.module("react-native", () => ({
     },
   },
 }));
+mock.module("convex/react", () => ({
+  useConvexAuth: () => ({ isAuthenticated: authenticated }),
+}));
 mock.module("@/pager/connection-provider", () => ({
   useConnection: () => ({
     connection: { uid: "test-device" },
@@ -42,13 +47,16 @@ mock.module("@/pager/connection-provider", () => ({
   }),
 }));
 mock.module("@/pager/database", () => ({
-  cachedMessages: () => [],
+  cachedMessages: () => {
+    cachedReads++;
+    return [];
+  },
   cachedRicUnits: () => new Map(),
   cacheMessages: (messages: PagerMessage[]) => savedMessages.push(messages),
   cacheRicUnits: (units: RicUnit[]) => savedUnits.push(units),
   subscribeToMessages: () => () => {},
 }));
-mock.module("@/pager/firebase", () => ({
+mock.module("@/pager/convex", () => ({
   watchMessages: (
     success: (messages: PagerMessage[]) => void,
     failure: (error: Error) => void,
@@ -78,6 +86,8 @@ beforeEach(() => {
   savedUnits.length = 0;
   allowed = true;
   ready = true;
+  authenticated = true;
+  cachedReads = 0;
   messagesAttached = 0;
   unitsAttached = 0;
   messagesDetached = 0;
@@ -98,6 +108,20 @@ test("foreground keeps healthy listeners attached", () => {
   foreground?.("active");
   expect([messagesAttached, unitsAttached]).toEqual([1, 1]);
   expect([messagesDetached, unitsDetached]).toEqual([0, 0]);
+});
+
+test("pending server authentication reads offline history and delays cloud subscriptions", () => {
+  cleanup?.();
+  effects.length = 0;
+  authenticated = false;
+  cachedReads = 0;
+  // oxlint-disable-next-line react-hooks/rules-of-hooks -- Simulate an offline cached connection.
+  HistoryProvider({ children: null });
+  const result = effects[0]!();
+  if (typeof result === "function") cleanup = result;
+  expect(cachedReads).toBe(1);
+  expect([messagesAttached, unitsAttached]).toEqual([1, 1]);
+  expect([messagesDetached, unitsDetached]).toEqual([1, 1]);
 });
 
 test("foreground retries only the failed listener and resumes cache updates", () => {

@@ -27,12 +27,14 @@ const {
   subscribeToMessages,
 } = await import("@/pager/database");
 
-test("message batches append full history without rewriting existing messages", () => {
+test("message batches retain full history and update existing messages", () => {
   initializeDatabase();
 
   const messages: PagerMessage[] = Array.from({ length: 1500 }, (_, index) => ({
-    id: index + 1,
-    receivedAt: "2026-10-08T10:00:00Z",
+    id: `message-${index + 1}`,
+    receivedAt: new Date(
+      Date.parse("2026-10-08T10:00:00Z") + index * 1000,
+    ).toISOString(),
     ric: 123,
     function: 0,
     type: "alpha",
@@ -41,17 +43,24 @@ test("message batches append full history without rewriting existing messages", 
   }));
   cacheMessages(messages);
   expect(cachedMessages()).toHaveLength(1500);
-  expect(cachedMessages().at(-1)?.id).toBe(1);
+  expect(cachedMessages().at(-1)?.id).toBe("message-1");
   cacheMessages([{ ...messages[0]!, content: "Changed content" }]);
-  expect(cachedMessages().at(-1)?.content).toBe("1");
+  expect(cachedMessages().at(-1)?.content).toBe("Changed content");
   expect(cachedMessages()).toHaveLength(1500);
 
   cacheMessages(messages.slice(1));
   cacheMessages([]);
   expect(cachedMessages()).toHaveLength(1500);
-  expect(cachedMessages().at(-1)?.id).toBe(1);
+  expect(cachedMessages().at(-1)?.id).toBe("message-1");
 
-  cacheMessages([{ ...messages[0]!, id: 1501, content: "New message" }]);
+  cacheMessages([
+    {
+      ...messages[0]!,
+      id: "message-new",
+      receivedAt: "2026-10-08T11:00:00Z",
+      content: "New message",
+    },
+  ]);
   expect(cachedMessages()).toHaveLength(1501);
   expect(cachedMessages()[0]?.content).toBe("New message");
 
@@ -65,7 +74,7 @@ test("open screens are notified after new message batches commit and access is r
     observed.push(cachedMessages().length);
   });
   const message: PagerMessage = {
-    id: 1,
+    id: "message-1",
     receivedAt: "2026-10-08T10:00:00Z",
     ric: 123,
     function: 0,
@@ -75,13 +84,15 @@ test("open screens are notified after new message batches commit and access is r
   };
   cacheMessages([message]);
   cacheMessages([message]);
+  cacheMessages([{ ...message, location: "Test" }]);
   cacheMessages([]);
-  expect(observed).toEqual([1]);
+  expect(observed).toEqual([1, 1]);
+  expect(cachedMessages()[0]?.location).toBe("Test");
   clearMessages();
-  expect(observed).toEqual([1, 0]);
+  expect(observed).toEqual([1, 1, 0]);
   unsubscribe();
   cacheMessages([]);
-  expect(observed).toEqual([1, 0]);
+  expect(observed).toEqual([1, 1, 0]);
 });
 
 test("unit mappings are cached, renamed and removed separately, then erased on revocation", () => {
@@ -102,4 +113,27 @@ test("unit mappings are cached, renamed and removed separately, then erased on r
   expect(cachedRicUnits().get(123)).toBe("New name");
   clearMessages();
   expect(cachedRicUnits().size).toBe(0);
+});
+
+test("cached history uses receive time rather than native ID order", () => {
+  const message: PagerMessage = {
+    id: "zz-old",
+    receivedAt: "2026-10-08T09:00:00Z",
+    ric: 123,
+    function: 0,
+    type: "alpha",
+    content: "Old",
+    duplicateOf: null,
+  };
+  cacheMessages([
+    message,
+    {
+      ...message,
+      id: "aa-new",
+      receivedAt: "2026-10-08T10:00:00Z",
+      content: "New",
+    },
+  ]);
+  expect(cachedMessages().map((item) => item.id)).toEqual(["aa-new", "zz-old"]);
+  clearMessages();
 });

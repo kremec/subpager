@@ -5,9 +5,11 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 
+import { useConvexAuth } from "convex/react";
+
 import { showErrorToast } from "@/components/ui/toast";
 import { useConnection } from "@/pager/connection-provider";
-import { registerDevice } from "@/pager/firebase";
+import { registerDevice } from "@/pager/convex";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -20,22 +22,13 @@ Notifications.setNotificationHandler({
 
 export function useNotifications() {
   const { connection, refresh, pushStatus, setPushStatus } = useConnection();
+  const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const response = Notifications.useLastNotificationResponse();
 
   useEffect(() => {
     if (!connection || !response) return;
-    const messageId = response.notification.request.content.data?.messageId;
-    if (
-      typeof messageId === "number" &&
-      Number.isSafeInteger(messageId) &&
-      messageId > 0
-    ) {
-      router.push({
-        pathname: "/message/[id]",
-        params: { id: String(messageId) },
-      });
-    }
+    router.replace("/");
     void Notifications.clearLastNotificationResponseAsync().catch(() =>
       showErrorToast("Could not clear notifications."),
     );
@@ -46,15 +39,18 @@ export function useNotifications() {
       setPushStatus("Waiting for approval");
       return;
     }
+    if (!isAuthenticated) {
+      setPushStatus("Waiting for connection");
+      return;
+    }
     let cancelled = false;
     let running = false;
     let pending = false;
     let pendingDeviceToken: Notifications.DevicePushToken | undefined;
     let registeredToken: string | null | undefined;
-    const uid = connection.uid;
     async function saveToken(token: string | null) {
       if (registeredToken === token) return;
-      await registerDevice(uid, token);
+      await registerDevice(token);
       registeredToken = token;
     }
     async function register(devicePushToken?: Notifications.DevicePushToken) {
@@ -133,7 +129,7 @@ export function useNotifications() {
       received.remove();
       tokenChanged.remove();
     };
-  }, [connection, refresh, setPushStatus]);
+  }, [connection, isAuthenticated, refresh, setPushStatus]);
 
   return pushStatus;
 }

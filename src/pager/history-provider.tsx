@@ -7,8 +7,11 @@ import {
 } from "react";
 import { AppState } from "react-native";
 
+import { useConvexAuth } from "convex/react";
+
 import { showErrorToast } from "@/components/ui/toast";
 import { useConnection } from "@/pager/connection-provider";
+import { watchMessages, watchRicUnits } from "@/pager/convex";
 import {
   cachedMessages,
   cachedRicUnits,
@@ -16,7 +19,6 @@ import {
   cacheRicUnits,
   subscribeToMessages,
 } from "@/pager/database";
-import { watchMessages, watchRicUnits } from "@/pager/firebase";
 import type { PagerMessage } from "@/pager/types";
 import { HistoryContext } from "@/pager/use-message-history";
 
@@ -26,6 +28,7 @@ interface HistoryProviderProps {
 
 export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
   const { connection, hasAccess, ready } = useConnection();
+  const { isAuthenticated } = useConvexAuth();
   const uid = ready ? connection?.uid : undefined;
   const [messages, setMessages] = useState<PagerMessage[]>([]);
   const [unitNames, setUnitNames] = useState<ReadonlyMap<number, string>>(
@@ -54,10 +57,10 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
     const cachedCount = update();
     // Reset status while attaching listeners for the current device.
     /* oxlint-disable react/set-state-in-effect */
-    setLoading(!!uid && cachedCount === 0);
+    setLoading(!!uid && isAuthenticated && cachedCount === 0);
     /* oxlint-enable react/set-state-in-effect */
     const unsubscribeCache = subscribeToMessages(update);
-    if (!uid) return unsubscribeCache;
+    if (!uid || !isAuthenticated) return unsubscribeCache;
 
     let messagesFailed = false;
     let unitsFailed = false;
@@ -119,7 +122,7 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
       unsubscribeUnits();
       appState.remove();
     };
-  }, [uid, hasAccess, attempt]);
+  }, [uid, hasAccess, isAuthenticated, attempt]);
 
   return (
     <HistoryContext.Provider

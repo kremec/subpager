@@ -11,15 +11,16 @@ let conversionCalls = 0;
 let failWrites = 0;
 let granted = true;
 let approved = true;
+let authenticated = true;
 let permissionLookup: (() => Promise<void>) | undefined;
 let tokenLookup: (() => Promise<void>) | undefined;
 let response: {
   notification: {
-    request: { content: { data: { messageId: number | string } } };
+    request: { content: { data: { messageId?: string } } };
   };
 } | null = null;
 let clearedResponses = 0;
-const openedMessages: string[] = [];
+const openedRoutes: string[] = [];
 const writes: (string | null)[] = [];
 const failures: string[] = [];
 
@@ -35,16 +36,15 @@ mock.module("react-native", () => ({
     },
   },
 }));
+mock.module("convex/react", () => ({
+  useConvexAuth: () => ({ isAuthenticated: authenticated }),
+}));
 mock.module("expo-constants", () => ({
   default: { expoConfig: { extra: { eas: { projectId: "test-project" } } } },
 }));
-interface MessageRoute {
-  pathname: string;
-  params: { id: string };
-}
 mock.module("expo-router", () => ({
   useRouter: () => ({
-    push: (route: MessageRoute) => openedMessages.push(route.params.id),
+    replace: (route: string) => openedRoutes.push(route),
   }),
 }));
 mock.module("expo-notifications", () => ({
@@ -82,8 +82,8 @@ mock.module("@/pager/connection-provider", () => ({
     setPushStatus: () => {},
   }),
 }));
-mock.module("@/pager/firebase", () => ({
-  registerDevice: async (_uid: string, token: string | null) => {
+mock.module("@/pager/convex", () => ({
+  registerDevice: async (token: string | null) => {
     writes.push(token);
     if (failWrites > 0) {
       failWrites--;
@@ -122,11 +122,12 @@ beforeEach(() => {
   failWrites = 0;
   granted = true;
   approved = true;
+  authenticated = true;
   permissionLookup = undefined;
   tokenLookup = undefined;
   response = null;
   clearedResponses = 0;
-  openedMessages.length = 0;
+  openedRoutes.length = 0;
   nativeToken = { type: "android", data: "first" };
 });
 
@@ -147,6 +148,17 @@ test("native token lookup terminates and unchanged tokens write only once", asyn
   expect(conversionCalls).toBeLessThanOrEqual(5);
   expect(writes).toEqual(["ExpoPushToken[first]"]);
   expect(failures).toEqual([]);
+});
+
+test("cached approval delays push registration until server authentication", async () => {
+  authenticated = false;
+  await mount();
+  expect(conversionCalls).toBe(0);
+  expect(writes).toEqual([]);
+  authenticated = true;
+  effects.length = 0;
+  await mount();
+  expect(writes).toEqual(["ExpoPushToken[first]"]);
 });
 
 test("a changed token writes once and the latest queued native token is retained", async () => {
@@ -256,15 +268,17 @@ test("quota errors stop registration attempts until another external event", asy
   expect(writes).toHaveLength(attempts + 1);
 });
 
-test("notification taps open valid IDs only after approval", () => {
+test("notification taps open the feed only after approval", () => {
   response = {
-    notification: { request: { content: { data: { messageId: 42 } } } },
+    notification: {
+      request: { content: { data: { messageId: "native-message-id" } } },
+    },
   };
   approved = false;
   // oxlint-disable-next-line react-hooks/rules-of-hooks -- Run captured effects without a native renderer.
   useNotifications();
   effects[0]!();
-  expect(openedMessages).toEqual([]);
+  expect(openedRoutes).toEqual([]);
   expect(clearedResponses).toBe(0);
 
   effects.length = 0;
@@ -272,16 +286,14 @@ test("notification taps open valid IDs only after approval", () => {
   // oxlint-disable-next-line react-hooks/rules-of-hooks -- Simulate approval with a pending tap.
   useNotifications();
   effects[0]!();
-  expect(openedMessages).toEqual(["42"]);
+  expect(openedRoutes).toEqual(["/"]);
   expect(clearedResponses).toBe(1);
 
-  for (const invalid of [0, -1, 1.5, "42"]) {
-    response.notification.request.content.data.messageId = invalid;
-    effects.length = 0;
-    // oxlint-disable-next-line react-hooks/rules-of-hooks -- Simulate each incoming response.
-    useNotifications();
-    effects[0]!();
-  }
-  expect(openedMessages).toEqual(["42"]);
-  expect(clearedResponses).toBe(5);
+  response.notification.request.content.data = {};
+  effects.length = 0;
+  // oxlint-disable-next-line react-hooks/rules-of-hooks -- Feed navigation does not depend on message metadata.
+  useNotifications();
+  effects[0]!();
+  expect(openedRoutes).toEqual(["/", "/"]);
+  expect(clearedResponses).toBe(2);
 });

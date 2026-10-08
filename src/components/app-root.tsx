@@ -39,7 +39,6 @@ export const AppRoot: FC = () => {
         name="search"
         options={{ presentation: "modal", headerShown: false }}
       />
-      <Stack.Screen name="message/[id]" options={{ title: "Pager message" }} />
     </Stack>
   );
 };
