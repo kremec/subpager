@@ -5,8 +5,8 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 
-import { mutateDevice } from "@/pager/api";
 import { useConnection } from "@/pager/connection-provider";
+import { registerDevice } from "@/pager/firebase";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -40,13 +40,18 @@ export function useNotifications() {
 
   useEffect(() => {
     if (!connection) {
-      setPushStatus("Not connected");
+      setPushStatus("Waiting for approval");
       return;
     }
     let cancelled = false;
     let running = false;
+    let pending = false;
     async function register() {
-      if (running || cancelled || !connection) return;
+      if (cancelled || !connection) return;
+      if (running) {
+        pending = true;
+        return;
+      }
       running = true;
       try {
         if (Platform.OS === "android")
@@ -56,10 +61,12 @@ export function useNotifications() {
             sound: "default",
             vibrationPattern: [0, 250, 250, 250],
           });
-        const permission = await Notifications.requestPermissionsAsync();
+        let permission = await Notifications.getPermissionsAsync();
+        if (!permission.granted && permission.canAskAgain)
+          permission = await Notifications.requestPermissionsAsync();
         if (cancelled) return;
         if (!permission.granted) {
-          await mutateDevice(connection);
+          await registerDevice(connection.uid, null, connection.rics);
           if (!cancelled)
             setPushStatus("Notifications disabled in phone settings");
           return;
@@ -75,10 +82,7 @@ export function useNotifications() {
           await Notifications.getExpoPushTokenAsync({ projectId })
         ).data;
         if (cancelled) return;
-        await mutateDevice(connection, {
-          expoPushToken,
-          rics: connection.rics,
-        });
+        await registerDevice(connection.uid, expoPushToken, connection.rics);
         if (!cancelled) setPushStatus("Push notifications registered");
       } catch (error) {
         if (!cancelled)
@@ -87,6 +91,10 @@ export function useNotifications() {
           );
       } finally {
         running = false;
+        if (pending) {
+          pending = false;
+          void register();
+        }
       }
     }
     void register();

@@ -3,6 +3,7 @@ import { ActivityIndicator } from "react-native";
 
 import { Stack } from "expo-router";
 
+import { Button } from "@/components/ui/button";
 import { Screen } from "@/components/ui/screen";
 import { Typography } from "@/components/ui/typography";
 import { useConnection } from "@/pager/connection-provider";
@@ -10,7 +11,7 @@ import { useNotifications } from "@/pager/use-notifications";
 import { useTheme } from "@/theme/use-theme";
 
 export const AppRoot: FC = () => {
-  const { ready, error } = useConnection();
+  const { ready, uid, error, retry } = useConnection();
   const theme = useTheme();
   useNotifications();
   if (!ready)
@@ -19,12 +20,11 @@ export const AppRoot: FC = () => {
         <ActivityIndicator />
       </Screen>
     );
-  if (error)
+  if (error && !uid)
     return (
       <Screen>
-        <Typography accessibilityRole="alert">
-          Could not initialize the app: {error}
-        </Typography>
+        <Typography accessibilityRole="alert">{error}</Typography>
+        <Button label="Retry" onPress={retry} />
       </Screen>
     );
   return (
@@ -39,7 +39,7 @@ export const AppRoot: FC = () => {
       <Stack.Screen name="index" options={{ title: "subpager" }} />
       <Stack.Screen
         name="settings"
-        options={{ title: "Connection", presentation: "modal" }}
+        options={{ title: "Settings", presentation: "modal" }}
       />
       <Stack.Screen name="message/[id]" options={{ title: "Pager message" }} />
     </Stack>

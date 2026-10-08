@@ -5,15 +5,16 @@ import { useLocalSearchParams } from "expo-router";
 import { Button } from "@/components/ui/button";
 import { Screen } from "@/components/ui/screen";
 import { Typography } from "@/components/ui/typography";
-import { request } from "@/pager/api";
 import { useConnection } from "@/pager/connection-provider";
-import { cachedMessage, cacheMessages } from "@/pager/database";
+import { cachedMessage } from "@/pager/database";
+import { getMessage } from "@/pager/firebase";
 import type { PagerMessage } from "@/pager/types";
 import { useTheme } from "@/theme/use-theme";
 
 export const MessageScreen: FC = () => {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { connection, revision, refresh } = useConnection();
+  const { connection, revision, refresh, hasAccess } = useConnection();
+  const uid = connection?.uid;
   const [message, setMessage] = useState<PagerMessage>();
   const [error, setError] = useState<string | null>(null);
   const theme = useTheme();
@@ -21,9 +22,9 @@ export const MessageScreen: FC = () => {
     const messageId = Number(id);
     // Read the external SQLite cache before requesting the current message.
     // oxlint-disable-next-line react/set-state-in-effect
-    setMessage(connection ? cachedMessage(messageId) : undefined);
-    if (!connection) {
-      setError("Connect to a server to read this message.");
+    setMessage(uid && hasAccess(uid) ? cachedMessage(messageId) : undefined);
+    if (!uid || !hasAccess(uid)) {
+      setError("This device needs administrator approval to read messages.");
       return;
     }
     if (!Number.isSafeInteger(messageId) || messageId <= 0) {
@@ -32,19 +33,17 @@ export const MessageScreen: FC = () => {
     }
     const controller = new AbortController();
     setError(null);
-    void request<PagerMessage>(connection, `/v1/messages/${messageId}`, {
-      signal: controller.signal,
-    })
+    void getMessage(messageId)
       .then((value) => {
-        if (controller.signal.aborted) return;
-        cacheMessages([value]);
+        if (controller.signal.aborted || !hasAccess(uid)) return;
         setMessage(value);
       })
       .catch((error: Error) => {
-        if (!controller.signal.aborted) setError(error.message);
+        if (!controller.signal.aborted && hasAccess(uid))
+          setError(error.message);
       });
     return () => controller.abort();
-  }, [connection, id, revision]);
+  }, [uid, id, revision, hasAccess]);
 
   return (
     <Screen scroll>

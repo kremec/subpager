@@ -1,6 +1,7 @@
 import { type FC, useState } from "react";
-import { Alert, TextInput } from "react-native";
+import { TextInput } from "react-native";
 
+import { setStringAsync } from "expo-clipboard";
 import { useRouter } from "expo-router";
 
 import { Button } from "@/components/ui/button";
@@ -10,13 +11,13 @@ import { useConnection } from "@/pager/connection-provider";
 import { useTheme } from "@/theme/use-theme";
 
 export const SettingsScreen: FC = () => {
-  const { connection, save, disconnect, pushStatus } = useConnection();
+  const { connection, uid, approved, approvalChecked, saveRics, pushStatus } =
+    useConnection();
   const router = useRouter();
   const theme = useTheme();
-  const [baseUrl, setBaseUrl] = useState(connection?.baseUrl ?? "");
-  const [apiKey, setApiKey] = useState(connection?.apiKey ?? "");
   const [rics, setRics] = useState(connection?.rics.join(", ") ?? "");
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputStyle = {
     color: theme.colors.text,
@@ -26,121 +27,100 @@ export const SettingsScreen: FC = () => {
     fontSize: theme.typography.body,
   };
 
-  async function connect() {
+  async function save() {
     setBusy(true);
     setError(null);
     try {
-      await save({
-        baseUrl,
-        apiKey,
-        rics: rics.trim()
+      await saveRics(
+        rics.trim()
           ? rics
               .split(",")
               .map((value) => value.trim())
               .filter(Boolean)
               .map(Number)
           : [],
-      });
+      );
       router.back();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Connection failed");
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "Could not save alert settings.",
+      );
     } finally {
       setBusy(false);
     }
   }
 
-  async function removeConnection() {
-    setBusy(true);
-    setError(null);
+  async function copyUid() {
+    if (!uid) return;
     try {
-      await disconnect();
-      setBaseUrl("");
-      setApiKey("");
-      setRics("");
-      router.back();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Disconnect failed");
-    } finally {
-      setBusy(false);
+      await setStringAsync(uid);
+      setCopied(true);
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "Could not copy device ID.",
+      );
     }
   }
 
   return (
     <Screen scroll>
-      <Typography>Server URL</Typography>
-      <TextInput
-        accessibilityLabel="Server URL"
-        value={baseUrl}
-        onChangeText={setBaseUrl}
-        placeholder="https://pager.example.com"
-        placeholderTextColor={theme.colors.textSecondary}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="url"
-        editable={!busy}
-        style={inputStyle}
-      />
-      <Typography>Device key</Typography>
-      <TextInput
-        accessibilityLabel="Device key"
-        value={apiKey}
-        onChangeText={setApiKey}
-        placeholder="Paste the key from your server"
-        placeholderTextColor={theme.colors.textSecondary}
-        autoCapitalize="none"
-        autoCorrect={false}
-        secureTextEntry
-        editable={!busy}
-        style={inputStyle}
-      />
-      <Typography>Alert RICs</Typography>
-      <TextInput
-        accessibilityLabel="Alert RICs"
-        value={rics}
-        onChangeText={setRics}
-        placeholder="All, or comma-separated RICs"
-        placeholderTextColor={theme.colors.textSecondary}
-        keyboardType="numbers-and-punctuation"
-        editable={!busy}
-        style={inputStyle}
-      />
-      <Typography variant="caption" color={theme.colors.textSecondary}>
-        Leave RICs empty to receive all alerts your device key allows. This
-        selects push alerts; it does not restrict history access.
+      <Typography>
+        {approved
+          ? "Approved for history and notifications"
+          : approvalChecked
+            ? "Waiting for administrator approval"
+            : "Checking approval…"}
       </Typography>
-      <Typography variant="caption">{pushStatus}</Typography>
+      <Typography>Device ID</Typography>
+      <Typography selectable>{uid ?? "Creating device identity…"}</Typography>
+      {uid && (
+        <Button
+          label={copied ? "Device ID copied" : "Copy device ID"}
+          onPress={() => {
+            void copyUid();
+          }}
+        />
+      )}
+      <Typography variant="caption" color={theme.colors.textSecondary}>
+        Share this ID with the administrator to request access. A new phone or
+        cleared app data needs a new approval.
+      </Typography>
+      {approved && <Typography>Alert RICs</Typography>}
+      {approved && (
+        <TextInput
+          accessibilityLabel="Alert RICs"
+          value={rics}
+          onChangeText={setRics}
+          placeholder="All, or comma-separated RICs"
+          placeholderTextColor={theme.colors.textSecondary}
+          keyboardType="numbers-and-punctuation"
+          editable={!busy}
+          style={inputStyle}
+        />
+      )}
+      {approved && (
+        <Typography variant="caption" color={theme.colors.textSecondary}>
+          Leave RICs empty to receive all alerts. This filters notifications
+          only; history includes every message.
+        </Typography>
+      )}
+      {approved && <Typography variant="caption">{pushStatus}</Typography>}
       {error && (
         <Typography accessibilityRole="alert" color={theme.colors.danger}>
           {error}
         </Typography>
       )}
-      <Button
-        label={busy ? "Saving…" : "Save and connect"}
-        disabled={busy}
-        onPress={() => {
-          void connect();
-        }}
-      />
-      {connection && (
+      {approved && (
         <Button
-          label="Disconnect and erase saved history"
+          label={busy ? "Saving…" : "Save alert settings"}
           disabled={busy}
-          onPress={() =>
-            Alert.alert(
-              "Disconnect?",
-              "Push registration and saved history will be removed. The server must be reachable.",
-              [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Disconnect",
-                  style: "destructive",
-                  onPress: () => {
-                    void removeConnection();
-                  },
-                },
-              ],
-            )
-          }
+          onPress={() => {
+            void save();
+          }}
         />
       )}
     </Screen>

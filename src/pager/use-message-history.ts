@@ -1,105 +1,75 @@
 import { useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
-import { request } from "@/pager/api";
 import { useConnection } from "@/pager/connection-provider";
 import { cachedMessages, cacheMessages } from "@/pager/database";
-import type { MessagePage, PagerMessage, ReceiverStatus } from "@/pager/types";
+import { getMessagePage } from "@/pager/firebase";
+import { loadHistoryPage } from "@/pager/history-backfill";
+import type { PagerMessage } from "@/pager/types";
 
 export function useMessageHistory() {
-  const { connection, revision } = useConnection();
+  const { connection, revision, hasAccess } = useConnection();
   const [messages, setMessages] = useState<PagerMessage[]>([]);
-  const [status, setStatus] = useState<ReceiverStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<number | null>(null);
   const loadRef = useRef<(older?: boolean) => Promise<void>>(async () => {});
-  const cursor = useRef<number | null>(null);
+  const uid = connection?.uid;
 
   useEffect(() => {
-    // Synchronize the visible history with the external SQLite cache when the connection changes.
+    const saved = uid && hasAccess(uid) ? cachedMessages() : [];
+    // Read the external SQLite cache when access changes.
     // oxlint-disable-next-line react/set-state-in-effect
-    setMessages(connection ? cachedMessages() : []);
-    setNextCursor(null);
-    cursor.current = null;
-    setStatus(null);
+    setMessages(saved);
+    setNextCursor(saved.at(-1)?.id ?? null);
     setError(null);
     setLoading(false);
-    if (!connection) return;
-    const controller = new AbortController();
+    if (!uid) return;
+    let cancelled = false;
     let busy = false;
-    let initialized = false;
-    let newestId = 0;
+    let cursor: number | null = saved.at(-1)?.id ?? null;
+    let initialized = saved.length > 0;
+    let newestId = saved[0]?.id ?? 0;
     async function load(older = false) {
-      if (
-        !connection ||
-        busy ||
-        controller.signal.aborted ||
-        (older && cursor.current === null)
-      )
+      if (busy || cancelled || !hasAccess(uid!) || (older && cursor === null))
         return;
       busy = true;
       setLoading(true);
       try {
-        const query = older ? `&before=${cursor.current}` : "";
-        const timeout = controller.signal;
-        const page = await request<MessagePage>(
-          connection,
-          `/v1/messages?limit=50&includeRepeats=true${query}`,
-          { signal: timeout },
-        );
-        if (controller.signal.aborted) return;
-        const received = [...page.messages];
-        let catchupPage = page;
-        // More than one page can arrive while the phone is offline. Fetch the gap
-        // before merging the newest page into history that is already loaded.
-        while (
-          !older &&
-          newestId > 0 &&
-          catchupPage.nextCursor !== null &&
-          (catchupPage.messages.at(-1)?.id ?? 0) > newestId
-        ) {
-          catchupPage = await request<MessagePage>(
-            connection,
-            `/v1/messages?limit=50&includeRepeats=true&before=${catchupPage.nextCursor}`,
-            { signal: timeout },
-          );
-          if (controller.signal.aborted) return;
-          received.push(...catchupPage.messages);
-        }
+        const page = await loadHistoryPage({
+          newestId,
+          before: older ? cursor! : undefined,
+          getPage: getMessagePage,
+          cancelled: () => cancelled || !hasAccess(uid!),
+        });
+        if (!page || cancelled || !hasAccess(uid!)) return;
+        const received = page.messages;
         cacheMessages(received);
-        const preserveLoaded = initialized;
         setMessages((previous) => {
+          if (!hasAccess(uid!)) return [];
           const combined = new Map(
-            (preserveLoaded ? previous : []).map((message) => [
-              message.id,
-              message,
-            ]),
+            previous.map((message) => [message.id, message]),
           );
           for (const message of received) combined.set(message.id, message);
           return [...combined.values()].sort((a, b) => b.id - a.id);
         });
         if (older || !initialized) {
-          cursor.current = page.nextCursor;
-          setNextCursor(page.nextCursor);
+          cursor = page.nextCursor;
+          setNextCursor(cursor);
         }
         initialized = true;
         newestId = Math.max(newestId, received[0]?.id ?? 0);
         setError(null);
-        const receiver = await request<ReceiverStatus>(
-          connection,
-          "/v1/status",
-          { signal: timeout },
-        );
-        if (!controller.signal.aborted) setStatus(receiver);
-      } catch (error) {
-        if (!controller.signal.aborted)
+      } catch (failure) {
+        if (!cancelled && hasAccess(uid!))
           setError(
-            error instanceof Error ? error.message : "Could not load messages",
+            failure instanceof Error
+              ? failure.message
+              : "Could not load messages.",
           );
       } finally {
         busy = false;
-        if (!controller.signal.aborted) setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     loadRef.current = load;
@@ -108,18 +78,17 @@ export function useMessageHistory() {
       if (AppState.currentState === "active") void load();
     }, 20_000);
     return () => {
-      controller.abort();
+      cancelled = true;
       clearInterval(timer);
       loadRef.current = async () => {};
     };
-  }, [connection]);
+  }, [uid, hasAccess]);
 
   useEffect(() => {
     void loadRef.current();
   }, [revision]);
   return {
     messages,
-    status,
     error,
     loading,
     nextCursor,

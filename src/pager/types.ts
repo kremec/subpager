@@ -1,6 +1,5 @@
 export interface Connection {
-  baseUrl: string;
-  apiKey: string;
+  uid: string;
   rics: number[];
 }
 
@@ -17,14 +16,4 @@ export interface PagerMessage {
 export interface MessagePage {
   messages: PagerMessage[];
   nextCursor: number | null;
-}
-
-export interface ReceiverStatus {
-  receiver: {
-    state: string;
-    lastMessageAt: string | null;
-    error: string | null;
-  };
-  pendingPushes: number;
-  pushError?: string | null;
 }

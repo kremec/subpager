@@ -1,6 +1,6 @@
 # subpager app
 
-Private pager history and push notifications for `subpager-server`. Expo SDK 57, React Native 0.86, TypeScript and Bun. The structure follows subcycle/subsocial: thin `src/app` routes, `src/screens`, feature modules, theme tokens and inline component styles, `@/` imports, oxlint/oxfmt and Git quality hooks. No cloud project IDs or credentials were copied from those apps.
+Whitelist-only pager history and push notifications for `subpager-server`, using Firebase Anonymous Authentication and Firestore. Expo SDK 57, React Native 0.86, TypeScript and Bun. The structure follows subcycle/subsocial: thin `src/app` routes, `src/screens`, feature modules, theme tokens and inline component styles, `@/` imports, oxlint/oxfmt and Git quality hooks. Firebase and Expo SDKs handle authentication, token refresh and push transport. There is no app sign-in screen and no connection to the receiver's HTTP API.
 
 ## Branches
 
@@ -13,23 +13,36 @@ bun install
 bun run check
 bun run lint
 bun run format:check
+bun test src/pager/history-backfill.test.ts
 bunx expo install --check
 bunx expo-doctor@latest
 ```
 
 The repository has not been built or tested on a phone. Type and dependency checks do not verify push delivery.
 
-## Connect a phone
+Firebase authentication adds the native AsyncStorage module, and the approval screen adds Expo Clipboard. Install a new native build for this change; an OTA update alone cannot add these modules.
 
-1. Set up the receiver and private HTTPS server as described in `../subpager-server/README.md`.
-2. Create a separate server device key for each phone. Do not reuse one key across people or devices.
-3. Open **Connection settings**. Enter the HTTPS origin and device key. Development builds also permit HTTP for local testing; native platform network restrictions may still block cleartext HTTP.
-4. Leave **Alert RICs** empty to receive all alerts, or enter comma-separated pager addresses. This filters push notifications only. It does not restrict who can read history. Share server access only with people allowed to see the server's full history.
-5. Allow notification permission. Check the registration state in settings. It refreshes when the app returns to the foreground and when the push token changes.
+## Firebase access and history
 
-Credentials are held in Expo SecureStore. Messages are cached in local SQLite, without credentials or push tokens. The latest 500 cached messages are available when offline; the cache keeps at most 1,000 messages. Message history remains complete on the server and can be paged with **Load older messages**. Switching server or device key and disconnecting erase the local message cache. Disconnect needs the old server reachable so its push registration can be removed first. If the old server is permanently unavailable, revoke that device key on the server before clearing app data.
+Cloud setup completed on 2026-10-08 in `subpager-subbyte`: Anonymous Authentication enabled with cleanup off, default Standard Firestore in Frankfurt (`europe-west3`), and whitelist rules deployed. The project remains on Spark. All 80 Rules API tests and 18 live client-access checks passed; temporary test data and identity were removed. The receiver has a separate private Firestore key, and its existing eight messages were backfilled without sending alerts. No real device UID has been approved yet. Install a new native build, then approve the UID it shows. Phone behavior and push display remain unverified.
 
-When active, the app refreshes every 20 seconds, when a notification arrives, on resume, or with pull-to-refresh. Background alerts use Expo push. Tapping an alert opens its message, including when launching a closed app. Push delivery depends on phone settings, operating system, Expo, APNs/FCM and internet connectivity; this app is a secondary receiver, not an official emergency pager.
+The Play tester list controls distribution. Firestore controls data access. Both are manual gates: add a friend's Google email to the Play internal tester group, then approve the UID shown by their installed app. A copied APK never grants access to messages.
+
+1. In the existing Firebase project `subpager-subbyte`, enable Authentication > Sign-in method > Anonymous. Keep automatic cleanup of anonymous accounts disabled, because these identities are permanent device approvals.
+2. Create the default Cloud Firestore database in production mode. Apply `../subpager-server/firestore.rules` before enabling the receiver's cloud integration. Do not use test-mode rules.
+3. Configure the receiver as described in `../subpager-server/README.md`. It uploads history and checks approval before sending each notification. Its service-account key stays on the receiver and is never bundled into this app.
+4. The app derives public Firebase client identifiers from the matching Android client in `google-services.json`, read through `GOOGLE_SERVICES_JSON` in EAS. This file contains client configuration, not privileged credentials. A build without a matching client displays a configuration error.
+5. Install the app. It silently creates an anonymous Firebase account and preserves it with AsyncStorage. Open **Settings and device ID**, then use **Copy device ID** to share its UID with the administrator.
+6. From the receiver repository, run `bun run member:approve FIREBASE_UID "Friend's name"`, or create `members/{uid}` with `approved: true` and a `label` in Firebase Console. Use `bun run member:list` to inspect approvals and `bun run member:revoke FIREBASE_UID` to revoke one. Only the administrator can change membership. One approval grants both history and notifications. A missing document or `approved: false` denies both.
+7. The app sees approval, fetches history and asks for OS notification permission. Leave **Alert RICs** empty for all alerts or set comma-separated addresses. RICs select alerts and never limit history.
+
+An approved app writes only its own `devices/{uid}` document, containing `expoPushToken` and `rics`. It cannot modify messages or approvals, or list other members/devices. Notification permission disabled on the phone stores a null token when the app next resumes. History continues to work. Re-enabling permission registers the current token and receives future alerts; loading old history does not send old alerts.
+
+New phones, clearing app data or reinstalling can create a new UID and require another approval. Never use the UID as a password: Firebase also requires proof that this app instance owns that identity. Revoking membership stops future server sends and cloud reads. The app erases SQLite history and dismisses displayed alerts when it observes revocation. Previously copied content and alerts already handed to the push provider cannot be recalled. An offline phone may retain its last known approval and cached messages until it reconnects.
+
+Messages are cached locally in SQLite. The newest 500 cached messages are shown offline, and the cache keeps at most 1,000. Online history can be paged with **Load older messages**. The app fills every page of a gap after reconnecting. When active, it refreshes every 20 seconds, on foreground entry, on an incoming notification or with pull-to-refresh. Notification taps fetch uncached message details from Firestore.
+
+Neither phones nor Firebase connect to your Mac. The receiver needs only outbound access to Firebase and Expo. The app uses Firebase's internet-accessible endpoints with enforced authentication and whitelist rules. Receiver downtime delays cloud history; phone notification settings do not control history uploads.
 
 ## Set up Expo push
 
@@ -75,16 +88,9 @@ bunx eas-cli@latest build --platform android --profile preview
 
 Accept EAS-managed Android signing when prompted, then download and install the APK from the build link. This preview APK is for direct installation. For the existing Google Play app and its internal testing track, use the production build and submission flow below.
 
-The receiver computer must run the server and have outbound HTTPS access to Expo. The phone needs a reachable HTTPS origin for registration and history. The current server binds only to `127.0.0.1:8787`; a phone cannot reach its own localhost. Put a trusted HTTPS proxy/tunnel in front of that local API, or provide a private HTTPS route. Do not expose an unauthenticated raw port. No network route or tunnel has been installed here.
+The receiver computer needs outbound HTTPS access to Firestore and Expo. Phones need internet access to Firebase; no public receiver origin, domain or tunnel is required. Expo still sends notifications through the EAS-managed FCM/APNs credentials.
 
-Create one server key per phone:
-
-```sh
-cd ~/Projects/prod/subpager-server
-bun run device:add "My phone"
-```
-
-In the app, enter that HTTPS origin and key, grant notification permission, and confirm "Push notifications registered". The app obtains its Expo push token and registers it with the server. The server sends via Expo; Firebase credentials stay in EAS, not on the receiver computer. `EXPO_ACCESS_TOKEN` is optional unless enhanced push security is enabled in Expo; if enabled, the server must use the matching access token. [Expo sending guide](https://docs.expo.dev/push-notifications/sending-notifications/).
+`EXPO_ACCESS_TOKEN` is optional unless enhanced push security is enabled in Expo. If enabled, the receiver must use the matching access token. [Expo sending guide](https://docs.expo.dev/push-notifications/sending-notifications/).
 
 Test with neutral content using [Expo's push notification tool](https://expo.dev/notifications), then confirm a new real call reaches history and alerts while the phone is locked. Test messages must not be inserted into live pager history. A successful Expo receipt is provider acceptance, not proof that the phone displayed or sounded an alert.
 
@@ -128,14 +134,15 @@ This setup linked GitHub, configured Android signing, assigned the Play and FCM 
 
 ## End-to-end acceptance checks
 
-Use Expo's notification tool with neutral test content for transport checks. Replay is read-only and never sends push; live history contains only real receptions.
+These require an explicitly approved cloud setup and an installed phone build. They have not been performed by the code checks. Use neutral test content for transport checks; do not insert test messages into live pager history.
 
-- Receive a new real call while the app is open. Confirm history, content, time and RIC match the server.
-- Repeat while the phone is locked and while the app is closed. Confirm an alert, sound according to phone settings, and the correct detail screen after tapping. Use a new live page for history checks and an explicit neutral test notification for transport checks.
-- Repeat with a matching RIC and a nonmatching RIC. Confirm push filtering, and that history still contains both.
-- Disable notification permission. Resume the app and confirm its server registration is removed. Enable permission and resume to register again.
-- Disconnect, send another message and confirm no newly queued notifications for this key. Notifications already accepted by Expo/APNs/FCM may still arrive. Change server or key and confirm cached history is erased.
-- Turn off server connectivity. Confirm saved history remains readable and the error is visible. Restore it, resume the app and confirm history catches up.
-- Load more than 50 messages, pull to refresh and confirm loaded pages remain present. A notification tap must work when its message has not been cached.
+- Open an unapproved installation. Confirm its UID is stable after restarting and history stays blocked. Approve the UID and confirm history and notification registration become available without signing in.
+- Receive a real call while the app is open, locked and closed. Compare message content, time and RIC with the receiver. Tap an alert for a message that is not cached and confirm its details load.
+- Set matching and nonmatching RICs. Confirm alert filtering while history includes both.
+- Disable notification permission and resume. Confirm the device token becomes null while history keeps syncing. Enable permission, resume and confirm new alerts resume without replaying old ones.
+- Keep the phone offline for more than 50 new messages. Restore internet and confirm every gap is filled. Page older history and confirm refresh preserves loaded messages.
+- Disconnect the Mac from the internet. Confirm local receptions remain saved, then upload after reconnecting without a burst of delayed notifications.
+- Revoke the UID. Confirm cloud reads and new sends stop, and the online app clears cached history. Confirm that offline retained content cannot be remotely erased.
+- Clear app data or install on another phone. Confirm the new UID has no access before manual approval.
 
-Configuration and dependency checks do not prove signing, store submission, physical-device behavior or push delivery.
+Type, lint and dependency checks do not prove deployed rules, cloud permissions, signing, store submission, physical-device behavior or push delivery.

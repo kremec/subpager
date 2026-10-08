@@ -14,33 +14,27 @@ import { useTheme } from "@/theme/use-theme";
 export const HistoryScreen: FC = () => {
   const router = useRouter();
   const theme = useTheme();
-  const { connection } = useConnection();
-  const { messages, status, error, loading, nextCursor, refresh, loadMore } =
+  const {
+    connection,
+    approvalChecked,
+    error: accessError,
+    retry,
+  } = useConnection();
+  const { messages, error, loading, nextCursor, refresh, loadMore } =
     useMessageHistory();
   return (
     <Screen>
       <View style={{ gap: theme.spacing.sm }}>
         <Button
-          label="Connection settings"
+          label="Settings and device ID"
           onPress={() => router.push("/settings")}
         />
-        {connection && (
-          <Typography variant="caption" color={theme.colors.textSecondary}>
-            {connection.baseUrl}
-          </Typography>
-        )}
-        {status && (
-          <Typography variant="caption">
-            Receiver: {status.receiver.state}. Pending pushes:{" "}
-            {status.pendingPushes}
-            {status.receiver.error ? `. ${status.receiver.error}` : ""}
-          </Typography>
-        )}
-        {status?.pushError && (
+        {accessError && (
           <Typography accessibilityRole="alert" color={theme.colors.danger}>
-            Push delivery error: {status.pushError}
+            {accessError}
           </Typography>
         )}
+        {accessError && <Button label="Retry connection" onPress={retry} />}
         {error && (
           <Typography accessibilityRole="alert" color={theme.colors.danger}>
             {error}. Saved history remains available.
@@ -49,7 +43,9 @@ export const HistoryScreen: FC = () => {
       </View>
       {!connection && (
         <Typography>
-          Connect to your server with a separate device key for this phone.
+          {approvalChecked
+            ? "Waiting for approval. Open settings and share your device ID with the administrator."
+            : "Checking device approval…"}
         </Typography>
       )}
       {connection && (

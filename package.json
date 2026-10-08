@@ -1,6 +1,6 @@
 {
   "name": "subpager-app",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
@@ -22,7 +22,9 @@
     "prepare": "git config --local include.path ../.githooks/.gitconfig"
   },
   "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~57.0.27",
+    "expo-clipboard": "~57.0.2",
     "expo-constants": "~57.0.21",
     "expo-dev-client": "~57.0.19",
     "expo-linking": "~57.0.12",
@@ -33,12 +35,15 @@
     "expo-sqlite": "~57.0.4",
     "expo-system-ui": "~57.0.4",
     "expo-updates": "~57.0.25",
+    "firebase": "^12",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.6.4",
     "@types/react": "~19.2.2",
     "oxfmt": "^0.59.0",
     "oxlint": "^1.74.0",
