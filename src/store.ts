@@ -7,6 +7,7 @@ import { normalizeContent, type Page } from "./radio/decoder";
 export interface Message extends Page {
   id: number;
   duplicateOf: number | null;
+  location?: string | null;
 }
 
 export interface RicUnit {
@@ -51,7 +52,8 @@ export class Store {
   readonly db: Database;
   constructor(
     path: string,
-    private firebaseOnly = false,
+    private cloudOnly = false,
+    private extractLocations = false,
   ) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path, { create: true, strict: true });
@@ -83,11 +85,15 @@ export class Store {
         UNIQUE(device_id, message_id)
       );
       CREATE INDEX IF NOT EXISTS push_due ON push_jobs(state, next_attempt);
-      DROP TABLE IF EXISTS firebase_sync;
-      DROP TRIGGER IF EXISTS message_revision_insert;
-      DROP TRIGGER IF EXISTS message_revision_update;
-      DROP TABLE IF EXISTS firebase_message_revisions;
-      DROP TABLE IF EXISTS message_revisions;
+      CREATE TABLE IF NOT EXISTS cloud_cursors (
+        deployment TEXT PRIMARY KEY, message_id INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS location_jobs (
+        message_id INTEGER PRIMARY KEY REFERENCES messages(id),
+        state TEXT NOT NULL DEFAULT 'pending', location TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL,
+        error TEXT
+      );
     `);
     if (
       this.db
@@ -107,24 +113,6 @@ export class Store {
         if (!existing.some(({ name }) => name === column.split(" ")[0]))
           this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
     }
-    if (
-      this.db
-        .query(
-          "SELECT name FROM sqlite_master WHERE name = 'firebase_rejected_tokens'",
-        )
-        .get()
-    )
-      this.db.transaction(() => {
-        this.db.exec(`
-          UPDATE devices SET rejected_push_token = (
-            SELECT token FROM firebase_rejected_tokens WHERE device_id = devices.id
-          ) WHERE id LIKE 'firebase:%' AND EXISTS (
-            SELECT 1 FROM firebase_rejected_tokens WHERE device_id = devices.id
-              AND (devices.expo_push_token IS NULL OR devices.expo_push_token = token)
-          );
-          DROP TABLE firebase_rejected_tokens;
-        `);
-      })();
   }
 
   addDevice(name: string) {
@@ -167,19 +155,13 @@ export class Store {
     })();
   }
 
-  disablePush(id: string, token?: string, updateTime?: string | null) {
+  disablePush(id: string, token?: string, _updateTime?: string | null) {
     this.db.transaction(() => {
       const changed = this.db
         .query(
           "UPDATE devices SET expo_push_token = NULL WHERE id = ? AND (? IS NULL OR expo_push_token = ?)",
         )
         .run(id, token ?? null, token ?? null).changes;
-      if (changed && token !== undefined && id.startsWith("firebase:"))
-        this.db
-          .query(
-            "UPDATE devices SET rejected_push_token = ?, rejected_update_time = ? WHERE id = ?",
-          )
-          .run(token, updateTime ?? null, id);
       if (changed)
         this.db
           .query(
@@ -189,72 +171,20 @@ export class Store {
     })();
   }
 
-  rejectedPushTokens() {
-    return this.db
-      .query<{ id: string; token: string; updateTime: string | null }, []>(
-        `SELECT id, rejected_push_token AS token, rejected_update_time AS updateTime
-          FROM devices WHERE rejected_push_token IS NOT NULL`,
-      )
-      .all();
-  }
-
-  pinRejectedPushToken(id: string, token: string, updateTime: string) {
-    this.db
-      .query(`UPDATE devices SET rejected_update_time = ?
-      WHERE id = ? AND rejected_push_token = ? AND rejected_update_time IS NULL`)
-      .run(updateTime, id, token);
-  }
-
-  clearRejectedPushToken(id: string, token: string, updateTime: string | null) {
-    this.db
-      .query(`UPDATE devices SET rejected_push_token = NULL, rejected_update_time = NULL
-      WHERE id = ? AND rejected_push_token = ? AND rejected_update_time IS ?`)
-      .run(id, token, updateTime);
-  }
-
-  syncFirebaseDevices(
-    devices: { uid: string; name?: string; token: string }[],
-  ) {
-    this.db.transaction(() => {
-      const active = new Set(devices.map((device) => `firebase:${device.uid}`));
-      for (const device of this.db
-        .query<{ id: string }, []>(
-          "SELECT id FROM devices WHERE id LIKE 'firebase:%'",
-        )
-        .all()) {
-        if (!active.has(device.id)) this.disablePush(device.id);
-      }
-      for (const device of devices) {
-        const id = `firebase:${device.uid}`;
-        this.db
-          .query(`INSERT INTO devices (id, name, token_hash) VALUES (?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET name = excluded.name`)
-          .run(
-            id,
-            device.name ?? device.uid,
-            tokenHash(randomBytes(32).toString("base64url")),
-          );
-        const rejected = this.db
-          .query<{ token: string; updateTime: string | null }, [string]>(
-            "SELECT rejected_push_token AS token, rejected_update_time AS updateTime FROM devices WHERE id = ?",
-          )
-          .get(id);
-        if (rejected?.token === device.token) continue;
-        if (rejected?.token)
-          this.clearRejectedPushToken(id, rejected.token, rejected.updateTime);
-        this.registerDevice(id, device.token);
-      }
-    })();
-  }
-
-  firebaseMessages(afterId: number): Message[] {
+  cloudMessages(afterId: number): Message[] {
     return this.db
       .query<Message, [number]>(`
-        SELECT ${messageColumns} FROM messages
-        WHERE id > ?
-        ORDER BY id LIMIT 100
+        SELECT ${messageColumns} FROM messages WHERE id > ? ORDER BY id LIMIT 100
       `)
-      .all(afterId);
+      .all(afterId)
+      .map((message) => {
+        const result = this.db
+          .query<{ location: string | null }, [number]>(
+            "SELECT location FROM location_jobs WHERE message_id = ? AND state IN ('ready', 'uploaded')",
+          )
+          .get(message.id);
+        return result ? { ...message, location: result.location } : message;
+      });
   }
 
   ricUnits(): RicUnit[] {
@@ -304,20 +234,24 @@ export class Store {
           content,
           match?.id ?? null,
         )!;
-      if (!match)
+      if (!match && !this.cloudOnly)
         this.db
           .query(`
             INSERT INTO push_jobs (device_id, message_id, next_attempt, expires_at)
             SELECT id, ?, ?, ? FROM devices
             WHERE expo_push_token IS NOT NULL
-              AND (? = 0 OR id LIKE 'firebase:%')
           `)
-          .run(
-            message.id,
-            Date.now(),
-            timestamp + pushMaxAgeSeconds * 1000,
-            this.firebaseOnly ? 1 : 0,
-          );
+          .run(message.id, Date.now(), timestamp + pushMaxAgeSeconds * 1000);
+      if (
+        this.extractLocations &&
+        message.content.trim() &&
+        message.type !== "tone"
+      )
+        this.db
+          .query(
+            "INSERT INTO location_jobs (message_id, next_attempt) VALUES (?, ?)",
+          )
+          .run(message.id, Date.now());
       return message;
     })();
   }

@@ -21,7 +21,7 @@ test("repeated errors produce a five-minute reminder and one recovery, while cha
   const errors = spyOn(console, "error").mockImplementation(() => {});
   const info = spyOn(console, "log").mockImplementation(() => {});
   try {
-    const report = createErrorReporter("Firebase sync");
+    const report = createErrorReporter("Convex sync");
     report(null);
     report("Quota exceeded");
     for (let i = 0; i < 299; i++) {
@@ -38,7 +38,7 @@ test("repeated errors produce a five-minute reminder and one recovery, while cha
     report(null);
     report(null);
     expect(info).toHaveBeenCalledTimes(1);
-    expect(info.mock.calls[0]![0]).toEndWith("Firebase sync recovered");
+    expect(info.mock.calls[0]![0]).toEndWith("Convex sync recovered");
     report("Quota exceeded");
     expect(errors).toHaveBeenCalledTimes(4);
   } finally {

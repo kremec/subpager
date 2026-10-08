@@ -5,7 +5,8 @@ import { createHandler, type ReceiverStatus } from "./api";
 import { RadioReceiver, type AudioClip } from "./radio";
 import { Store } from "./store";
 import { PushWorker } from "./delivery";
-import { FirebaseClient, FirebaseWorker } from "./firebase";
+import { ConvexClient, ConvexWorker } from "./convex";
+import { LocationExtractor, LocationWorker } from "./location";
 import { createErrorReporter, logError, logInfo } from "./log";
 
 async function archiveRecording(
@@ -27,17 +28,23 @@ async function archiveRecording(
 async function main() {
   const config = await loadConfig();
   const noRadio = process.env.SUBPAGER_NO_RADIO === "1";
-  const firebase = config.firebase
-    ? await FirebaseClient.open(config.firebase)
+  const client = config.convex
+    ? await ConvexClient.open(config.convex)
     : undefined;
-  const store = new Store(config.database, !!firebase);
-  const cloud = firebase ? new FirebaseWorker(store, firebase) : undefined;
-  const worker = new PushWorker(
-    store,
-    fetch,
-    process.env.EXPO_ACCESS_TOKEN,
-    cloud ? (job) => cloud.authorize(job) : undefined,
-  );
+  const store = new Store(config.database, !!client, !!config.location);
+  const cloud = client ? new ConvexWorker(store, client) : undefined;
+  const worker = client
+    ? undefined
+    : new PushWorker(store, fetch, process.env.EXPO_ACCESS_TOKEN);
+  const location =
+    config.location && client && cloud
+      ? new LocationWorker(
+          store,
+          await LocationExtractor.open(config.location),
+          client,
+          cloud,
+        )
+      : undefined;
   if (config.clips.enabled) {
     await mkdir(config.clips.directory, { recursive: true });
     // Recover a clip committed to disk before a prior process could archive it.
@@ -64,7 +71,7 @@ async function main() {
       restartCount: radio?.restartCount ?? 0,
     };
   };
-  const server = firebase
+  const server = client
     ? undefined
     : Bun.serve({
         hostname: config.api.host,
@@ -73,13 +80,16 @@ async function main() {
         fetch: createHandler({
           store,
           receiverStatus: status,
-          pushError: () => worker.lastError,
+          pushError: () => worker?.lastError ?? null,
         }),
       });
   let stopping = false;
   let delivery = Promise.resolve();
   let delivering = false;
-  const reportCloud = createErrorReporter("Firebase sync");
+  const reportCloud = createErrorReporter("Convex sync");
+  const reportLocation = createErrorReporter("Location enrichment");
+  let enrichment = Promise.resolve();
+  let enriching = false;
   const reportPush = createErrorReporter("Push delivery");
   const reportDelivery = createErrorReporter("Delivery worker");
   const reportReceiver = createErrorReporter("Receiver");
@@ -90,8 +100,8 @@ async function main() {
     delivery = (async () => {
       await cloud?.tick().catch(() => {});
       if (cloud) reportCloud(cloud.lastError);
-      await worker.tick();
-      reportPush(worker.lastError);
+      await worker?.tick();
+      if (worker) reportPush(worker.lastError);
       reportDelivery(null);
     })()
       .catch((error) =>
@@ -103,15 +113,36 @@ async function main() {
         delivering = false;
       });
   };
-  const timer = setInterval(tick, 1000);
+  const locationTick = () => {
+    if (stopping || enriching || !location) return;
+    enriching = true;
+    enrichment = location
+      .tick()
+      .catch((error) => {
+        reportLocation(
+          error instanceof Error ? error.message : "Location worker failed",
+        );
+      })
+      .finally(() => {
+        reportLocation(location.lastError);
+        enriching = false;
+      });
+  };
+  const timer = setInterval(() => {
+    tick();
+    locationTick();
+  }, 1000);
+  tick();
+  locationTick();
   logInfo(
-    `${firebase ? `Subpager Firebase: ${firebase.projectId}` : `Subpager API: ${server!.url}`}. Radio: ${noRadio ? "disabled" : config.radio.frequencyHz}`,
+    `${client ? `Subpager Convex: ${client.siteUrl}` : `Subpager API: ${server!.url}`}. Radio: ${noRadio ? "disabled" : config.radio.frequencyHz}`,
   );
   const cleanup = async () => {
     clearInterval(timer);
     await server?.stop(true);
     await receiver?.stop();
     await delivery;
+    await enrichment;
   };
   const stop = async (exitCode = 0) => {
     if (stopping) return;

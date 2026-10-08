@@ -12,3 +12,6 @@ data/
 *.raw
 *.iq
 .DS_Store
+
+*-secret.txt
+*-api-key.txt

@@ -3,7 +3,7 @@ import { loadConfig, initConfig } from "../src/config";
 import { RadioReceiver, replayWav, surveyGains } from "../src/radio";
 import { parseDecoderLine, type Page } from "../src/radio/decoder";
 import { Store } from "../src/store";
-import { FirebaseClient } from "../src/firebase";
+import { ConvexClient, ConvexWorker } from "../src/convex";
 
 export async function setup(configureUsb = false) {
   const install =
@@ -241,54 +241,74 @@ export async function revokeDevice(id?: string) {
   console.log(`Revoked ${store.revokeDevice(id)} device(s).`);
 }
 
-export async function setMember(
-  uid: string | undefined,
-  approved: boolean,
-  label?: string,
-) {
+async function cloudClient() {
+  const config = await loadConfig();
+  if (!config.convex) throw new Error("Configure convex in config.json first");
+  return { config, client: await ConvexClient.open(config.convex) };
+}
+
+export async function setMember(uid: string | undefined, approved: boolean) {
   if (!uid || !/^[A-Za-z0-9_-]{1,128}$/.test(uid))
     throw new Error(
-      `Usage: bun run member:${approved ? "approve" : "revoke"} FIREBASE_UID${approved ? ' "Name"' : ""}`,
+      `Usage: bun run member:${approved ? "approve" : "revoke"} DEVICE_UID`,
     );
-  const config = await loadConfig();
-  if (!config.firebase)
-    throw new Error("Configure firebase in config.json first");
-  const client = await FirebaseClient.open(config.firebase);
-  const previous = await client.get("members", uid);
-  await client.set("members", uid, {
-    approved,
-    label:
-      label?.trim() ||
-      (typeof previous?.label === "string" ? previous.label : uid),
-  });
+  const { client } = await cloudClient();
+  await client.setMember(uid, approved);
   console.log(
     `${approved ? "Approved" : "Revoked"} ${uid} for history and notifications.`,
   );
 }
 
 export async function listMembers() {
-  const config = await loadConfig();
-  if (!config.firebase)
-    throw new Error("Configure firebase in config.json first");
-  const client = await FirebaseClient.open(config.firebase);
-  for (const member of await client.list("members"))
+  const { client } = await cloudClient();
+  for (const device of await client.devices())
     console.log(
-      `${member.id}\t${member.data.approved === true ? "approved" : "revoked"}\t${member.data.label ?? ""}`,
+      `${device.uid}\t${device.approved ? "approved" : "revoked"}\t${device.expoPushToken ? "push enabled" : "push disabled"}`,
     );
 }
 
 export async function syncRicUnits() {
-  const config = await loadConfig();
-  if (!config.firebase)
-    throw new Error("Configure firebase in config.json first");
+  const { config, client } = await cloudClient();
   if (!(await Bun.file(config.database).exists()))
     throw new Error(`Database not found: ${config.database}`);
-  const store = new Store(config.database);
+  const store = new Store(config.database, true);
   using _database = store.db;
-  const client = await FirebaseClient.open(config.firebase);
-  const result = await client.syncRicUnits(store.ricUnits());
+  const units = store.ricUnits();
+  await client.syncRicUnits(units);
+  console.log(`RIC mappings: synchronized ${units.length}.`);
+}
+
+export async function importHistory() {
+  const { config, client } = await cloudClient();
+  if (!(await Bun.file(config.database).exists()))
+    throw new Error(`Database not found: ${config.database}`);
+  const store = new Store(config.database, true);
+  using _database = store.db;
+  const worker = new ConvexWorker(store, client);
+  while (store.cloudMessages(worker.cursor).length) {
+    await worker.tick(Date.now(), false);
+    if (worker.lastError) throw new Error(worker.lastError);
+  }
+  await client.syncRicUnits(store.ricUnits());
   console.log(
-    `RIC mappings: ${result.updated} updated, ${result.deleted} removed.`,
+    `History synchronized through ID ${worker.cursor}; no notifications queued.`,
+  );
+}
+
+export async function backfillLocations() {
+  const { config } = await cloudClient();
+  if (!config.location)
+    throw new Error("Configure location in config.json first");
+  if (!(await Bun.file(config.database).exists()))
+    throw new Error(`Database not found: ${config.database}`);
+  const store = new Store(config.database, true);
+  using _database = store.db;
+  const result = store.db
+    .query(`INSERT OR IGNORE INTO location_jobs (message_id, next_attempt)
+    SELECT id, ? FROM messages WHERE type != 'tone' AND length(trim(content)) > 0`)
+    .run(Date.now());
+  console.log(
+    `Queued ${result.changes} messages for background location extraction.`,
   );
 }
 

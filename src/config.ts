@@ -10,7 +10,8 @@ export interface Config {
   api: { host: string; port: number };
   dedupeSeconds: number;
   pushMaxAgeSeconds: number;
-  firebase?: { projectId: string; serviceAccountPath: string };
+  convex?: { siteUrl: string; secretPath: string };
+  location?: { model?: string };
 }
 
 export const defaultConfig: Config = {
@@ -64,16 +65,32 @@ export function validateConfig(value: unknown): asserts value is Config {
     );
   }
   const { radio, clips, api } = value;
-  if (
-    value.firebase !== undefined &&
-    (!isObject(value.firebase) ||
-      typeof value.firebase.projectId !== "string" ||
-      !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(value.firebase.projectId) ||
-      typeof value.firebase.serviceAccountPath !== "string" ||
-      !value.firebase.serviceAccountPath)
-  ) {
-    throw new Error("Firebase requires projectId and serviceAccountPath");
+  if (value.firebase !== undefined)
+    throw new Error(
+      "Replace firebase with convex in config.json before starting this version",
+    );
+  if (value.convex !== undefined) {
+    if (
+      !isObject(value.convex) ||
+      typeof value.convex.siteUrl !== "string" ||
+      !/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.convex\.site$/.test(
+        value.convex.siteUrl,
+      ) ||
+      typeof value.convex.secretPath !== "string" ||
+      !value.convex.secretPath
+    )
+      throw new Error(
+        "Convex requires an HTTPS convex.site URL and secretPath",
+      );
   }
+  if (
+    value.location !== undefined &&
+    (!value.convex ||
+      !isObject(value.location) ||
+      (value.location.model !== undefined &&
+        (typeof value.location.model !== "string" || !value.location.model)))
+  )
+    throw new Error("Location requires Convex; model is optional");
   if (
     !numberIn(radio.frequencyHz, 24000000, 1766000000) ||
     typeof radio.device !== "string" ||
@@ -118,11 +135,8 @@ export async function loadConfig(
   validateConfig(config);
   config.database = resolve(dirname(file), config.database);
   config.clips.directory = resolve(dirname(file), config.clips.directory);
-  if (config.firebase)
-    config.firebase.serviceAccountPath = resolve(
-      dirname(file),
-      config.firebase.serviceAccountPath,
-    );
+  if (config.convex)
+    config.convex.secretPath = resolve(dirname(file), config.convex.secretPath);
   for (const key of ["rtlFmPath", "multimonPath"] as const) {
     if (config.radio[key].includes("/") || config.radio[key].includes("\\"))
       config.radio[key] = resolve(dirname(file), config.radio[key]);

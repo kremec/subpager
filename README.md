@@ -1,6 +1,6 @@
 # Subpager server
 
-Receive Slovenian POCSAG pages with a Nooelec NESDR SMArt. Bun/TypeScript manages SQLite history, recordings and notifications. The phone app uses Firebase for private cloud history and manual device approval. Firebase mode needs only outbound internet access and opens no HTTP listener. `rtl_fm` demodulates FM and pinned `multimon-ng 1.6.1` decodes POCSAG. There are zero runtime npm dependencies; the installed native tools handle the radio.
+Receive Slovenian POCSAG pages with a Nooelec NESDR SMArt. Bun/TypeScript keeps durable SQLite reception history and recordings. The phone app uses Convex for private cloud history, anonymous authentication, manual approval and notification jobs. The receiver needs only outbound internet access in Convex mode and opens no HTTP listener. `rtl_fm` demodulates FM and pinned `multimon-ng 1.6.1` decodes POCSAG. There are zero runtime npm dependencies; the installed native tools handle the radio.
 
 ## Branches
 
@@ -37,7 +37,7 @@ On Windows x64, setup downloads and checks the official decoder archive. Install
 
 ```sh
 SUBPAGER_CONFIG=/path/config.json bun run start # macOS/Linux
-bun run start:api                              # disable radio; sync Firebase if configured
+bun run start:api                              # disable radio; sync Convex if configured
 bun run record /tmp/page.wav 60
 bun run replay /tmp/page.wav
 bun run calibrate 120                          # manual gain comparison
@@ -58,7 +58,7 @@ cd ~/Projects/prod/subpager-server
 bun run start
 ```
 
-Keep that terminal open. Startup should show `Subpager Firebase` when configured, or `Subpager API` in local API mode, followed by `Receiver PCM resumed`; the second line confirms that audio samples arrived. New calls print their message ID and RIC. Stop with Ctrl+C before disconnecting the receiver/antenna or running doctor, record or calibrate. Reconnect and run the same start command when ready. Config changes require a restart.
+Keep that terminal open. Startup should show `Subpager Convex` when configured, or `Subpager API` in local API mode, followed by `Receiver PCM resumed`; the second line confirms that audio samples arrived. New calls print their message ID and RIC. Stop with Ctrl+C before disconnecting the receiver/antenna or running doctor, record or calibrate. Reconnect and run the same start command when ready. Config changes require a restart.
 
 In local API mode, check whether the API is listening from a second terminal:
 
@@ -66,7 +66,7 @@ In local API mode, check whether the API is listening from a second terminal:
 lsof -nP -iTCP:8787 -sTCP:LISTEN
 ```
 
-A Bun listener confirms the server process, not RF reception. No output means nothing is listening on the configured default port. Firebase mode has no listener, so use the receiver's terminal output. In local API mode, the authenticated `/v1/status` endpoint also exposes audio freshness and receiver errors when a device key is available.
+A Bun listener confirms the server process, not RF reception. No output means nothing is listening on the configured default port. Convex mode has no listener, so use the receiver's terminal output. In local API mode, the authenticated `/v1/status` endpoint also exposes audio freshness and receiver errors when a device key is available.
 
 This MacBook currently has AC system sleep disabled, so `bun run start` is enough while plugged in with the lid open. If the power settings change, or you need to prevent idle sleep on battery, use temporary idle-sleep prevention:
 
@@ -80,78 +80,87 @@ The receiver watchdog restarts its native processes after 30 seconds without PCM
 
 ## Storage
 
-`data/subpager.sqlite` stores `messages`, `ric_units`, `devices` and `push_jobs`. Each received message holds its reception time, RIC, function, type, content, repeat link and WAV audio. Message fields are immutable after reception; WAV audio can be attached later. Notification titles show the seven-digit RIC and reception time in Ljubljana local time, using `DD/MM/YYYY, HH:mm`; their body is the normalized received content. Device rows hold API key hashes and phone tokens; push jobs track each phone's delivery separately. Device rows also retain pending cleanup when Expo reports a Firebase token as unregistered. Keep SQLite's `-wal` and `-shm` files while it runs; never delete them manually. Keep the database on local storage and all private data out of Git. Preserve this receiver database: cloud document IDs use its numeric message IDs, so a replacement database must not restart those IDs against existing cloud history.
+`data/subpager.sqlite` stores messages, recordings, RIC unit mappings, deployment-specific cloud upload cursors and location jobs. Every reception is committed locally before network delivery. Convex messages use native document IDs; a separate ingestion mapping links them to numeric SQLite IDs for safe retries. Keep the receiver database when moving the receiver to another computer. A new database must not restart IDs against existing cloud history. Keep SQLite's `-wal` and `-shm` files while it runs. Never delete them manually. Keep private data out of Git.
 
 Only decoded-call audio is archived. Defaults preserve eight seconds before decoding and four seconds after; nearby calls may have the same clip copied into each message row. `data/clips/` is temporary staging: files are removed after the SQLite commit. Startup retries complete WAV/metadata pairs left after a failure. `clips.maxFiles`/`maxBytes` bound staging files and may remove unarchived clips. They do not limit SQLite history. `clips.continuous` remains false, so idle noise is not archived.
 
 Server output and errors go to the terminal with UTC timestamps and severity. Received-call logs include the message ID, reception time, RIC, function, type, repeat link and content. Known tuner startup diagnostics and continuous-clip success logs are suppressed. Unexpected diagnostics remain visible. Repeated identical errors print at most once every five minutes; changed failures and recovery print immediately. Control characters are escaped and log lines are bounded. No backup database is retained. The optional backup command creates a consistent snapshot only when explicitly run, requires an existing source database and refuses to overwrite its destination.
 
-## Private Firebase history and notifications
+## Convex history, authentication and notifications
 
-The app silently creates a Firebase anonymous identity and shows its UID. There is no sign-in screen. A UID is an identifier, not a password; Firebase authentication proves ownership. Google Play's internal tester list controls downloads separately from Firebase's data whitelist. Add a friend's email in Play first, then approve the installed app's UID once. Reinstalling, clearing app data or changing phones can create a new UID that needs approval.
-
-Configured on 2026-10-08 in `subpager-subbyte`: Anonymous Authentication with cleanup disabled, the default Standard Firestore database in `europe-west3` (Frankfurt), and the included whitelist rules. The project remains on the free Spark plan. The dedicated `subpager-receiver@subpager-subbyte.iam.gserviceaccount.com` account has only `roles/datastore.user`; temporary rules-deployment access was removed after setup. Its key is stored at `~/.config/subpager/receiver-service-account.json` with owner-only permissions, outside both repositories. The local ignored `config.json` points to this key.
-
-The following steps describe setup or replacement:
-
-1. In the app's Firebase project `subpager-subbyte`, enable Anonymous Authentication. Leave automatic anonymous-account cleanup disabled, because it can delete device identities after 30 days. See [Firebase anonymous authentication](https://firebase.google.com/docs/auth/android/anonymous-auth).
-2. Create the default Firestore database in production mode. Deploy the included `firestore.rules` before configuring receiver uploads. These rules allow only approved identities to read messages and RIC unit mappings, only owners to read their own approval, and only approved owners to register their own device. All other client access is denied. Clients cannot write history, mappings or approvals. See [Firebase rule conditions](https://firebase.google.com/docs/rules/basics).
-3. Use a private receiver service-account JSON key with Firestore read/write permissions, such as `roles/datastore.user`. Privileged service accounts bypass client security rules; never include this key in the app or Git. Prefer a dedicated receiver account rather than expanding the app's push credential permissions. See [Firestore IAM](https://firebase.google.com/docs/firestore/security/iam).
-4. Add `firebase` to the receiver's existing config. The key path is relative to that config file, or absolute:
+Backend source and deployment configuration live in `subpager-app/convex`. Configure the receiver with the deployment's HTTP actions URL and a private text file containing the same secret as its `RECEIVER_SECRET` environment variable:
 
 ```json
 {
-  "firebase": {
-    "projectId": "subpager-subbyte",
-    "serviceAccountPath": "/private/path/receiver-service-account.json"
+  "convex": {
+    "siteUrl": "https://your-deployment.convex.site",
+    "secretPath": "/private/path/convex-receiver-secret.txt"
   }
 }
 ```
 
-With this option, the receiver opens no HTTP listener and ignores legacy API-key devices for new alerts. Phones connect directly to Firebase's authenticated, whitelist-protected endpoints. No domain, tunnel or public Mac API is needed. The receiver uses built-in APIs for Firestore REST requests and service-account OAuth.
+Paths can be absolute or relative to `config.json`. Store secret files outside the repositories with owner-only permissions. Do not put the receiver secret in the phone app. Replace the old `firebase` option before starting this version; an old configuration fails clearly instead of silently falling back to the local API.
 
-Manage one approval for both history and notifications:
+The receiver uploads messages in batches of at most 100 using built-in `fetch`. The durable cursor is separate for each Convex deployment and advances only after a successful batch. Retries use the same IDs, so an ambiguous network failure does not create duplicate history or push jobs. Authentication and malformed-request failures retry after one hour; transient failures back off from 15 seconds to five minutes. Recordings stay in SQLite.
+
+For initial migration, stop the receiver and run the explicit import before starting live reception. Do not run the import alongside live reception: imported messages intentionally do not queue alerts.
 
 ```sh
-bun run member:approve FIREBASE_UID "Friend's name"
-bun run member:revoke FIREBASE_UID
+bun run history:import
+```
+
+This uploads pending history and all RIC mappings with notifications disabled. Rerunning it is safe. Normal receiver uploads request notification delivery. Convex atomically records the new message and schedules its notifications; old messages and deduplicated repetitions do not produce alerts. The receiver no longer mirrors cloud devices or polls membership. Convex owns device approvals, push tokens, tickets and delayed receipts.
+
+The app creates a Convex anonymous identity and shows its device ID. Approve that new ID once:
+
+```sh
+bun run member:approve DEVICE_UID
+bun run member:revoke DEVICE_UID
 bun run member:list
 ```
 
-These commands change or inspect `members/{uid}`. Approval is strictly `approved: true`; false or a missing document denies access. Members cannot approve themselves. The receiver checks current membership and token before each send and sends nothing if the check fails. All approved phones with registered tokens receive alerts for all RICs. Revocation stops future sends and cloud reads. Content already copied or dispatched cannot be recalled; an offline phone can retain cached history until it reconnects and observes revocation.
+Old Firebase IDs cannot prove ownership of a new Convex identity and do not transfer approval. Reinstalling or clearing app data can create another identity that needs approval. Revocation prevents cloud reads and future notifications. A notification already submitted to Expo cannot be recalled. An offline phone can retain its cache until it reconnects and receives the revocation.
 
-The receiver refreshes its local approved subscriptions every 60 seconds. A new approval or token can take up to 60 seconds to affect which future calls are queued; send authorization still reads the current remote membership and subscription. With two member documents and two device documents, this polling uses about 5760 document reads per day, down from 23040 at the previous 15-second interval. These counts exclude send authorization, app reads and manual commands.
+Firebase remains necessary only for the Android FCM transport configured in Expo. Receiver database access and app authentication do not use Firebase.
 
-When Expo reports `DeviceNotRegistered`, the receiver disables that token locally and clears only `expoPushToken` in Firestore, retaining other document fields. Cleanup uses the device document version captured during authorization, so a newer registration is preserved. Failed cleanup remains on the device row and follows Firebase retry backoff; polling cannot reactivate it while cleanup is pending. Accepted tickets retain that version for delayed receipts. After cleanup, the app can register again with the same token. Existing rejection rows migrate into device rows, and the obsolete `firebase_rejected_tokens` table is removed.
+### Location extraction
 
-History is append-only and has one uploader. At startup, the receiver queries Firestore for the highest numeric message `id`, then uploads local messages after that ID, oldest first in batches of 100. The cursor stays in memory and advances only after a successful upload. Each restart reads the remote cursor again; no local upload checkpoint table is needed. A failed startup query pauses cloud uploads and push authorization until it succeeds. Failed uploads retry the same document IDs, with retry delays increasing from 15 seconds to a maximum of five minutes and resetting after recovery. Concurrent Firestore requests share an OAuth refresh. Existing and offline receptions are backfilled without creating old alerts. A pending alert waits until its history document has uploaded, and still expires after `pushMaxAgeSeconds`. Cloud documents contain message fields and repeat links; WAV audio stays in local SQLite. Uploaded messages are not scanned for edits or uploaded again. On opening an existing database, the server removes obsolete checkpoint and revision tables and triggers while preserving history, recordings and push jobs. There is no migration reupload. This assumes remote history is written only by this uploader in increasing ID order.
+Optional extraction runs as a separate background worker and never delays message publication or notifications:
 
-On 2026-10-08, the project's Spark write quota was exhausted. The confirmed cause was repeated phone token registration; the app source has been corrected. Server failures preserve the in-memory upload cursor and report the Firestore HTTP operation and error. The expected quota reset is around 09:00 Ljubljana time on 2026-10-09. Restart the receiver with the updated source when ready. Local checks use temporary databases, fake radio processes and mocked transports; they cannot establish that quota has recovered, cloud writes succeed, RF reception works or a phone displays a notification. No live restart, upload, push or rules deployment is part of those checks.
+```json
+{
+  "location": {
+    "model": "gpt-6-luna"
+  }
+}
+```
+
+Set `OPENAI_API_KEY` in the receiver repository's `.env` file. Bun loads it automatically when the receiver starts. `.env` and its variants are ignored by Git. Keep the file private and restart the receiver after changing the key. `"location": {}` enables extraction with the default model; leave out `location` to disable it. A missing key pauses extraction without stopping reception or cloud publication.
+
+The worker uses the Responses API with no reasoning, standard service, a strict `{ "location": string|null }` schema and a 40-second timeout. The prompt treats pager content as data and asks for one exact contiguous location substring. A supplied postal address takes precedence over preceding incident details, rooms and approach directions; without an address, named schools and landmarks remain valid destinations. Code rejects inferred, reformatted or malformed output. A link is an extracted search destination, not a verified address or coordinate.
+
+Each new text reception queues extraction in the same SQLite transaction. The extracted result is committed before its independent cloud update, so a cloud retry does not repeat paid inference. Existing history is queued only when explicitly requested:
+
+```sh
+bun run location:backfill
+```
+
+Start the receiver to process that queue. Authorization or quota failures pause the affected worker stage for one hour while message publication continues. An OpenAI failure pauses new extraction; already-extracted locations still upload. Other failures back off from 15 seconds to five minutes. Extraction stops retrying a message after five ordinary failures; cloud updates remain retryable. Failed jobs retain their error in `location_jobs`. There is no automatic paid API fallback or subscription credential reuse. A ChatGPT subscription does not pay for API usage.
 
 ### RIC unit mappings
 
-Edit `ric_units` in the configured receiver database. RICs are unique integers from 0 to 2097151; `unit_name` must be nonempty. The schema is created when the updated `Store` first opens the database. To initialize it without starting the receiver or connecting to Firebase:
-
-```sh
-bun -e 'import { loadConfig } from "./src/config"; import { Store } from "./src/store"; using db = new Store((await loadConfig()).database).db'
-```
-
-For example, run this SQL in your SQLite editor, replacing the address and name:
+Edit the local `ric_units` table, then run `bun run ric:sync`. The complete local snapshot replaces cloud mappings, so an empty table clears the cloud list. A missing source database aborts instead of creating an empty database. RICs are integers from 0 to 2097151 and names must be nonempty:
 
 ```sql
 INSERT INTO ric_units (ric, unit_name) VALUES (90473, 'Unit name')
 ON CONFLICT(ric) DO UPDATE SET unit_name = excluded.unit_name;
 ```
 
-Then run `bun run ric:sync`. It validates the complete local snapshot, writes only new or changed mappings, and removes cloud mappings absent locally. An empty local table clears the cloud mappings. A missing database aborts instead of creating an empty database. Firestore stores `ricUnits/{numericRic}` with `ric` and `unitName`; writes use batches of at most 500. Interrupted syncs can be rerun. Apps cache mappings separately from messages, so renaming a unit updates both old and new messages without rewriting message history. Publish the updated `firestore.rules` to allow approved phones to read this collection; the source change does not deploy rules.
-
-An approved phone writes `devices/{uid}` with its Expo token. The app still includes `rics: []` for compatibility with the deployed rules; the receiver ignores that obsolete field. Removing it from app writes requires updating the deployed rules first. Disabled OS notifications produce a null token when the app next resumes, while history still works. Re-enabling notifications registers the current token for future calls. The phone synchronizes immutable message history and RIC mappings on reconnect; existing mapping changes are applied. Install a new native app build for Firebase persistence and clipboard support; an OTA update alone is insufficient.
-
-The original cloud setup passed 80 Rules API tests and 18 live client-access checks, including unapproved/revoked history denial, self-approval denial, approved device registration with a null notification token, and isolation from other devices. The RIC mapping rule was deployed on 2026-10-08, and the active rules source matches this file. The deployment credential does not permit Rules API tests; the expanded mocked access tests were not executed. Live mapping reads have not been verified. The temporary verification account and documents from the original setup were deleted. Initial backfill uploaded the eight existing messages without enqueueing or sending notifications.
+Phones subscribe to messages and mappings independently, so renaming a unit applies to existing history without rewriting messages. Later location updates patch the same message and do not send another notification.
 
 ## Local API mode
 
-Without `firebase`, the receiver retains its private local HTTP API. The Firebase phone app does not use this API.
+Without `convex`, the receiver retains its private local HTTP API for local tools. The Convex phone app does not use it.
 
 The API defaults to `127.0.0.1:8787`. Every endpoint requires `Authorization: Bearer <device key>`. `device:add` prints a key once; only its hash is stored. Each key can read all history and receives alerts for all RICs.
 
@@ -162,7 +171,7 @@ The API defaults to `127.0.0.1:8787`. Every endpoint requires `Authorization: Be
 - `DELETE /v1/devices/me`: disable push while retaining history access.
 - `GET /v1/status`: receiver state, audio freshness, errors, restarts and pending pushes.
 
-In both modes, identical live calls within `dedupeSeconds`, default 30, remain in history but alert once. Push jobs are durable and expire after `pushMaxAgeSeconds`, default 300. Token changes cancel pending work for the old subscription. Expo receipts show provider acceptance, not phone display. Receipt retries expire 24 hours after submission; legacy tickets without a stored submission time retain the reception-time cutoff. Completed push jobs are limited to the newest 1000; pending jobs and unexpired receipts are retained. If Expo accepts a push but its ticket response is lost, retrying can duplicate the notification. To enable enhanced Expo push security, set `EXPO_ACCESS_TOKEN` in the server's `.env`. Never put this token in the phone app. No real phone delivery has been verified.
+In local API mode, identical live calls within `dedupeSeconds`, default 30, remain in history but alert once. Push jobs are durable and expire after `pushMaxAgeSeconds`, default 300. Token changes cancel pending work for the old subscription. Expo receipts show provider acceptance, not phone display. Receipt retries expire 24 hours after submission; legacy tickets without a stored submission time retain the reception-time cutoff. Completed push jobs are limited to the newest 1000; pending jobs and unexpired receipts are retained. If Expo accepts a push but its ticket response is lost, retrying can duplicate the notification. To enable enhanced Expo push security, set `EXPO_ACCESS_TOKEN` in the server's `.env`. Never put this token in the phone app. No real phone delivery has been verified.
 
 ## Verified reception
 
