@@ -98,7 +98,11 @@ Download a service account JSON from Firebase project settings, then store it ou
 
 Each page is normalized and stored in a Firestore transaction. Matching repeats within 30 seconds of the original canonical message are retained with `duplicateOf`, without creating another push or model job. Only canonical messages less than five minutes old queue notifications for approved members with a push token. Empty and tone pages skip location inference. Message writes commit independently of push and OpenAI calls, so model latency does not delay the live feed or notifications.
 
-`pushJobs` and `locationJobs` are private Firestore collections. The process listens for active jobs rather than repeatedly reading them on a timer. Persistent retry times and fenced leases allow unfinished jobs to resume after a restart. Location results are saved before publication, then copied to the canonical message and its repeats. Expo tokens that are no longer valid are cleared only if the device still has the same token and update time. Run one receiver/job processor for this project.
+`pushJobs` and `locationJobs` are private Firestore collections. Each push job holds up to 100 recipients with independent tickets, receipt deadlines and retry state. One claim and one result commit process each batch; accepted recipients do not rejoin retries for failed recipients. The process listens for active jobs rather than repeatedly reading them on a timer. Persistent retry times and fenced leases allow unfinished jobs to resume after a restart. Successful push and location jobs are deleted after durable completion; failed jobs remain for diagnosis. Location results are saved before publication, then copied to the canonical message and its repeats. Expo tokens that are no longer valid are cleared only if the device still has the same token and update time. Run one receiver/job processor for this project.
+
+One shared `users` listener supplies the ingest and push workers. It reads the roster once at startup, then receives changes instead of rereading every device for each page. Push delivery checks the latest cached approval and token immediately before sending and pauses when the roster listener fails. A recently changed approval can briefly lag in the listener; notifications already submitted to Expo cannot be recalled.
+
+Messages receive a Firestore server `updatedAt` timestamp on creation and on location publication. The app keeps complete history in SQLite and, after one initial full load, downloads only records at or after its saved timestamp. It saves the changes and cursor together and pauses feed listeners while backgrounded. Legacy messages without timestamps are included in the initial load. History grows without increasing each open's steady-state read count. Hard-deleting a message while a phone is offline is not represented in this append-and-update protocol; a fresh cache is needed to reconcile such manual deletions.
 
 Add `OPENAI_API_KEY` to the receiver's ignored `.env` file to enable location extraction. Bun loads `.env` automatically. Optional `EXPO_ACCESS_TOKEN` enables enhanced Expo push security. Keep both values out of Git and restart the receiver after changing them. Missing model credentials do not block reception, message upload or push processing.
 
@@ -114,13 +118,17 @@ Approval, labels and push tokens are stored together in `users/{uid}` as `approv
 
 ### RIC unit mappings
 
-Store mappings in `ricUnits/{ric}` with `ric` and `unitName` fields, or publish a complete JSON array with `bun run ric:sync FILE`:
+Publish a complete JSON array with `bun run ric:sync FILE`:
 
 ```json
 [{ "ric": 90473, "unitName": "Unit name" }]
 ```
 
-The file atomically replaces the complete cloud mapping list, with a maximum of 500 writes per synchronization. An empty array clears it. RICs must be unique integers from 0 to 2097151 and names must be nonempty. The command validates the file before writing to Firestore. Phones subscribe to mappings independently, so a renamed unit updates existing history without rewriting messages.
+The command atomically writes two documents: `config/ricUnits` contains the complete array and its revision; `config/ricUnitsRevision` contains only the revision. Phones watch the small revision document and download the catalog only when it changes, saving the units and revision together in SQLite. An unchanged catalog costs one document read per connection, even with 1,000 mappings, without downloading the names again. An empty array clears it. RICs must be unique integers from 0 to 2097151 and names must be nonempty. The catalog has a 900 KB JSON safety budget for Firestore's 1 MiB document limit. Renaming a unit updates existing local history without rewriting messages. Legacy `ricUnits` documents are left untouched; new clients use the catalog.
+
+### Activating the optimized protocol
+
+These source changes do not update running processes, installed apps or Firestore rules. Deploy the app repository's `firestore.rules` and `firestore.indexes.json` together, stop the old receiver after its active push jobs finish, then run the updated receiver and update the phones. Old per-device push jobs and new batched jobs have different schemas; do not run mixed worker versions. Publish the RIC JSON once with the updated `ric:sync` command. Existing phone caches perform one full bootstrap, then use deltas. No message backfill or history deletion is needed. Keep indexes enabled for `receivedAt`, `updatedAt`, `duplicateOf` and active-job queries; the checked-in exemptions remove unused catalog, recipient, text and location indexes.
 
 ## Verified reception
 
@@ -130,7 +138,7 @@ A macOS 524288-byte stdout buffer previously delayed PCM by about 12 seconds. Th
 
 ## Message fields
 
-The receiver preserves decoded `content`, including rendered markers and raw line breaks. The receiver removes trailing `<EOT>`/`<NUL>` padding and replaces rendered or raw LF/CR line breaks with spaces once, preserving Slovenian characters and other content. Each decoded recording's JSON metadata contains the raw calls; its WAV contains original audio for replay. New messages and push jobs use Firestore automatic document IDs. Each message ID is generated once before saving the reception to the outbox; retries reuse that ID and read its document directly. The message and its jobs commit in one transaction, with location jobs reusing the message ID. No counters are needed. Existing history retains its original IDs `1–22`. Firebase user UIDs and RIC mapping keys retain their original format.
+The receiver preserves decoded `content`, including rendered markers and raw line breaks. The receiver removes trailing `<EOT>`/`<NUL>` padding and replaces rendered or raw LF/CR line breaks with spaces once, preserving Slovenian characters and other content. Each decoded recording's JSON metadata contains the raw calls; its WAV contains original audio for replay. New messages and push jobs use Firestore automatic document IDs. Each message ID is generated once before saving the reception to the outbox; retries reuse that ID and read its document directly. The message and its jobs commit in one transaction, with location jobs reusing the message ID. No counters are needed. Existing history retains its original IDs `1–22`. Firebase user UIDs and numeric RIC values retain their original format.
 
 `function` is the transmitted two-bit function value, 0–3, often called A–D. Its meaning depends on pager programming; it is not a known incident priority or unit label. All three verified calls used 3. `type` is `alpha` for text, `numeric` for numeric payload, or `tone` for an address-only alert with no content. The configured decoder forces alphanumeric interpretation for local paging, so `type` and function are not interchangeable. See the [pinned decoder implementation](https://github.com/EliasOenal/multimon-ng/blob/1.6.1/pocsag.c).
 

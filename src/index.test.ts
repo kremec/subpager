@@ -50,6 +50,8 @@ test.skipIf(process.platform === "win32").each([false, true])(
         import { FirebaseBackend } from ${JSON.stringify(join(import.meta.dir, "firebase.ts"))};
         const db = new Firestore({projectId:"subpager-test"});
         const backend = new FirebaseBackend(db);
+        backend.users.ready = async () => {};
+        backend.users.stop = () => {};
         backend.ingest = async (messages) => {
           await Bun.write(${JSON.stringify(sending)}, JSON.stringify({messages}));
           await Bun.sleep(2500);

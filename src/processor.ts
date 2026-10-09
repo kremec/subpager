@@ -2,6 +2,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { PushDelivery, type PushJob } from "./delivery";
 import { LocationExtraction, type LocationJob } from "./location";
 import { createErrorReporter } from "./log";
+import { FirestoreUsers } from "./users";
 
 export interface ProcessorOptions {
   openaiApiKey?: string;
@@ -147,8 +148,12 @@ class JobQueue {
 export class FirestoreJobsProcessor {
   private queues: JobQueue[];
 
-  constructor(db: Firestore, options: ProcessorOptions = {}) {
-    const push = new PushDelivery(db, fetch, options.expoAccessToken);
+  constructor(
+    db: Firestore,
+    options: ProcessorOptions = {},
+    private users = new FirestoreUsers(db),
+  ) {
+    const push = new PushDelivery(db, fetch, options.expoAccessToken, users);
     const location = new LocationExtraction(
       db,
       options.openaiApiKey,
@@ -166,9 +171,11 @@ export class FirestoreJobsProcessor {
   }
 
   start() {
+    void this.users.ready().catch(() => {});
     for (const queue of this.queues) queue.start();
   }
   async stop() {
+    this.users.stop();
     await Promise.all(this.queues.map((queue) => queue.stop()));
   }
 }

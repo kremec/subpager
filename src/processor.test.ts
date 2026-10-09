@@ -11,7 +11,8 @@ import {
   Timestamp,
   type Firestore,
 } from "firebase-admin/firestore";
-import { PushDelivery, type PushJob } from "./delivery";
+import { PushDelivery, type PushJob, type PushRecipient } from "./delivery";
+import { FirestoreUsers } from "./users";
 import { FirestoreJobsProcessor } from "./processor";
 import {
   LocationExtraction,
@@ -43,29 +44,56 @@ class TestFirestore {
   docs = new Map<string, Data>();
   versions = new Map<string, Timestamp>();
   listeners: Listener[] = [];
+  initialUsers = true;
+  reads = 0;
+  writes = 0;
+  deletes = 0;
+  loseAcknowledgement = false;
   rejectWrite?: (path: string, patch: Data) => boolean;
   db = this as unknown as Firestore;
 
   put(path: string, value: Data) {
+    if (Array.isArray(value.recipients))
+      value = {
+        ...value,
+        recipients: value.recipients.map((recipient) => ({ ...recipient })),
+      };
     this.docs.set(path, value);
     const previous = this.versions.get(path)?.toMillis() ?? 0;
     this.versions.set(path, Timestamp.fromMillis(previous + 1));
   }
 
+  publishUsers() {
+    const docs = [...this.docs.keys()]
+      .filter((path) => path.startsWith("users/"))
+      .map((path) => this.snapshot({ path, id: path.split("/")[1]! }));
+    for (const listener of this.listeners)
+      if (listener.name === "users" && !listener.closed)
+        listener.next({ docs });
+  }
+
   collection(name: string) {
+    const onSnapshot = (next: Listener["next"], error: Listener["error"]) => {
+      const listener = { name, next, error, closed: false };
+      this.listeners.push(listener);
+      if (name === "users" && this.initialUsers)
+        next({
+          docs: [...this.docs.keys()]
+            .filter((path) => path.startsWith("users/"))
+            .map((path) => this.snapshot({ path, id: path.split("/")[1]! })),
+        });
+      return () => {
+        listener.closed = true;
+      };
+    };
     return {
       doc: (id: string): Reference => ({ id, path: `${name}/${id}` }),
+      onSnapshot,
       where: (field: string, _operator: string, value: unknown) => ({
         collection: name,
         field,
         value,
-        onSnapshot: (next: Listener["next"], error: Listener["error"]) => {
-          const listener = { name, next, error, closed: false };
-          this.listeners.push(listener);
-          return () => {
-            listener.closed = true;
-          };
-        },
+        onSnapshot,
       }),
     };
   }
@@ -94,11 +122,14 @@ class TestFirestore {
         ...references: Reference[]
       ) => Promise<ReturnType<TestFirestore["snapshot"]>[]>;
       update: (reference: Reference, patch: Data) => void;
+      delete: (reference: Reference) => void;
     }) => Promise<T>,
   ) {
     const writes: { reference: Reference; patch: Data }[] = [];
+    const deletes: Reference[] = [];
     const result = await callback({
       get: async (target) => {
+        this.reads++;
         if ("path" in target) return this.snapshot(target);
         const docs = [...this.docs.entries()]
           .filter(
@@ -109,10 +140,15 @@ class TestFirestore {
           .map(([path]) => this.snapshot({ path, id: path.split("/")[1]! }));
         return { docs };
       },
-      getAll: async (...references) =>
-        references.map((reference) => this.snapshot(reference)),
+      getAll: async (...references) => {
+        this.reads += references.length;
+        return references.map((reference) => this.snapshot(reference));
+      },
       update: (reference, patch) => {
         writes.push({ reference, patch });
+      },
+      delete: (reference) => {
+        deletes.push(reference);
       },
     });
     if (
@@ -130,6 +166,11 @@ class TestFirestore {
       }
       this.put(reference.path, data);
     }
+    this.writes += writes.length;
+    for (const reference of deletes) this.docs.delete(reference.path);
+    this.deletes += deletes.length;
+    if (this.loseAcknowledgement)
+      throw new Error("Commit acknowledgement lost");
     return result;
   }
 }
@@ -141,6 +182,7 @@ function pushFixture(
   store: TestFirestore,
   id = "push",
   overrides: Partial<PushJob> = {},
+  recipientOverrides: Partial<PushRecipient> = {},
 ) {
   store.put(`users/${id}`, {
     expoPushToken: `token-${id}`,
@@ -151,9 +193,17 @@ function pushFixture(
     active: true,
     state: "pending",
     messageId: "message",
-    deviceId: id,
-    expoPushToken: `token-${id}`,
-    tokenUpdatedAt: store.versions.get(`users/${id}`)!,
+    recipients: [
+      {
+        deviceId: id,
+        expoPushToken: `token-${id}`,
+        tokenUpdatedAt: store.versions.get(`users/${id}`)!,
+        state: "pending",
+        nextAttempt: now,
+        attempts: 0,
+        ...recipientOverrides,
+      },
+    ],
     title: "0790793 · 08/10/2026, 08:57",
     body: "VAJA GORI V ŠOLI GOLO.",
     expiresAt: now + 300_000,
@@ -193,166 +243,498 @@ const openAIResult = () =>
     ],
   });
 
-describe("durable Expo jobs", () => {
-  test("keeps accepted tickets when another error has malformed details", async () => {
+function usersFixture(store: TestFirestore) {
+  const users = new FirestoreUsers(store.db);
+  void users.ready();
+  return users;
+}
+
+function recipients(store: TestFirestore, id = "push") {
+  return (store.docs.get(`pushJobs/${id}`) as unknown as PushJob).recipients;
+}
+
+function mergePushes(store: TestFirestore, ids: string[]) {
+  const first = ids[0]!;
+  const combined = ids.flatMap((id) => recipients(store, id));
+  store.put(`pushJobs/${first}`, {
+    ...store.docs.get(`pushJobs/${first}`),
+    recipients: combined,
+  });
+  for (const id of ids.slice(1)) store.docs.delete(`pushJobs/${id}`);
+}
+
+describe("durable Expo batches", () => {
+  test("100 recipients share one job through sending and receipt checks", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
-    pushFixture(store, "one");
-    pushFixture(store, "two");
-    const worker = new PushDelivery(store.db, async () =>
-      Response.json({
-        data: [
-          { status: "ok", id: "ticket" },
-          { status: "error", details: { error: { bad: true } } },
-        ],
-      }),
+    pushFixture(store);
+    for (let index = 1; index < 100; index++)
+      store.put(`users/${index}`, {
+        approved: true,
+        expoPushToken: `token-${index}`,
+      });
+    const users = usersFixture(store);
+    store.put("pushJobs/push", {
+      ...store.docs.get("pushJobs/push"),
+      recipients: users.recipients(),
+    });
+    const endpoints: string[] = [];
+    const worker = new PushDelivery(
+      store.db,
+      async (url, options) => {
+        endpoints.push(url);
+        const body = JSON.parse(options.body as string);
+        if (url.endsWith("/send")) {
+          expect(body).toHaveLength(100);
+          return Response.json({
+            data: body.map((_value: unknown, index: number) => ({
+              status: "ok",
+              id: `ticket-${index}`,
+            })),
+          });
+        }
+        expect(body.ids).toHaveLength(100);
+        return Response.json({
+          data: Object.fromEntries(
+            body.ids.map((id: string) => [id, { status: "ok" }]),
+          ),
+        });
+      },
+      undefined,
+      users,
     );
-    await worker.run(["one", "two"]);
-    expect(store.docs.get("pushJobs/one")).toMatchObject({
+    await worker.run(["push"]);
+    expect(store.reads).toBe(2);
+    expect(store.writes).toBe(2);
+    expect(recipients(store)).toHaveLength(100);
+    expect(
+      recipients(store).every((recipient) => recipient.state === "receipt"),
+    ).toBe(true);
+    expect(store.docs.get("pushJobs/push")).toMatchObject({
+      nextAttempt: now + 900_000,
+      attempts: 1,
+    });
+    setSystemTime(now + 900_000);
+    await new PushDelivery(
+      store.db,
+      async (url, options) => {
+        endpoints.push(url);
+        const body = JSON.parse(options.body as string);
+        return Response.json({
+          data: Object.fromEntries(
+            body.ids.map((id: string) => [id, { status: "ok" }]),
+          ),
+        });
+      },
+      undefined,
+      users,
+    ).run(["push"]);
+    expect(endpoints).toHaveLength(2);
+    expect(store.reads).toBe(4);
+    expect(store.writes).toBe(3);
+    expect(store.deletes).toBe(1);
+    expect(endpoints[1]).toEndWith("/getReceipts");
+    expect(store.docs.has("pushJobs/push")).toBe(false);
+    users.stop();
+  });
+
+  test("mixed and missing ticket results retry only unaccepted recipients", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    for (const id of ["one", "two", "three"]) pushFixture(store, id);
+    mergePushes(store, ["one", "two", "three"]);
+    const users = usersFixture(store);
+    let requests = 0;
+    const worker = new PushDelivery(
+      store.db,
+      async (_url, options) => {
+        requests++;
+        if (requests === 1)
+          return Response.json({
+            data: [
+              { status: "ok", id: "ticket" },
+              { status: "error", details: { error: { bad: true } } },
+            ],
+          });
+        const body = JSON.parse(options.body as string) as { to: string }[];
+        expect(body.map((item) => item.to)).toEqual([
+          "token-two",
+          "token-three",
+        ]);
+        return Response.json({
+          data: [
+            { status: "ok", id: "two-ticket" },
+            { status: "ok", id: "three-ticket" },
+          ],
+        });
+      },
+      undefined,
+      users,
+    );
+    await worker.run(["one"]);
+    expect(recipients(store, "one")[0]).toMatchObject({
       state: "receipt",
       ticketId: "ticket",
-      nextAttempt: now + 900_000,
       receiptExpiresAt: now + 86_400_000,
     });
-    expect(store.docs.get("pushJobs/two")).toMatchObject({
+    expect(recipients(store, "one")[1]).toMatchObject({
       state: "pending",
       lastError: "Expo notification error",
-      leaseUntil: 0,
+      nextAttempt: now + 1000,
     });
+    expect(recipients(store, "one")[2]).toMatchObject({
+      state: "pending",
+      lastError: "Expo result not available",
+    });
+    setSystemTime(now + 1000);
+    await worker.run(["one"]);
+    expect(
+      recipients(store, "one").every(
+        (recipient) => recipient.state === "receipt",
+      ),
+    ).toBe(true);
+    expect(requests).toBe(2);
+    users.stop();
   });
 
-  test("short ticket arrays preserve accepted entries and retry missing entries", async () => {
+  test("cached approval and token changes suppress recipients but same-token registration is allowed", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
-    pushFixture(store, "one");
-    pushFixture(store, "two");
-    await new PushDelivery(store.db, async () =>
-      Response.json({ data: [{ status: "ok", id: "ticket" }] }),
-    ).run(["one", "two"]);
-    expect(store.docs.get("pushJobs/one")?.state).toBe("receipt");
-    expect(store.docs.get("pushJobs/two")?.state).toBe("pending");
-  });
-
-  test("rechecks approval and token but permits registration of the same token", async () => {
-    setSystemTime(now);
-    const store = new TestFirestore();
-    pushFixture(store, "revoked");
-    pushFixture(store, "rotated");
-    pushFixture(store, "same");
+    for (const id of ["revoked", "rotated", "same"]) pushFixture(store, id);
+    mergePushes(store, ["revoked", "rotated", "same"]);
+    const users = usersFixture(store);
     store.put("users/revoked", {
-      ...store.docs.get("users/revoked"),
       approved: false,
+      expoPushToken: "token-revoked",
     });
-    store.put("users/rotated", {
-      ...store.docs.get("users/rotated"),
-      expoPushToken: "new-token",
-    });
-    store.put("users/same", {
-      ...store.docs.get("users/same"),
-      expoPushToken: "token-same",
-    });
-    let sent = 0;
-    await new PushDelivery(store.db, async (_url, options) => {
-      const body = JSON.parse(options.body as string) as {
-        to: string;
-        title: string;
-        body: string;
-      }[];
-      expect(body.map((job) => job.to)).toEqual(["token-same"]);
-      expect(body[0]?.title).toBe("0790793 · 08/10/2026, 08:57");
-      expect(body[0]?.body).toBe("VAJA GORI V ŠOLI GOLO.");
-      sent++;
-      return Response.json({ data: [{ status: "ok", id: "ticket" }] });
-    }).run(["revoked", "rotated", "same"]);
-    expect(sent).toBe(1);
-    expect(store.docs.get("pushJobs/revoked")?.active).toBe(false);
-    expect(store.docs.get("pushJobs/rotated")?.active).toBe(false);
+    store.put("users/rotated", { approved: true, expoPushToken: "new-token" });
+    store.put("users/same", { approved: true, expoPushToken: "token-same" });
+    store.publishUsers();
+    await new PushDelivery(
+      store.db,
+      async (_url, options) => {
+        const body = JSON.parse(options.body as string) as {
+          to: string;
+          title: string;
+          body: string;
+        }[];
+        expect(body.map((item) => item.to)).toEqual(["token-same"]);
+        expect(body[0]).toMatchObject({
+          title: "0790793 · 08/10/2026, 08:57",
+          body: "VAJA GORI V ŠOLI GOLO.",
+        });
+        return Response.json({ data: [{ status: "ok", id: "ticket" }] });
+      },
+      undefined,
+      users,
+    ).run(["revoked"]);
+    expect(
+      recipients(store, "revoked").map((recipient) => recipient.state),
+    ).toEqual(["failed", "failed", "receipt"]);
+    users.stop();
   });
 
-  test("old DeviceNotRegistered receipts cannot erase a newer token registration", async () => {
+  test("disconnected user cache pauses pushes instead of authorizing stale data", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
-    pushFixture(store, "old", {
-      state: "receipt",
-      ticketId: "old-ticket",
-      receiptExpiresAt: now + 86_400_000,
-    });
-    pushFixture(store, "current", {
-      state: "receipt",
-      ticketId: "current-ticket",
-      receiptExpiresAt: now + 86_400_000,
-    });
-    store.put("users/old", {
-      ...store.docs.get("users/old"),
-      expoPushToken: "token-old",
-    });
-    await new PushDelivery(store.db, async () =>
-      Response.json({
-        data: {
-          "old-ticket": {
-            status: "error",
-            details: { error: "DeviceNotRegistered" },
-          },
-          "current-ticket": {
-            status: "error",
-            details: { error: "DeviceNotRegistered" },
-          },
+    pushFixture(store);
+    const users = usersFixture(store);
+    store.listeners.find((listener) => listener.name === "users")!.error();
+    let requests = 0;
+    await expect(
+      new PushDelivery(
+        store.db,
+        async () => {
+          requests++;
+          return Response.json({ data: [] });
         },
-      }),
-    ).run(["old", "current"]);
+        undefined,
+        users,
+      ).run(["push"]),
+    ).rejects.toThrow("User listener disconnected");
+    expect(requests).toBe(0);
+    expect(store.writes).toBe(0);
+    expect(recipients(store)[0]).toMatchObject({
+      state: "pending",
+      attempts: 0,
+    });
+    expect(() => users.recipients()).toThrow("disconnected");
+    users.stop();
+  });
+
+  test("invalid-token receipts cannot erase newer registrations of the same token", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    for (const id of ["old", "current"])
+      pushFixture(
+        store,
+        id,
+        { state: "receipt" },
+        {
+          state: "receipt",
+          ticketId: `${id}-ticket`,
+          receiptExpiresAt: now + 86_400_000,
+        },
+      );
+    mergePushes(store, ["old", "current"]);
+    store.put("users/old", { approved: true, expoPushToken: "token-old" });
+    const users = usersFixture(store);
+    await new PushDelivery(
+      store.db,
+      async () =>
+        Response.json({
+          data: {
+            "old-ticket": {
+              status: "error",
+              details: { error: "DeviceNotRegistered" },
+            },
+            "current-ticket": {
+              status: "error",
+              details: { error: "DeviceNotRegistered" },
+            },
+          },
+        }),
+      undefined,
+      users,
+    ).run(["old"]);
     expect(store.docs.get("users/old")?.expoPushToken).toBe("token-old");
     expect(store.docs.get("users/current")).toEqual({
       approved: true,
       label: "Device current",
     });
+    expect(store.docs.get("pushJobs/old")?.active).toBe(false);
+    users.stop();
   });
 
-  test("accepted ticket survives a failed database write without sending again", async () => {
+  test.each(["rejected", "lost"])(
+    "accepted tickets survive %s database acknowledgements without resending",
+    async (failure) => {
+      setSystemTime(now);
+      const store = new TestFirestore();
+      pushFixture(store);
+      const users = usersFixture(store);
+      let requests = 0;
+      const worker = new PushDelivery(
+        store.db,
+        async () => {
+          requests++;
+          store.loseAcknowledgement = failure === "lost";
+          return Response.json({ data: [{ status: "ok", id: "ticket" }] });
+        },
+        undefined,
+        users,
+      );
+      if (failure === "rejected")
+        store.rejectWrite = (_path, patch) => patch.state === "receipt";
+      await expect(worker.run(["push"])).rejects.toThrow(
+        failure === "rejected" ? "write outage" : "acknowledgement lost",
+      );
+      store.rejectWrite = undefined;
+      store.loseAcknowledgement = false;
+      await worker.run(["push"]);
+      expect(requests).toBe(1);
+      expect(recipients(store)[0]?.ticketId).toBe("ticket");
+      users.stop();
+    },
+  );
+
+  test("a stale attempt cannot finish a batch claimed by another worker", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
     pushFixture(store);
-    let requests = 0;
-    const worker = new PushDelivery(store.db, async () => {
-      requests++;
-      return Response.json({ data: [{ status: "ok", id: "ticket" }] });
-    });
-    store.rejectWrite = (_path, patch) => patch.state === "receipt";
-    await expect(worker.run(["push"])).rejects.toThrow("write outage");
-    store.rejectWrite = undefined;
-    await worker.run(["push"]);
-    expect(requests).toBe(1);
-    expect(store.docs.get("pushJobs/push")?.ticketId).toBe("ticket");
+    const users = usersFixture(store);
+    await new PushDelivery(
+      store.db,
+      async () => {
+        store.put("pushJobs/push", {
+          ...store.docs.get("pushJobs/push"),
+          attempts: 2,
+        });
+        return Response.json({ data: [{ status: "ok", id: "stale-ticket" }] });
+      },
+      undefined,
+      users,
+    ).run(["push"]);
+    expect(recipients(store)[0]?.ticketId).toBeUndefined();
+    users.stop();
   });
 
-  test("stale attempt cannot finish a job claimed by another worker", async () => {
-    setSystemTime(now);
-    const store = new TestFirestore();
-    pushFixture(store);
-    await new PushDelivery(store.db, async () => {
-      store.put("pushJobs/push", {
-        ...store.docs.get("pushJobs/push"),
-        attempts: 2,
-      });
-      return Response.json({ data: [{ status: "ok", id: "stale-ticket" }] });
-    }).run(["push"]);
-    expect(store.docs.get("pushJobs/push")?.ticketId).toBeUndefined();
-  });
-
-  test("leased and expired jobs do not call Expo", async () => {
+  test("leased and expired recipients do not call Expo", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
     pushFixture(store, "leased", { leaseUntil: now + 30_000 });
     pushFixture(store, "expired", { expiresAt: now });
-    pushFixture(store, "receipt", { state: "receipt", receiptExpiresAt: now });
+    pushFixture(
+      store,
+      "receipt",
+      { state: "receipt" },
+      { state: "receipt", receiptExpiresAt: now },
+    );
+    const users = usersFixture(store);
     let requests = 0;
-    await new PushDelivery(store.db, async () => {
-      requests++;
-      throw new Error("unexpected");
-    }).run(["leased", "expired", "receipt"]);
+    const worker = new PushDelivery(
+      store.db,
+      async () => {
+        requests++;
+        return Response.json({ data: [] });
+      },
+      undefined,
+      users,
+    );
+    for (const id of ["leased", "expired", "receipt"]) await worker.run([id]);
     expect(requests).toBe(0);
     expect(store.docs.get("pushJobs/expired")?.state).toBe("expired");
     expect(store.docs.get("pushJobs/receipt")?.state).toBe("expired");
+    users.stop();
   });
+});
+
+test("a slow claim cannot start a request that could outlive its lease", async () => {
+  setSystemTime(now);
+  const store = new TestFirestore();
+  pushFixture(store);
+  const users = usersFixture(store);
+  const transact = store.runTransaction.bind(store);
+  const slowCommit = spyOn(store, "runTransaction").mockImplementation(
+    async (callback) => {
+      const result = await transact(callback);
+      setSystemTime(now + 25_000);
+      return result;
+    },
+  );
+  let requests = 0;
+  try {
+    await new PushDelivery(
+      store.db,
+      async () => {
+        requests++;
+        return Response.json({ data: [] });
+      },
+      undefined,
+      users,
+    ).run(["push"]);
+    expect(requests).toBe(0);
+    expect(recipients(store)[0]).toMatchObject({
+      state: "pending",
+      lastError: "Push lease is too close to expiry",
+      nextAttempt: now + 26_000,
+    });
+  } finally {
+    users.stop();
+    slowCommit.mockRestore();
+  }
+});
+
+test("receipt retries retain tickets after message expiry and skip completed recipients", async () => {
+  setSystemTime(now);
+  const store = new TestFirestore();
+  for (const id of ["one", "two"])
+    pushFixture(
+      store,
+      id,
+      { state: "receipt", expiresAt: now - 1 },
+      {
+        state: "receipt",
+        ticketId: `${id}-ticket`,
+        receiptExpiresAt: now + 86_400_000,
+      },
+    );
+  mergePushes(store, ["one", "two"]);
+  const users = usersFixture(store);
+  const worker = new PushDelivery(
+    store.db,
+    async (url, options) => {
+      expect(url).toEndWith("/getReceipts");
+      const body = JSON.parse(options.body as string) as { ids: string[] };
+      if (Date.now() === now) {
+        expect(body.ids).toEqual(["one-ticket", "two-ticket"]);
+        return Response.json({ data: { "one-ticket": { status: "ok" } } });
+      }
+      expect(body.ids).toEqual(["two-ticket"]);
+      return Response.json({ data: { "two-ticket": { status: "ok" } } });
+    },
+    undefined,
+    users,
+  );
+  await worker.run(["one"]);
+  expect(recipients(store, "one").map((recipient) => recipient.state)).toEqual([
+    "sent",
+    "receipt",
+  ]);
+  setSystemTime(now + 1000);
+  await worker.run(["one"]);
+  expect(store.docs.has("pushJobs/one")).toBe(false);
+  users.stop();
+});
+
+test("a lost final delete acknowledgement never sends a completed batch again", async () => {
+  setSystemTime(now);
+  const store = new TestFirestore();
+  pushFixture(
+    store,
+    "push",
+    { state: "receipt" },
+    {
+      state: "receipt",
+      ticketId: "ticket",
+      receiptExpiresAt: now + 86_400_000,
+    },
+  );
+  const users = usersFixture(store);
+  let requests = 0;
+  const worker = new PushDelivery(
+    store.db,
+    async (url) => {
+      requests++;
+      expect(url).toEndWith("/getReceipts");
+      store.loseAcknowledgement = true;
+      return Response.json({ data: { ticket: { status: "ok" } } });
+    },
+    undefined,
+    users,
+  );
+  await expect(worker.run(["push"])).rejects.toThrow("acknowledgement lost");
+  expect(store.docs.has("pushJobs/push")).toBe(false);
+  store.loseAcknowledgement = false;
+  await worker.run(["push"]);
+  expect(requests).toBe(1);
+  expect(store.deletes).toBe(1);
+  users.stop();
+});
+
+test("user listener failures reject readiness and require a fresh snapshot after reconnect", async () => {
+  const store = new TestFirestore();
+  store.initialUsers = false;
+  let reconnect: (() => void) | undefined;
+  const timeout = spyOn(globalThis, "setTimeout").mockImplementation(((
+    callback: () => void,
+  ) => {
+    reconnect = callback;
+    return 1 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout);
+  const users = new FirestoreUsers(store.db);
+  try {
+    const ready = users.ready();
+    const first = store.listeners[0]!;
+    first.error();
+    await expect(ready).rejects.toThrow("disconnected");
+    await expect(users.ready()).rejects.toThrow("disconnected");
+    reconnect!();
+    const refreshed = users.ready();
+    expect(store.listeners).toHaveLength(2);
+    expect(() => users.recipients()).toThrow("disconnected");
+    store.publishUsers();
+    await refreshed;
+    expect(users.recipients()).toEqual([]);
+    users.stop();
+    store.listeners[1]!.next({ docs: [] });
+    store.listeners[1]!.error();
+    expect(() => users.recipients()).toThrow("disconnected");
+    await expect(users.ready()).rejects.toThrow("stopped");
+  } finally {
+    users.stop();
+    timeout.mockRestore();
+  }
 });
 
 describe("durable location jobs", () => {
@@ -420,7 +802,7 @@ describe("durable location jobs", () => {
     expect(requests).toBe(1);
     expect(store.docs.get("messages/location")?.location).toBe("ŠOLI GOLO");
     expect(store.docs.get("messages/repeat")?.location).toBe("ŠOLI GOLO");
-    expect(store.docs.get("locationJobs/location")?.active).toBe(false);
+    expect(store.docs.has("locationJobs/location")).toBe(false);
   });
 
   test("persisted ready result publishes after restart even while inference is paused", async () => {

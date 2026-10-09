@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Timestamp,
+  FieldValue,
   Firestore,
   type Transaction,
 } from "firebase-admin/firestore";
@@ -12,7 +13,7 @@ import type { Reception } from "./outbox";
 
 const idGenerator = new Firestore({ projectId: "subpager-test" });
 
-type Fields = Record<string, string | number | boolean | null | Timestamp>;
+type Fields = Record<string, unknown>;
 interface Reference {
   path: string;
   id: string;
@@ -72,6 +73,15 @@ class Collection {
       );
     return { docs: docs.slice(0, this.maximum) };
   }
+  onSnapshot(success: (snapshot: ReturnType<Collection["get"]>) => void) {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) success(this.get());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }
 }
 function snapshot(reference: Reference, fields?: Fields) {
   return {
@@ -89,6 +99,17 @@ function database() {
   let loseAcknowledgement = false;
   const db = {
     collection: (name: string) => new Collection(name, documents),
+    batch: () => {
+      const writes: (() => void)[] = [];
+      return {
+        set: (reference: Reference, fields: Fields) =>
+          writes.push(() => documents.set(reference.path, fields)),
+        commit: async () => {
+          if (failCommit) throw new Error("Commit not acknowledged");
+          for (const write of writes) write();
+        },
+      };
+    },
     runTransaction: async (
       callback: (transaction: Transaction) => Promise<void>,
     ) => {
@@ -162,6 +183,7 @@ test("message, push and location jobs commit together, and persisted IDs prevent
   expect(message.content).toBe("ŠOLA GOLO");
   expect(message.sourceId).toBeUndefined();
   expect(message.id).toBeUndefined();
+  expect(message.updatedAt).toEqual(FieldValue.serverTimestamp());
   const [pushPath, push] = [...documents.entries()].find(([path]) =>
     path.startsWith("pushJobs/"),
   )!;
@@ -169,7 +191,16 @@ test("message, push and location jobs commit together, and persisted IDs prevent
   expect(push.messageId).toBe(reception.sourceId);
   expect(push.body).toBe("ŠOLA GOLO");
   expect(push.title).toBe("0000123 · 21/09/2026, 16:13");
-  expect(push.tokenUpdatedAt).toEqual(Timestamp.fromMillis(1));
+  expect(push.recipients).toEqual([
+    {
+      deviceId: "approved",
+      expoPushToken: "ExponentPushToken[test]",
+      tokenUpdatedAt: Timestamp.fromMillis(1),
+      state: "pending",
+      nextAttempt: now,
+      attempts: 0,
+    },
+  ]);
   expect(documents.get(`locationJobs/${reception.sourceId}`)?.content).toBe(
     "ŠOLA GOLO",
   );
@@ -251,7 +282,7 @@ test.each(["Reception00000000001", "00000000-0000-4000-8000-000000000001"])(
   },
 );
 
-test("multiple devices get independent automatic push IDs referencing the same message", async () => {
+test("devices share one bounded push job per message and reception retries do not fan out twice", async () => {
   const { backend, documents } = database();
   for (const uid of ["one", "two"]) {
     documents.set(`users/${uid}`, {
@@ -265,21 +296,77 @@ test("multiple devices get independent automatic push IDs referencing the same m
   const pushes = [...documents.entries()].filter(([path]) =>
     path.startsWith("pushJobs/"),
   );
-  expect(pushes).toHaveLength(4);
+  expect(pushes).toHaveLength(2);
   for (const [path] of pushes)
     expect(path).toMatch(/^pushJobs\/[A-Za-z0-9]{20}$/);
   expect(pushes.map(([, fields]) => fields.messageId)).toEqual([
     first.sourceId,
-    first.sourceId,
-    second.sourceId,
     second.sourceId,
   ]);
+  for (const [, fields] of pushes)
+    expect(
+      (fields.recipients as { deviceId: string }[]).map(
+        (recipient) => recipient.deviceId,
+      ),
+    ).toEqual(["one", "two"]);
   expect(documents.get(`locationJobs/${first.sourceId}`)?.messageId).toBe(
     first.sourceId,
   );
   const committed = [...documents.entries()];
   await backend.ingest([first, second], true, Date.parse(first.receivedAt));
   expect([...documents.entries()]).toEqual(committed);
+});
+
+test("251 push recipients require three jobs and no user query in the ingest transaction", async () => {
+  const { backend, documents } = database();
+  for (let index = 0; index < 251; index++)
+    documents.set(`users/${index}`, {
+      approved: true,
+      expoPushToken: `ExponentPushToken[${index}]`,
+    });
+  const reception = page();
+  await backend.ingest([reception], true, Date.parse(reception.receivedAt));
+  const jobs = [...documents.entries()].filter(([path]) =>
+    path.startsWith("pushJobs/"),
+  );
+  expect(jobs.map(([, job]) => (job.recipients as object[]).length)).toEqual([
+    100, 100, 51,
+  ]);
+});
+
+test("one thousand RIC mappings publish as an atomic versioned catalog", async () => {
+  const { backend, documents, fail } = database();
+  const units = Array.from({ length: 1000 }, (_, ric) => ({
+    ric,
+    unitName: `Unit ${ric}`,
+  }));
+  await backend.syncRicUnits(units);
+  expect(documents.size).toBe(2);
+  const catalog = documents.get("config/ricUnits")!;
+  expect(catalog.units).toEqual(units);
+  expect(documents.get("config/ricUnitsRevision")?.revision).toBe(
+    catalog.revision,
+  );
+  const committed = [...documents.entries()];
+  fail(true);
+  await expect(backend.syncRicUnits([])).rejects.toThrow(
+    "Commit not acknowledged",
+  );
+  expect([...documents.entries()]).toEqual(committed);
+  fail(false);
+  await backend.syncRicUnits([]);
+  expect(documents.get("config/ricUnits")?.units).toEqual([]);
+  expect(documents.get("config/ricUnitsRevision")?.revision).not.toBe(
+    catalog.revision,
+  );
+});
+
+test("an oversized RIC catalog is rejected before any writes", async () => {
+  const { backend, documents } = database();
+  await expect(
+    backend.syncRicUnits([{ ric: 1, unitName: "x".repeat(900_000) }]),
+  ).rejects.toThrow("RIC catalog exceeds");
+  expect(documents.size).toBe(0);
 });
 
 test.each(["../message", "", "23", "invalid-ID-of-20-char"])(

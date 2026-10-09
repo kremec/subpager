@@ -11,10 +11,14 @@ async function main() {
   const client = await FirebaseBackend.open(config.firebase);
   const outbox = new Outbox(config.outbox);
   const worker = new FirebaseWorker(outbox, client);
-  const processor = new FirestoreJobsProcessor(client.db, {
-    openaiApiKey: process.env.OPENAI_API_KEY,
-    expoAccessToken: process.env.EXPO_ACCESS_TOKEN,
-  });
+  const processor = new FirestoreJobsProcessor(
+    client.db,
+    {
+      openaiApiKey: process.env.OPENAI_API_KEY,
+      expoAccessToken: process.env.EXPO_ACCESS_TOKEN,
+    },
+    client.users,
+  );
   let receiver: RadioReceiver | undefined;
   let stopping = false;
   let delivery = Promise.resolve();

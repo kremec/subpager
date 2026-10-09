@@ -1,5 +1,10 @@
 import { cert, initializeApp, type ServiceAccount } from "firebase-admin/app";
-import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import {
+  FieldValue,
+  getFirestore,
+  type Firestore,
+} from "firebase-admin/firestore";
+import { FirestoreUsers } from "./users";
 import type { Config } from "./config";
 import { isReceptionId, type Outbox, type Reception } from "./outbox";
 import { isObject, isRic, type Page } from "./radio/decoder";
@@ -40,7 +45,10 @@ export class FirebaseInputError extends Error {
 }
 
 export class FirebaseBackend {
-  constructor(readonly db: Firestore) {}
+  constructor(
+    readonly db: Firestore,
+    readonly users = new FirestoreUsers(db),
+  ) {}
 
   static async open(config: Config["firebase"]) {
     const account: unknown = await Bun.file(config.serviceAccountPath).json();
@@ -74,6 +82,7 @@ export class FirebaseBackend {
         receivedAt: new Date(raw.receivedAt).toISOString(),
         content: normalizeContent(raw.content),
       };
+      if (notify) await this.users.ready();
       await this.db.runTransaction(async (transaction) => {
         const messageRef = this.db.collection("messages").doc(messageId);
         const existing = await transaction.get(messageRef);
@@ -115,13 +124,12 @@ export class FirebaseBackend {
         const duplicateOf = source?.id ?? null;
         const expiresAt = Date.parse(message.receivedAt) + 300_000;
         const fresh = notify && duplicateOf === null && expiresAt > now;
-        const users = fresh
-          ? await transaction.get(this.db.collection("users"))
-          : null;
+        const recipients = fresh ? this.users.recipients() : [];
         const location = source?.get("location") as string | null | undefined;
         transaction.create(messageRef, {
           ...message,
           duplicateOf,
+          updatedAt: FieldValue.serverTimestamp(),
           ...(location !== undefined ? { location } : {}),
         });
         if (
@@ -144,19 +152,19 @@ export class FirebaseBackend {
             },
           );
         }
-        for (const device of users?.docs ?? []) {
-          const token = device.get("expoPushToken") as
-            | string
-            | null
-            | undefined;
-          if (device.get("approved") !== true || !token) continue;
+        for (let offset = 0; offset < recipients.length; offset += 100) {
           transaction.create(this.db.collection("pushJobs").doc(), {
             active: true,
             state: "pending",
             messageId,
-            deviceId: device.id,
-            expoPushToken: token,
-            tokenUpdatedAt: device.updateTime,
+            recipients: recipients
+              .slice(offset, offset + 100)
+              .map((recipient) => ({
+                ...recipient,
+                state: "pending",
+                nextAttempt: now,
+                attempts: 0,
+              })),
             title: `${String(message.ric).padStart(7, "0")} · ${receivedAtFormatter.format(new Date(message.receivedAt))}`,
             body: message.content,
             expiresAt,
@@ -170,19 +178,16 @@ export class FirebaseBackend {
   }
 
   async syncRicUnits(units: RicUnit[]) {
-    await this.db.runTransaction(async (transaction) => {
-      const existing = await transaction.get(this.db.collection("ricUnits"));
-      const incoming = new Set(units.map((unit) => String(unit.ric)));
-      const removed = existing.docs.filter((doc) => !incoming.has(doc.id));
-      if (removed.length + units.length > 500)
-        throw new FirebaseInputError("RIC synchronization exceeds 500 writes");
-      for (const document of removed) transaction.delete(document.ref);
-      for (const unit of units)
-        transaction.set(
-          this.db.collection("ricUnits").doc(String(unit.ric)),
-          unit,
-        );
+    const catalog = { revision: crypto.randomUUID(), units };
+    // Leave room for Firestore's document and array-field encoding overhead.
+    if (Buffer.byteLength(JSON.stringify(catalog)) > 900_000)
+      throw new FirebaseInputError("RIC catalog exceeds 900 KB");
+    const batch = this.db.batch();
+    batch.set(this.db.collection("config").doc("ricUnits"), catalog);
+    batch.set(this.db.collection("config").doc("ricUnitsRevision"), {
+      revision: catalog.revision,
     });
+    await batch.commit();
   }
 
   async setMember(uid: string, approved: boolean, label?: string) {

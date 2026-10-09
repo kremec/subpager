@@ -5,22 +5,33 @@ import {
 } from "firebase-admin/firestore";
 import { isObject } from "./radio/decoder";
 import { createErrorReporter } from "./log";
+import { FirestoreUsers } from "./users";
 
-export interface PushJob {
-  active: boolean;
-  state: "pending" | "receipt" | "sent" | "failed" | "expired";
-  messageId: string;
+export type PushState = "pending" | "receipt" | "sent" | "failed" | "expired";
+
+export interface PushRecipient {
   deviceId: string;
   expoPushToken: string;
   tokenUpdatedAt: Timestamp;
+  state: PushState;
+  nextAttempt: number;
+  attempts: number;
+  ticketId?: string;
+  receiptExpiresAt?: number;
+  lastError?: string;
+}
+
+export interface PushJob {
+  active: boolean;
+  state: PushState;
+  messageId: string;
   title: string;
   body: string;
   expiresAt: number;
   nextAttempt: number;
   attempts: number;
   leaseUntil: number;
-  ticketId?: string;
-  receiptExpiresAt?: number;
+  recipients: PushRecipient[];
   lastError?: string;
 }
 
@@ -29,10 +40,34 @@ interface ClaimedPush extends PushJob {
 }
 interface PushUpdate {
   job: ClaimedPush;
-  patch: Partial<PushJob>;
-  disableToken?: boolean;
+  disableTokens: PushRecipient[];
 }
 type HttpRequest = (url: string, options: RequestInit) => Promise<Response>;
+
+function scheduled(job: PushJob) {
+  const active = job.recipients.filter(
+    (recipient) =>
+      recipient.state === "pending" || recipient.state === "receipt",
+  );
+  const state: PushState = active.some(
+    (recipient) => recipient.state === "pending",
+  )
+    ? "pending"
+    : active.length
+      ? "receipt"
+      : job.recipients.some((recipient) => recipient.state === "sent")
+        ? "sent"
+        : job.recipients.some((recipient) => recipient.state === "failed")
+          ? "failed"
+          : "expired";
+  return {
+    active: active.length > 0,
+    state,
+    nextAttempt: active.length
+      ? Math.min(...active.map((recipient) => recipient.nextAttempt))
+      : 0,
+  };
+}
 
 export function expoError(payload: Record<string, unknown>) {
   const details = isObject(payload.details) ? payload.details : {};
@@ -51,11 +86,13 @@ export function expoError(payload: Record<string, unknown>) {
 export class PushDelivery {
   private updates = new Map<string, PushUpdate>();
   private report = createErrorReporter("Push delivery");
+  private nextSendAt = 0;
 
   constructor(
     private db: Firestore,
     private request: HttpRequest = fetch,
     private accessToken?: string,
+    private users = new FirestoreUsers(db),
   ) {}
 
   private async post(endpoint: string, body: object) {
@@ -83,77 +120,67 @@ export class PushDelivery {
     return payload.data;
   }
 
+  private deadline(job: PushJob, recipient: PushRecipient) {
+    return recipient.state === "receipt"
+      ? recipient.receiptExpiresAt!
+      : job.expiresAt;
+  }
+
   private async claim(id: string): Promise<ClaimedPush | null> {
     const ref = this.db.collection("pushJobs").doc(id);
     return this.db.runTransaction(async (tx) => {
-      const snapshot = await tx.get(ref);
-      const job = snapshot.data() as PushJob | undefined;
+      const stored = (await tx.get(ref)).data() as PushJob | undefined;
       const now = Date.now();
-      if (!job?.active || job.nextAttempt > now || job.leaseUntil > now)
+      if (
+        !stored?.active ||
+        stored.nextAttempt > now ||
+        stored.leaseUntil > now
+      )
         return null;
-      const deadline =
-        job.state === "receipt" ? job.receiptExpiresAt! : job.expiresAt;
-      if (deadline <= now) {
-        tx.update(ref, { active: false, state: "expired", leaseUntil: 0 });
-        return null;
-      }
-      if (job.state === "pending") {
-        const device = await tx.get(
-          this.db.collection("users").doc(job.deviceId),
-        );
-        if (
-          device.get("approved") !== true ||
-          device.get("expoPushToken") !== job.expoPushToken
-        ) {
-          tx.update(ref, {
-            active: false,
-            state: "failed",
-            leaseUntil: 0,
-            lastError: "Device approval or token changed",
-          });
-          return null;
-        }
-      }
-      const claimed = {
-        ...job,
+      const job = {
+        ...stored,
         id,
-        attempts: job.attempts + 1,
+        recipients: stored.recipients.map((recipient) => ({ ...recipient })),
+        attempts: stored.attempts + 1,
         leaseUntil: now + 30_000,
       };
+      for (const recipient of job.recipients) {
+        if (recipient.state !== "pending" && recipient.state !== "receipt")
+          continue;
+        if (this.deadline(job, recipient) <= now) recipient.state = "expired";
+        else if (recipient.nextAttempt <= now) recipient.attempts++;
+      }
+      const schedule = scheduled(job);
       tx.update(ref, {
-        attempts: claimed.attempts,
-        leaseUntil: claimed.leaseUntil,
+        ...schedule,
+        recipients: job.recipients,
+        attempts: job.attempts,
+        leaseUntil: schedule.active ? job.leaseUntil : 0,
       });
-      return claimed;
+      return schedule.active ? job : null;
     });
   }
 
-  private update(
-    job: ClaimedPush,
-    patch: Partial<PushJob>,
-    disableToken = false,
+  private retry(
+    job: PushJob,
+    recipient: PushRecipient,
+    state: "pending" | "receipt",
+    error: string,
   ) {
-    this.updates.set(job.id, {
-      job,
-      patch: { ...patch, leaseUntil: 0 },
-      disableToken,
-    });
-  }
-
-  private retry(job: ClaimedPush, state: "pending" | "receipt", error: string) {
     const now = Date.now();
-    const deadline =
-      state === "receipt" ? job.receiptExpiresAt! : job.expiresAt;
-    this.update(job, {
-      active: deadline > now,
-      state: deadline > now ? state : "expired",
-      nextAttempt:
-        now + Math.min(60_000, 1000 * 2 ** Math.min(job.attempts - 1, 6)),
-      lastError: error,
-    });
+    recipient.state = state;
+    recipient.state = this.deadline(job, recipient) > now ? state : "expired";
+    recipient.nextAttempt =
+      now + Math.min(60_000, 1000 * 2 ** Math.min(recipient.attempts - 1, 6));
+    recipient.lastError = error;
   }
 
-  private failure(job: ClaimedPush, payload: Record<string, unknown>) {
+  private failure(
+    job: PushJob,
+    recipient: PushRecipient,
+    payload: Record<string, unknown>,
+    disableTokens: PushRecipient[],
+  ) {
     const error = expoError(payload);
     if (
       [
@@ -163,12 +190,10 @@ export class PushDelivery {
         "MismatchSenderId",
       ].includes(error)
     ) {
-      this.update(
-        job,
-        { active: false, state: "failed", lastError: error },
-        error === "DeviceNotRegistered",
-      );
-    } else this.retry(job, "pending", error);
+      recipient.state = "failed";
+      recipient.lastError = error;
+      if (error === "DeviceNotRegistered") disableTokens.push(recipient);
+    } else this.retry(job, recipient, "pending", error);
   }
 
   private async flush() {
@@ -178,83 +203,100 @@ export class PushDelivery {
         const current = (await tx.get(ref)).data() as PushJob | undefined;
         if (!current?.active || current.attempts !== update.job.attempts)
           return;
-        const deviceRef = this.db.collection("users").doc(update.job.deviceId);
-        const device = update.disableToken ? await tx.get(deviceRef) : null;
-        tx.update(ref, update.patch);
+        const refs = update.disableTokens.map((recipient) =>
+          this.db.collection("users").doc(recipient.deviceId),
+        );
+        const devices = refs.length ? await tx.getAll(...refs) : [];
+        const lastError = update.job.recipients.find(
+          (recipient) => recipient.lastError,
+        )?.lastError;
         if (
-          device?.get("expoPushToken") === update.job.expoPushToken &&
-          device.updateTime?.isEqual(update.job.tokenUpdatedAt)
+          update.job.recipients.every((recipient) => recipient.state === "sent")
         )
-          tx.update(deviceRef, { expoPushToken: FieldValue.delete() });
+          tx.delete(ref);
+        else
+          tx.update(ref, {
+            ...scheduled(update.job),
+            recipients: update.job.recipients,
+            leaseUntil: 0,
+            ...(lastError ? { lastError } : {}),
+          });
+        for (const [index, recipient] of update.disableTokens.entries()) {
+          const device = devices[index]!;
+          if (
+            device.get("expoPushToken") === recipient.expoPushToken &&
+            device.updateTime?.isEqual(recipient.tokenUpdatedAt)
+          )
+            tx.update(refs[index]!, { expoPushToken: FieldValue.delete() });
+        }
       });
       this.updates.delete(id);
     }
   }
 
   async run(ids: string[]) {
-    // Keep accepted tickets in memory until Firestore acknowledges their writes.
+    // Keep accepted tickets until Firestore acknowledges their writes.
     await this.flush();
-    const claimed = (
-      await Promise.all(ids.slice(0, 100).map((id) => this.claim(id)))
-    ).filter((job): job is ClaimedPush => job !== null);
+    const id = ids[0];
+    if (!id) return;
+    await this.users.ready();
+    // Throttle before claiming, so waiting never consumes the job's lease.
+    if (this.nextSendAt > Date.now())
+      await Bun.sleep(this.nextSendAt - Date.now());
+    const job = await this.claim(id);
+    if (!job) return;
+    const disableTokens: PushRecipient[] = [];
     for (const state of ["pending", "receipt"] as const) {
-      const candidates = claimed.filter((job) => job.state === state);
-      // Refresh the whole batch atomically so early jobs do not outlive their
-      // leases while later jobs wait for individual authorization reads.
-      let jobs = candidates.length
-        ? await this.db.runTransaction(async (tx) => {
-            const refs = candidates.map((job) =>
-              this.db.collection("pushJobs").doc(job.id),
+      let recipients = job.recipients.filter(
+        (recipient) =>
+          recipient.state === state && recipient.nextAttempt <= Date.now(),
+      );
+      if (state === "pending" && recipients.length) {
+        // A disconnected roster must pause delivery, never authorize old data.
+        try {
+          recipients = recipients.filter((recipient) => {
+            if (this.users.authorized(recipient)) return true;
+            recipient.state = "failed";
+            recipient.lastError = "Device approval or token changed";
+            return false;
+          });
+        } catch (error) {
+          for (const recipient of recipients)
+            this.retry(
+              job,
+              recipient,
+              state,
+              error instanceof Error
+                ? error.message
+                : "User listener disconnected",
             );
-            const snapshots = await tx.getAll(...refs);
-            const deviceRefs = candidates.map((job) =>
-              this.db.collection("users").doc(job.deviceId),
-            );
-            const devices =
-              state === "pending" ? await tx.getAll(...deviceRefs) : [];
-            const now = Date.now();
-            return candidates.filter((job, index) => {
-              const current = snapshots[index]!.data() as PushJob | undefined;
-              if (
-                !current?.active ||
-                current.attempts !== job.attempts ||
-                current.state !== state
-              )
-                return false;
-              const deadline =
-                state === "pending" ? job.expiresAt : job.receiptExpiresAt!;
-              const authorized =
-                state === "receipt" ||
-                (devices[index]!.get("approved") === true &&
-                  devices[index]!.get("expoPushToken") === job.expoPushToken);
-              if (!authorized || deadline <= now) {
-                tx.update(refs[index]!, {
-                  active: false,
-                  state: deadline <= now ? "expired" : "failed",
-                  leaseUntil: 0,
-                });
-                return false;
-              }
-              tx.update(refs[index]!, { leaseUntil: now + 30_000 });
-              return true;
-            });
-          })
-        : [];
-      jobs = jobs.filter((job) => {
-        const deadline =
-          state === "pending" ? job.expiresAt : job.receiptExpiresAt!;
-        if (deadline > Date.now()) return true;
-        this.update(job, { active: false, state: "expired" });
+          continue;
+        }
+      }
+      recipients = recipients.filter((recipient) => {
+        if (this.deadline(job, recipient) > Date.now()) return true;
+        recipient.state = "expired";
         return false;
       });
-      if (!jobs.length) continue;
+      if (!recipients.length) continue;
+      if (job.leaseUntil - Date.now() < 10_000) {
+        for (const recipient of recipients)
+          this.retry(
+            job,
+            recipient,
+            state,
+            "Push lease is too close to expiry",
+          );
+        continue;
+      }
       let data: unknown;
       try {
+        if (state === "pending") this.nextSendAt = Date.now() + 167;
         data = await this.post(
           state === "pending" ? "send" : "getReceipts",
           state === "pending"
-            ? jobs.map((job) => ({
-                to: job.expoPushToken,
+            ? recipients.map((recipient) => ({
+                to: recipient.expoPushToken,
                 title: job.title,
                 body: job.body,
                 data: { messageId: job.messageId },
@@ -266,7 +308,7 @@ export class PushDelivery {
                   Math.ceil((job.expiresAt - Date.now()) / 1000),
                 ),
               }))
-            : { ids: jobs.map((job) => job.ticketId) },
+            : { ids: recipients.map((recipient) => recipient.ticketId) },
         );
         if (
           (state === "pending" && !Array.isArray(data)) ||
@@ -274,43 +316,44 @@ export class PushDelivery {
         )
           throw new Error("Invalid Expo ticket or receipt response");
       } catch (error) {
-        for (const job of jobs)
+        for (const recipient of recipients)
           this.retry(
             job,
+            recipient,
             state,
             error instanceof Error ? error.message : "Expo request failed",
           );
         continue;
       }
-      for (const [index, job] of jobs.entries()) {
+      for (const [index, recipient] of recipients.entries()) {
         const result: unknown = Array.isArray(data)
           ? data[index]
           : isObject(data)
-            ? data[job.ticketId!]
+            ? data[recipient.ticketId!]
             : null;
         if (!isObject(result))
-          this.retry(job, state, "Expo result not available");
-        else if (result.status === "error") this.failure(job, result);
+          this.retry(job, recipient, state, "Expo result not available");
+        else if (result.status === "error")
+          this.failure(job, recipient, result, disableTokens);
         else if (result.status === "ok" && state === "receipt")
-          this.update(job, { active: false, state: "sent" });
+          recipient.state = "sent";
         else if (
           result.status === "ok" &&
           typeof result.id === "string" &&
           result.id.trim()
         ) {
           const now = Date.now();
-          this.update(job, {
-            state: "receipt",
-            ticketId: result.id,
-            nextAttempt: now + 15 * 60_000,
-            receiptExpiresAt: now + 24 * 3_600_000,
-          });
-        } else this.retry(job, state, "Invalid Expo result");
+          recipient.state = "receipt";
+          recipient.ticketId = result.id;
+          recipient.nextAttempt = now + 15 * 60_000;
+          recipient.receiptExpiresAt = now + 24 * 3_600_000;
+        } else this.retry(job, recipient, state, "Invalid Expo result");
       }
     }
+    this.updates.set(id, { job, disableTokens });
     this.report(
-      [...this.updates.values()].find((update) => update.patch.lastError)?.patch
-        .lastError ?? null,
+      job.recipients.find((recipient) => recipient.lastError)?.lastError ??
+        null,
     );
     await this.flush();
   }

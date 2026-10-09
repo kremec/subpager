@@ -1,4 +1,4 @@
-import type { Firestore } from "firebase-admin/firestore";
+import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { isObject } from "./radio/decoder";
 import { createErrorReporter } from "./log";
 
@@ -197,10 +197,13 @@ export class LocationExtraction {
       if (!message.exists)
         throw new Error("Location destination message is missing");
       parseLocation(JSON.stringify({ location: current.result }), job.content);
-      tx.update(messageRef, { location: current.result });
-      for (const repeated of repeats.docs)
-        tx.update(repeated.ref, { location: current.result });
-      tx.update(jobRef, { active: false, state: "done", leaseUntil: 0 });
+      const patch = {
+        location: current.result,
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      tx.update(messageRef, patch);
+      for (const repeated of repeats.docs) tx.update(repeated.ref, patch);
+      tx.delete(jobRef);
     });
   }
 
