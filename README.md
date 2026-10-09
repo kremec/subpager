@@ -60,7 +60,7 @@ The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The 
 
 On 2026-10-09, all 22 messages, 14 completed locations, original Firebase approvals and device tokens were imported into Firestore and checked against the migration archive. No notification or model jobs were created. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
 
-A subsequent atomic migration restored the original message IDs `1–22` and remapped duplicate references while preserving all message fields and locations. The next message ID is `23`; push jobs have their own sequence, and location jobs reuse message IDs. The Convex project and temporary migration archives have been deleted.
+A subsequent atomic migration restored the original message IDs `1–22` and remapped duplicate references while preserving all message fields and locations. The next message ID is `23`; push jobs have their own sequence, and location jobs reuse message IDs. The Convex project and temporary migration archives have been deleted. The two original device labels were recovered from thread history and restored. Approval and token records were then merged into `users/{uid}`, and the deployed rules now use that collection. Older app bundles that read `members` and `devices` require an update.
 
 ## Google Play internal releases
 
