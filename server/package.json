@@ -6,6 +6,7 @@
   "scripts": {
     "init": "bun -e 'import { initConfig } from \"./src/config\"; console.log(await initConfig())'",
     "start": "bun src/index.ts",
+    "deploy": "bun run check && bun scripts/deploy.ts",
     "setup": "bun -e 'import { setup } from \"./scripts/tools\"; await setup()'",
     "setup:usb": "bun -e 'import { setup } from \"./scripts/tools\"; await setup(true)'",
     "doctor": "bun -e 'import { doctor } from \"./scripts/tools\"; await doctor()'",

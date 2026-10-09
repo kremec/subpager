@@ -4,7 +4,7 @@ Receive Slovenian POCSAG pages with a Nooelec NESDR SMArt. This Bun/TypeScript p
 
 ## Branches
 
-Use `develop` for active changes and `main` for reviewed releases. The previous SQLite/Firebase receiver is preserved at commit `39829c3`; the temporary migration archives were deleted after verifying Firestore. No deployment automation is configured.
+Use `develop` for active changes and `main` for reviewed releases. The previous SQLite/Firebase receiver is preserved at commit `39829c3`; the temporary migration archives were deleted after verifying Firestore.
 
 ## Physical setup
 
@@ -30,6 +30,26 @@ bun run start
 On macOS, install Homebrew and Apple command line tools first. Setup installs Homebrew `librtlsdr` and builds the pinned decoder as `bin/multimon-ng-1.6.1`. On Debian/Ubuntu, setup installs the receiver and build packages with apt. For non-root USB permissions, run `bun run setup:usb`, then unplug/replug the receiver. If Linux's DVB driver owns the dongle, follow the [Nooelec Ubuntu guide](https://www.nooelec.com/store/downloads/dl/file/id/72/product/0/nesdr_installation_manual_for_ubuntu.pdf). Do not run the server as root.
 
 On Windows x64, setup downloads and checks the official decoder archive. Install RTL-SDR separately with `pacman -S --needed mingw-w64-ucrt-x86_64-rtl-sdr` in MSYS2 UCRT64. Use [Zadig through Nooelec's guide](https://www.nooelec.com/store/qs) to bind only the NESDR interface to WinUSB. Set `radio.rtlFmPath` to `C:/msys64/ucrt64/bin/rtl_fm.exe` and `radio.multimonPath` to the absolute `bin/multimon-ng-1.6.1.exe` path. Keep native DLLs with their executables. The `bin/` directory holds only the decoder executable and required DLLs, without a version marker. Windows reception has not been tested here.
+
+## Deploy to the TV box
+
+Edit and test on the Mac, then run from the repository root:
+
+```sh
+bun run server:deploy
+ssh subpager-server
+```
+
+Deploy checks TypeScript, uploads the current working tree's server code over
+SSH, and installs production dependencies from the root lockfile in a temporary
+directory. It then stops the receiver, replaces the code and dependencies, and
+starts the OpenRC service. Reception pauses briefly during the restart.
+An upload or dependency-install failure leaves the running server unchanged.
+
+The box keeps its `.env`, `config.json`, credentials, native tools and `data/`.
+App source is not deployed. No build or Git push is required.
+SSH uses the `subpager-server` entry in `~/setup/dotfiles/ssh_config`.
+Press `q` for the shell, then use `logs -f` for live output.
 
 ## Configuration and commands
 

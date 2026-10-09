@@ -8,6 +8,7 @@
   "scripts": {
     "start": "bun run --cwd app start:staging",
     "server:start": "bun run --cwd server start",
+    "server:deploy": "bun run --cwd server deploy",
     "check": "bun run --filter '*' check",
     "lint": "bun run --filter '*' lint",
     "test": "bun run --filter '*' test",

@@ -23,6 +23,7 @@ Bun workspaces share one lockfile. Dependencies use a hoisted install so native 
 ```sh
 bun run start         # Expo development server
 bun run server:start  # radio receiver and background workers
+bun run server:deploy # deploy server changes to the TV box
 ```
 
 Do not start a second Metro server or receiver. Server commands run from `server/`, so its ignored `.env`, `config.json`, `bin/` and `data/` remain local to that directory. See the workspace READMEs for configuration and hardware commands.
