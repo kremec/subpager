@@ -67,8 +67,7 @@ async function main() {
           reportReceiver(radio.error);
       },
       onClip: (clip) => {
-        if (clip.reason !== "continuous")
-          logInfo(`Saved ${clip.reason} clip: ${clip.path}`);
+        logInfo(`Saved ${clip.reason} clip: ${clip.path}`);
       },
       onCall: (call) => {
         if (stopping) return;

@@ -5,9 +5,7 @@ import { join } from "node:path";
 import { defaultConfig, initConfig, loadConfig } from "./config";
 import { wavPcm } from "./radio/audio";
 
-test
-  .skipIf(process.platform === "win32")
-  .each([defaultConfig.clips.enabled, true])(
+test.skipIf(process.platform === "win32").each([false, true])(
   "receiver awaits an in-flight outbox upload on shutdown with recording enabled=%s",
   async (enabled) => {
     const directory = await mkdtemp(join(tmpdir(), "subpager-receiver-"));

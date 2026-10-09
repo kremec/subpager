@@ -5,21 +5,13 @@ import {
   readdir,
   readFile,
   rm,
-  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  BYTES_PER_SECOND,
-  CaptureWindow,
-  PcmFramer,
-  PcmRing,
-  wavHeader,
-  wavPcm,
-} from "./audio";
+import { CaptureWindow, PcmFramer, PcmRing, wavHeader, wavPcm } from "./audio";
 import { parseDecoderLine, rtlFmArgs } from "./decoder";
-import { pruneClips, RadioReceiver, replayWav, surveyGains } from "./index";
+import { RadioReceiver, replayWav, surveyGains } from "./index";
 import { setTimeout as delay } from "node:timers/promises";
 import type { WriteStream } from "node:fs";
 import type { Page } from "./decoder";
@@ -377,19 +369,16 @@ describe("decoder integration contract", () => {
   });
 });
 
-test("continuous chunks split across boundaries with at most eight queued writes and no empty clips", async () => {
+test("decoded captures allow at most eight queued writes and do not save empty clips", async () => {
   const directory = await mkdtemp(join(tmpdir(), "subpager-clip-backlog-"));
   const clips: AudioClip[] = [];
   const logs: string[] = [];
   const { receiver, internal } = simulatedReceiver({
     clips: {
       enabled: true,
-      continuous: true,
       directory,
       preSeconds: 0,
-      postSeconds: 0,
-      maxFiles: 10,
-      maxBytes: 20_000_000,
+      postSeconds: 0.001,
     },
     onClip: (clip) => {
       clips.push(clip);
@@ -400,15 +389,16 @@ test("continuous chunks split across boundaries with at most eight queued writes
     '{"demod_name":"POCSAG1200","address":42,"function":0}',
   )!;
   const samples = Array.from({ length: 9 }, (_, index) =>
-    Buffer.alloc(30 * BYTES_PER_SECOND, index + 1),
+    Buffer.alloc(44, index + 1),
   );
-  const tail = Buffer.from([42, 43]);
   try {
     internal.captureCall(call);
     expect(internal.queuedClips).toBe(0);
-    internal.audio(Buffer.concat([...samples, tail]));
+    for (const pcm of samples) {
+      internal.captureCall(call);
+      internal.audio(pcm);
+    }
     expect(internal.queuedClips).toBe(8);
-    internal.captureCall(call);
     expect(
       logs.filter((line) => line.startsWith("Skipped audio clip:")),
     ).toHaveLength(1);
@@ -417,9 +407,9 @@ test("continuous chunks split across boundaries with at most eight queued writes
     expect(internal.queuedClips).toBe(0);
     for (const [index, clip] of clips.entries())
       expect(wavPcm(await readFile(clip.path))).toEqual(samples[index]!);
+    internal.captureCall(call);
     await receiver.stop();
-    expect(clips).toHaveLength(9);
-    expect(wavPcm(await readFile(clips[8]!.path))).toEqual(tail);
+    expect(clips).toHaveLength(8);
   } finally {
     await receiver.stop();
     await rm(directory, { recursive: true });
@@ -444,57 +434,8 @@ test("a survey cancelled before its first candidate still writes an unapplied re
   }
 });
 
-test("retention counts sidecar bytes without deleting manual or unrelated WAVs", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "subpager-retention-"));
-  try {
-    await writeFile(
-      join(directory, "subpager-decoded-old.wav"),
-      Buffer.alloc(100),
-    );
-    await utimes(join(directory, "subpager-decoded-old.wav"), 1, 1);
-    await writeFile(
-      join(directory, "subpager-continuous-new.wav"),
-      Buffer.alloc(100),
-    );
-    await writeFile(join(directory, "manual.wav"), Buffer.alloc(100));
-    await writeFile(join(directory, "subpager-decoded-old.wav.json"), "{}");
-    await pruneClips(directory, 1, 102);
-    expect((await readdir(directory)).length).toBe(3);
-    expect(await readdir(directory)).toContain("manual.wav");
-    expect(await readdir(directory)).toContain("subpager-decoded-old.wav");
-    await pruneClips(directory, 1, 101);
-    expect(await readdir(directory)).toEqual(["manual.wav"]);
-  } finally {
-    await rm(directory, { recursive: true });
-  }
-});
-
-test("retention removes owned orphan sidecars and preserves other metadata", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "subpager-orphan-sidecars-"));
-  try {
-    for (const name of [
-      "subpager-decoded-orphan.wav.json",
-      "subpager-continuous-orphan.wav.json",
-      "subpager-decoded-kept.wav",
-      "subpager-decoded-kept.wav.json",
-      "manual.wav.json",
-      "unrelated.json",
-    ])
-      await writeFile(join(directory, name), "");
-    await pruneClips(directory, 1, 100);
-    expect((await readdir(directory)).sort()).toEqual([
-      "manual.wav.json",
-      "subpager-decoded-kept.wav",
-      "subpager-decoded-kept.wav.json",
-      "unrelated.json",
-    ]);
-  } finally {
-    await rm(directory, { recursive: true });
-  }
-});
-
 test.each(["metadata", "callback"])(
-  "retention still runs after a %s failure and keeps bounded staging files",
+  "a %s failure preserves both existing and newly captured WAVs",
   async (failure) => {
     const directory = await mkdtemp(
       join(tmpdir(), "subpager-archive-failure-"),
@@ -506,8 +447,6 @@ test.each(["metadata", "callback"])(
         directory,
         preSeconds: 0,
         postSeconds: 0.001,
-        maxFiles: 1,
-        maxBytes: 10_000,
       },
       onClip: () => {
         throw new Error("Archive unavailable");
@@ -522,7 +461,6 @@ test.each(["metadata", "callback"])(
       const old = join(directory, "subpager-decoded-old.wav");
       await writeFile(old, Buffer.concat([wavHeader(2), Buffer.alloc(2)]));
       await writeFile(`${old}.json`, "{}");
-      await utimes(old, 1, 1);
       internal.captureCall(
         parseDecoderLine(
           '{"demod_name":"POCSAG1200","address":42,"function":3,"alpha":"test"}',
@@ -533,15 +471,14 @@ test.each(["metadata", "callback"])(
       expect(internal.queuedClips).toBe(0);
       const entries = await readdir(directory);
       const wavs = entries.filter((name) => name.endsWith(".wav"));
-      expect(wavs).toHaveLength(1);
-      expect(entries).not.toContain("subpager-decoded-old.wav");
-      expect(entries).not.toContain("subpager-decoded-old.wav.json");
-      expect(wavPcm(await readFile(join(directory, wavs[0]!)))).toHaveLength(
-        44,
-      );
+      expect(wavs).toHaveLength(2);
+      expect(entries).toContain("subpager-decoded-old.wav");
+      expect(entries).toContain("subpager-decoded-old.wav.json");
+      const newWav = wavs.find((name) => name !== "subpager-decoded-old.wav")!;
+      expect(wavPcm(await readFile(join(directory, newWav)))).toHaveLength(44);
       if (failure === "callback") {
         const metadata = JSON.parse(
-          await readFile(join(directory, `${wavs[0]}.json`), "utf8"),
+          await readFile(join(directory, `${newWav}.json`), "utf8"),
         );
         expect(metadata.calls[0].ric).toBe(42);
       }
@@ -644,8 +581,6 @@ test.skipIf(process.platform === "win32")(
         directory: join(directory, "clips"),
         preSeconds: 0.2,
         postSeconds: 0.2,
-        maxFiles: 10,
-        maxBytes: 1_000_000,
       },
       onCall: (value) => calls.push(value),
       onClip: (clip) => {
@@ -808,7 +743,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-  "a stalled partial continuous clip ends at its last PCM samples",
+  "a stalled partial decoded clip ends at its last PCM samples",
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "subpager-stalled-clip-"));
     const rtlPath = join(directory, "receiver");
@@ -819,7 +754,7 @@ test.skipIf(process.platform === "win32")(
     );
     await writeExecutable(
       decoderPath,
-      `for await (const chunk of Bun.stdin.stream()) {}\n`,
+      `let sent = false; for await (const chunk of Bun.stdin.stream()) { if (!sent && chunk.length) { sent = true; console.log('{"demod_name":"POCSAG1200","address":42,"function":0}'); } }\n`,
     );
     let failedAt = 0;
     const { promise: failed, resolve: restarting } =
@@ -832,12 +767,9 @@ test.skipIf(process.platform === "win32")(
       audioTimeoutMs: 1500,
       clips: {
         enabled: true,
-        continuous: true,
         directory: join(directory, "clips"),
         preSeconds: 0.2,
-        postSeconds: 0.2,
-        maxFiles: 10,
-        maxBytes: 1_000_000,
+        postSeconds: 4,
       },
       onClip: (clip) => {
         clips.push(clip);
@@ -857,7 +789,7 @@ test.skipIf(process.platform === "win32")(
       expect(clips).toHaveLength(1);
       const clip = clips[0]!;
       const metadata = JSON.parse(await readFile(`${clip.path}.json`, "utf8"));
-      expect(clip.reason).toBe("continuous");
+      expect(clip.reason).toBe("decoded");
       expect(wavPcm(await readFile(clip.path))).toHaveLength(8820);
       expect(clip.endedAt).toBe(lastAudioAt!);
       expect(metadata.endedAt).toBe(lastAudioAt);

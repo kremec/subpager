@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 
 export interface Config {
   radio: RadioConfig & { device: string };
-  clips: Required<ClipConfig>;
+  clips: ClipConfig;
   outbox: string;
   firebase: { projectId: string; serviceAccountPath: string };
 }
@@ -26,13 +26,10 @@ export const defaultConfig: Config = {
     ),
   },
   clips: {
-    enabled: false,
+    enabled: true,
     directory: "./data/clips",
     preSeconds: 8,
     postSeconds: 4,
-    maxFiles: 500,
-    maxBytes: 256 * 1024 * 1024,
-    continuous: false,
   },
   outbox: "./data/outbox",
   firebase: {
@@ -91,14 +88,10 @@ export function validateConfig(value: unknown): asserts value is Config {
     typeof radio.multimonPath !== "string" ||
     !radio.multimonPath ||
     typeof clips.enabled !== "boolean" ||
-    typeof clips.continuous !== "boolean" ||
     typeof clips.directory !== "string" ||
     !clips.directory ||
     !numberIn(clips.preSeconds, 1, 120) ||
     !numberIn(clips.postSeconds, 1, 30) ||
-    !numberIn(clips.maxFiles, 1, 10000) ||
-    !Number.isInteger(clips.maxFiles) ||
-    !numberIn(clips.maxBytes, 1048576, 10737418240) ||
     typeof value.outbox !== "string" ||
     !value.outbox
   ) {

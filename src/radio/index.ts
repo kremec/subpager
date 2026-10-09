@@ -5,9 +5,7 @@ import {
   open,
   readdir,
   readFile,
-  rm,
   stat,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -32,14 +30,11 @@ export interface ClipConfig {
   directory: string;
   preSeconds: number;
   postSeconds: number;
-  maxFiles: number;
-  maxBytes: number;
-  continuous?: boolean;
 }
 
 export interface AudioClip {
   path: string;
-  reason: "decoded" | "continuous" | "manual";
+  reason: "decoded" | "manual";
   startedAt: string;
   endedAt: string;
   bytes: number;
@@ -65,7 +60,7 @@ export interface ReceiverOptions extends RadioConfig {
 
 interface PendingClip {
   capture: CaptureWindow;
-  reason: "decoded" | "continuous";
+  reason: "decoded";
   calls: Page[];
   startedAt: string;
 }
@@ -112,7 +107,6 @@ export class RadioReceiver {
   private ring = new PcmRing(0);
   private framer = new PcmFramer();
   private pending: PendingClip | undefined;
-  private continuous: PendingClip | undefined;
   private manual: ManualRecording | undefined;
   private fileQueue: Promise<void> = Promise.resolve();
   private queuedClips = 0;
@@ -135,13 +129,9 @@ export class RadioReceiver {
         clips.preSeconds > 120 ||
         !Number.isFinite(clips.postSeconds) ||
         clips.postSeconds < 0 ||
-        clips.postSeconds > 120 ||
-        !Number.isInteger(clips.maxFiles) ||
-        clips.maxFiles < 1 ||
-        !Number.isFinite(clips.maxBytes) ||
-        clips.maxBytes < 44)
+        clips.postSeconds > 120)
     ) {
-      throw new Error("Invalid clip durations or retention limits");
+      throw new Error("Invalid clip durations");
     }
   }
 
@@ -282,29 +272,6 @@ export class RadioReceiver {
       this.saveClip(this.pending);
       this.pending = undefined;
     }
-    if (this.options.clips?.enabled && this.options.clips.continuous) {
-      // Split exactly at 30 seconds, including when a native pipe chunk crosses it.
-      let remaining = pcm;
-      while (remaining.length) {
-        this.continuous ??= {
-          capture: new CaptureWindow(
-            Buffer.alloc(0),
-            30 * BYTES_PER_SECOND,
-            30 * BYTES_PER_SECOND,
-          ),
-          reason: "continuous",
-          calls: [],
-          startedAt: new Date().toISOString(),
-        };
-        const before = this.continuous.capture.byteLength;
-        const take = Math.min(remaining.length, 30 * BYTES_PER_SECOND - before);
-        if (this.continuous.capture.push(remaining.subarray(0, take))) {
-          this.saveClip(this.continuous);
-          this.continuous = undefined;
-        }
-        remaining = remaining.subarray(take);
-      }
-    }
     this.ring.push(pcm);
     const recording = this.manual;
     if (recording && !recording.finalizing) {
@@ -342,7 +309,6 @@ export class RadioReceiver {
         ).toISOString(),
       };
     }
-    if (this.continuous) this.continuous.calls.push(call);
     if (!config.postSeconds && this.pending) {
       this.saveClip(this.pending);
       this.pending = undefined;
@@ -365,29 +331,25 @@ export class RadioReceiver {
     this.queuedClips++;
     this.fileQueue = this.fileQueue
       .then(async () => {
-        try {
-          await mkdir(config.directory, { recursive: true });
-          const path = join(
-            config.directory,
-            `subpager-${reason}-${endedAt.replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.wav`,
-          );
-          await writeFile(path, Buffer.concat([wavHeader(pcm.length), pcm]), {
-            flag: "wx",
-            mode: 0o600,
-          });
-          const clip: AudioClip = {
-            path,
-            reason,
-            startedAt,
-            endedAt,
-            bytes: pcm.length + 44,
-            calls,
-          };
-          await this.writeMetadata(clip);
-          await this.options.onClip?.(clip);
-        } finally {
-          await pruneClips(config.directory, config.maxFiles, config.maxBytes);
-        }
+        await mkdir(config.directory, { recursive: true });
+        const path = join(
+          config.directory,
+          `subpager-${reason}-${endedAt.replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.wav`,
+        );
+        await writeFile(path, Buffer.concat([wavHeader(pcm.length), pcm]), {
+          flag: "wx",
+          mode: 0o600,
+        });
+        const clip: AudioClip = {
+          path,
+          reason,
+          startedAt,
+          endedAt,
+          bytes: pcm.length + 44,
+          calls,
+        };
+        await this.writeMetadata(clip);
+        await this.options.onClip?.(clip);
       })
       .catch((error) =>
         this.options.onLog?.(`Clip write failed: ${String(error)}`),
@@ -419,8 +381,7 @@ export class RadioReceiver {
 
   private flushClips(): void {
     if (this.pending) this.saveClip(this.pending);
-    if (this.continuous) this.saveClip(this.continuous);
-    this.pending = this.continuous = undefined;
+    this.pending = undefined;
   }
 
   async recordWav(path: string, durationMs: number): Promise<AudioClip> {
@@ -533,57 +494,6 @@ export class RadioReceiver {
       this.stopping = undefined;
     });
     return this.stopping;
-  }
-}
-
-export async function pruneClips(
-  directory: string,
-  maxFiles: number,
-  maxBytes: number,
-): Promise<void> {
-  const entries = await readdir(directory);
-  const names = entries.filter((name) =>
-    /^subpager-(decoded|continuous)-.*\.wav$/.test(name),
-  );
-  for (const name of entries) {
-    if (
-      /^subpager-(decoded|continuous)-.*\.wav\.json$/.test(name) &&
-      !entries.includes(name.slice(0, -5))
-    ) {
-      await rm(join(directory, name), { force: true });
-    }
-  }
-  const files = await Promise.all(
-    names.map(async (name) => {
-      const wav = await stat(join(directory, name));
-      let metadataBytes = 0;
-      try {
-        metadataBytes = (await stat(join(directory, `${name}.json`))).size;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-      return {
-        name,
-        size: wav.size + metadataBytes,
-        mtimeMs: wav.mtimeMs,
-        continuous: name.startsWith("subpager-continuous-"),
-      };
-    }),
-  );
-  files.sort(
-    (a, b) =>
-      Number(b.continuous) - Number(a.continuous) ||
-      a.mtimeMs - b.mtimeMs ||
-      a.name.localeCompare(b.name),
-  );
-  let bytes = files.reduce((total, file) => total + file.size, 0);
-  let count = files.length;
-  for (const file of files) {
-    if (count <= maxFiles && bytes <= maxBytes) break;
-    await unlink(join(directory, file.name));
-    await rm(join(directory, `${file.name}.json`), { force: true });
-    bytes -= file.size;
-    count--;
   }
 }
 
@@ -724,9 +634,6 @@ export async function surveyGains(
         directory: captureDirectory,
         preSeconds: 8,
         postSeconds: 4,
-        continuous: true,
-        maxFiles: 60,
-        maxBytes: 256 * 1024 * 1024,
       },
       onCall: (call) => {
         candidate.decodedCalls++;
