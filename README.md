@@ -114,7 +114,7 @@ Approval, labels and push tokens are stored together in `users/{uid}` as `approv
 
 ### RIC unit mappings
 
-Edit mappings directly in Firestore, or publish a complete JSON array with `bun run ric:sync FILE`:
+Store mappings in `ricUnits/{ric}` with `ric` and `unitName` fields, or publish a complete JSON array with `bun run ric:sync FILE`:
 
 ```json
 [{ "ric": 90473, "unitName": "Unit name" }]
