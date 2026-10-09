@@ -5,7 +5,7 @@ Private pager history and Expo push notifications with Firebase anonymous Auth a
 ## Install and check
 
 ```sh
-bun install
+bun install # from the repository root
 bun run check
 bun run lint
 bun run format:check
@@ -20,15 +20,15 @@ Bun applies the checked-in MaskedView manifest patch during installation. EAS us
 
 The project is `subpager-subbyte`, with the default Firestore database in `europe-west3`. Enable anonymous Firebase Auth. The public client options come from the matching Android package in `google-services.json`, provided locally or through the EAS `GOOGLE_SERVICES_JSON` file variable. Keep service account credentials outside source control and mobile builds.
 
-Deploy the rules after signing into the Firebase CLI:
+Deploy rules and indexes from the repository root after signing into the Firebase CLI:
 
 ```sh
-bunx firebase-tools deploy --only firestore:rules --project subpager-subbyte
+bunx firebase-tools deploy --only firestore --project subpager-subbyte
 ```
 
 `firestore.rules` permits a device to read its own approval. Only approved devices can read messages and RIC mappings or register their own Expo token. Clients can update only their own push token; they cannot change approval or labels, write messages or access private jobs. The receiver uses the official Firebase Admin SDK with a private service account. See the receiver README for configuration.
 
-The app creates an anonymous account and displays its ID in onboarding and settings. In the receiver repository:
+The app creates an anonymous account and displays its ID in onboarding and settings. Run these commands from `../server/`:
 
 ```sh
 bun run member:approve FIREBASE_DEVICE_ID
@@ -70,14 +70,14 @@ A subsequent atomic migration restored the original message IDs `1–22` and rem
 
 ## Google Play internal releases
 
-The release flow matches subsocial: `main` push → production Android AAB build → submission to Google Play's `internal` track. The build profile's name and EAS Update channel are `production`; the Play destination is still internal testing. The `preview` profile creates an APK for direct installation and must not be used for Play submission. Remote versioning and `autoIncrement` give each production build a new Android version code. [Expo Android submission](https://docs.expo.dev/submit/android/).
+The release flow is `main` push with app or root build-configuration changes → production Android AAB build → submission to Google Play's `internal` track. Server-only and documentation-only changes do not trigger releases. The build profile's name and EAS Update channel are `production`; the Play destination is still internal testing. The `preview` profile creates an APK for direct installation and must not be used for Play submission. Remote versioning and `autoIncrement` give each production build a new Android version code. [Expo Android submission](https://docs.expo.dev/submit/android/).
 
 Configured and checked on 2026-10-08:
 
 - EAS has the default `Subpager Android` upload keystore for `com.subbyte.subpager`.
 - The Google Play Android Developer API is enabled in GCP project `subpager`.
 - `play-console-service-account@subpager.iam.gserviceaccount.com` is active in Play Console with access to Subpager and the submission permissions. Its key is assigned to EAS's Play Store Submissions slot. The local file is `./subpager-873873498300.json`, excluded by both `.gitignore` and `.easignore`. It is separate from the Firebase client config and FCM key. [Expo's service-account guide](https://github.com/expo/fyi/blob/main/creating-google-service-account.md).
-- [Subpager's EAS GitHub settings](https://expo.dev/accounts/subbyte/projects/subpager/github) confirms `kremec/subpager-app` is connected. The release workflow passes EAS validation.
+- [Subpager's EAS GitHub settings](https://expo.dev/accounts/subbyte/projects/subpager/github) uses `kremec/subpager`, with `app` as its base directory. The release workflow passes EAS validation.
 
 Before the first release:
 
@@ -100,7 +100,7 @@ bun run eas:submit
 
 The submit command lets you select the intended build. For the exact GitHub build, the workflow passes its `build_id` to the submit job. No extra GitHub Actions workflow or `EXPO_TOKEN` is required for EAS's own GitHub integration.
 
-This setup linked GitHub, configured Android signing, assigned the Play and FCM service-account keys, enabled the Play API and uploaded the Firebase client configuration as an EAS file variable. No builds, store submissions, OTA updates, notifications or phone acceptance checks were performed.
+The existing Android signing, Play submission, FCM credentials and Firebase client file variable remain attached to the same EAS project. The sync optimizations were published as Android version code 5 to Play internal testing before the monorepo migration. Repository checks are separate from phone acceptance checks.
 
 ## End-to-end acceptance checks
 

@@ -54,7 +54,7 @@ Arguments are positional: `record [output] [seconds]`, `calibrate [seconds] [rep
 Reconnect the receiver and antenna, then open Terminal:
 
 ```sh
-cd ~/Projects/prod/subpager-server
+cd ~/Projects/prod/subpager/server
 bun run start
 ```
 
@@ -94,7 +94,7 @@ Keep the `radio` and `clips` settings and configure the receiver's outbox and Fi
 }
 ```
 
-Download a service account JSON from Firebase project settings, then store it outside Git with private file permissions. Its project must match `projectId`. Paths can be absolute or relative to `config.json`. Remove the former `database`, `api`, `convex`, `dedupeSeconds`, `pushMaxAgeSeconds` and `location` options. The receiver needs outbound internet access only, with no domain, tunnel or inbound port. Enable anonymous Firebase Auth and deploy the app's Firestore security rules separately.
+Download a service account JSON from Firebase project settings, then store it outside Git with private file permissions. Its project must match `projectId`. Paths can be absolute or relative to `config.json`. Remove the former `database`, `api`, `convex`, `dedupeSeconds`, `pushMaxAgeSeconds` and `location` options. The receiver needs outbound internet access only, with no domain, tunnel or inbound port. Enable anonymous Firebase Auth and deploy the repository root Firestore security rules separately.
 
 Each page is normalized and stored in a Firestore transaction. Matching repeats within 30 seconds of the original canonical message are retained with `duplicateOf`, without creating another push or model job. Only canonical messages less than five minutes old queue notifications for approved members with a push token. Empty and tone pages skip location inference. Message writes commit independently of push and OpenAI calls, so model latency does not delay the live feed or notifications.
 
@@ -128,7 +128,7 @@ The command atomically writes two documents: `config/ricUnits` contains the comp
 
 ### Activating the optimized protocol
 
-These source changes do not update running processes, installed apps or Firestore rules. Deploy the app repository's `firestore.rules` and `firestore.indexes.json` together, stop the old receiver after its active push jobs finish, then run the updated receiver and update the phones. Old per-device push jobs and new batched jobs have different schemas; do not run mixed worker versions. Publish the RIC JSON once with the updated `ric:sync` command. Existing phone caches perform one full bootstrap, then use deltas. No message backfill or history deletion is needed. Keep indexes enabled for `receivedAt`, `updatedAt`, `duplicateOf` and active-job queries; the checked-in exemptions remove unused catalog, recipient, text and location indexes.
+These source changes do not update running processes, installed apps or Firestore rules. Deploy the repository root `firestore.rules` and `firestore.indexes.json` together, stop the old receiver after its active push jobs finish, then run the updated receiver and update the phones. Old per-device push jobs and new batched jobs have different schemas; do not run mixed worker versions. Publish the RIC JSON once with the updated `ric:sync` command. Existing phone caches perform one full bootstrap, then use deltas. No message backfill or history deletion is needed. Keep indexes enabled for `receivedAt`, `updatedAt`, `duplicateOf` and active-job queries; the checked-in exemptions remove unused catalog, recipient, text and location indexes.
 
 ## Verified reception
 

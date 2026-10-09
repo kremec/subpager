@@ -8,6 +8,13 @@ on:
   push:
     branches:
       - main
+    paths:
+      - app/**
+      - package.json
+      - bun.lock
+      - bunfig.toml
+      - .easignore
+      - "!**/*.md"
 
 jobs:
   build_android:

@@ -1,0 +1,22 @@
+{
+  "name": "subpager",
+  "private": true,
+  "workspaces": [
+    "app",
+    "server"
+  ],
+  "scripts": {
+    "start": "bun run --cwd app start:staging",
+    "server:start": "bun run --cwd server start",
+    "check": "bun run --filter '*' check",
+    "lint": "bun run --filter '*' lint",
+    "test": "bun run --filter '*' test",
+    "format": "bun run --filter '*' format",
+    "format:check": "bun run --filter '*' format:check",
+    "prepare": "git config --local core.hooksPath .githooks"
+  },
+  "packageManager": "bun@1.4.2",
+  "patchedDependencies": {
+    "@react-native-masked-view/masked-view@0.3.2": "app/patches/@react-native-masked-view%2Fmasked-view@0.3.2.patch"
+  }
+}
