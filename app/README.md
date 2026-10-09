@@ -77,7 +77,7 @@ Configured and checked on 2026-10-08:
 - EAS has the default `Subpager Android` upload keystore for `com.subbyte.subpager`.
 - The Google Play Android Developer API is enabled in GCP project `subpager`.
 - `play-console-service-account@subpager.iam.gserviceaccount.com` is active in Play Console with access to Subpager and the submission permissions. Its key is assigned to EAS's Play Store Submissions slot. The local file is `./subpager-873873498300.json`, excluded by both `.gitignore` and `.easignore`. It is separate from the Firebase client config and FCM key. [Expo's service-account guide](https://github.com/expo/fyi/blob/main/creating-google-service-account.md).
-- [Subpager's EAS GitHub settings](https://expo.dev/accounts/subbyte/projects/subpager/github) uses `kremec/subpager`, with `app` as its base directory. The release workflow passes EAS validation.
+- [Subpager's EAS GitHub settings](https://expo.dev/accounts/subbyte/projects/subpager/github) uses `kremec/subpager`, with `app` as its base directory. The Expo GitHub App installation must also include this repository so push events reach EAS. The release workflow passes EAS validation.
 
 Before the first release:
 

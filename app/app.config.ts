@@ -40,7 +40,7 @@ const firebase =
 export default {
   name: IS_DEV ? "subpager (DEV)" : "subpager",
   slug: "subpager",
-  version: "0.0.2",
+  version: "0.0.3",
   runtimeVersion: { policy: "fingerprint" },
   updates: { url: `https://u.expo.dev/${projectId}` },
   orientation: "portrait",
