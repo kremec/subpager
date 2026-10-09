@@ -40,7 +40,7 @@ Online, the app waits for server-confirmed approval before syncing history. Offl
 
 ## History and locations
 
-Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet and arrive automatically without manual refresh. Search matches text, RIC and unit names without case or accent differences. Messages use sequential Firestore document IDs such as `1`, `2` and `3`. Firebase identities keep their UIDs. RIC mappings use `ricUnits/{ric}` with `ric` and `unitName` fields; none were configured before migration.
+Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet and arrive automatically without manual refresh. Search matches text, RIC and unit names without case or accent differences. New messages use Firestore automatic document IDs; existing history retains its original IDs. Firebase identities keep their UIDs. RIC mappings use `ricUnits/{ric}` with `ric` and `unitName` fields; none were configured before migration.
 
 The receiver transaction saves each message and queues private `pushJobs` and `locationJobs`. Separate listeners process those jobs without repeated polling reads. The receiver must be running to finish background work. Durable retry times and leases allow recovery after restart. The receiver has no SQLite database, HTTP API, domain or tunnel.
 
@@ -60,7 +60,7 @@ The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The 
 
 On 2026-10-09, all 22 messages, 14 completed locations, original Firebase approvals and device tokens were imported into Firestore and checked against the migration archive. No notification or model jobs were created. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
 
-A subsequent atomic migration restored the original message IDs `1–22` and remapped duplicate references while preserving all message fields and locations. The next message ID is `23`; push jobs have their own sequence, and location jobs reuse message IDs. The Convex project and temporary migration archives have been deleted. The two original device labels were recovered from thread history and restored. Approval and token records were then merged into `users/{uid}`, and the deployed rules now use that collection. Older app bundles that read `members` and `devices` require an update.
+A subsequent atomic migration restored the original message IDs `1–22` and remapped duplicate references while preserving all message fields and locations. New messages and push jobs now use Firestore automatic document IDs without counters; location jobs reuse message IDs. The Convex project and temporary migration archives have been deleted. The two original device labels were recovered from thread history and restored. Approval and token records were then merged into `users/{uid}`, and the deployed rules now use that collection. Older app bundles that read `members` and `devices` require an update.
 
 ## Google Play internal releases
 
