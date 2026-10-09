@@ -1,10 +1,4 @@
-import {
-  type FC,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useState,
-} from "react";
+import { type FC, type ReactNode, useEffect, useState } from "react";
 import { AppState } from "react-native";
 
 import { showErrorToast } from "@/components/ui/toast";
@@ -27,8 +21,6 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
     new Map(),
   );
   const [loading, setLoading] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  const refresh = useCallback(() => setAttempt((value) => value + 1), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,7 +104,7 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
       unsubscribeUnits();
       appState.remove();
     };
-  }, [uid, hasAccess, attempt]);
+  }, [uid, hasAccess]);
 
   const visible = !!uid && historyUid === uid && hasAccess(uid);
   return (
@@ -121,7 +113,6 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
         messages: visible ? messages : [],
         unitNames: visible ? unitNames : new Map(),
         loading: visible && loading,
-        refresh,
       }}
     >
       {props.children}

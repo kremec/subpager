@@ -6,7 +6,6 @@ interface HistoryContextValue {
   messages: PagerMessage[];
   unitNames: ReadonlyMap<number, string>;
   loading: boolean;
-  refresh: () => void;
 }
 
 export const HistoryContext = createContext<HistoryContextValue | null>(null);

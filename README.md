@@ -40,7 +40,7 @@ Online, the app waits for server-confirmed approval before syncing history. Offl
 
 ## History and locations
 
-Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet. Search matches text, RIC and unit names without case or accent differences. Messages use sequential Firestore document IDs such as `1`, `2` and `3`. Firebase identities keep their UIDs, and RIC mappings keep their RIC keys.
+Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet and arrive automatically without manual refresh. Search matches text, RIC and unit names without case or accent differences. Messages use sequential Firestore document IDs such as `1`, `2` and `3`. Firebase identities keep their UIDs, and RIC mappings keep their RIC keys.
 
 The receiver transaction saves each message and queues private `pushJobs` and `locationJobs`. Separate listeners process those jobs without repeated polling reads. The receiver must be running to finish background work. Durable retry times and leases allow recovery after restart. The receiver has no SQLite database, HTTP API, domain or tunnel.
 
@@ -56,11 +56,11 @@ Firebase Cloud Messaging remains the Android push transport. Keep `google-servic
 
 ## Migration and rollback
 
-The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The final Convex checkpoints are app `def4ee6` and receiver `6462a62`, also tagged `firebase-return-checkpoint-*`. Private exports and configuration are backed up outside both repositories.
+The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The final Convex checkpoints are app `def4ee6` and receiver `6462a62`, also tagged `firebase-return-checkpoint-*`. The temporary migration archives were removed after verifying Firestore.
 
-A verified private SQLite migration backup holds all 22 messages, 14 completed locations, original Firebase approvals and device tokens, plus the complete Convex export. On 2026-10-09, all 26 prepared documents were imported into Firestore and checked against the backup. No notification or model jobs were created. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
+On 2026-10-09, all 22 messages, 14 completed locations, original Firebase approvals and device tokens were imported into Firestore and checked against the migration archive. No notification or model jobs were created. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
 
-The backup is `firebase-return.sqlite` in the private migration backup directory. Its adjacent `restore-firestore.ts` performed the atomic import and cloud readback. A subsequent atomic migration restored the original message IDs `1–22` and remapped duplicate references while preserving all message fields and locations. The private `firestore-before-sequential-ids.json` checkpoint records that mapping. The next message ID is `23`; push jobs have their own sequence, and location jobs reuse message IDs. Keep the private backups for rollback. The Convex project was deleted after verifying the SQLite backup and full export.
+A subsequent atomic migration restored the original message IDs `1–22` and remapped duplicate references while preserving all message fields and locations. The next message ID is `23`; push jobs have their own sequence, and location jobs reuse message IDs. The Convex project and temporary migration archives have been deleted.
 
 ## Google Play internal releases
 

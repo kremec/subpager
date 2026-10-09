@@ -1,5 +1,5 @@
 import { type FC, type RefObject, useMemo } from "react";
-import { RefreshControl, View } from "react-native";
+import { View } from "react-native";
 
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
 
@@ -16,13 +16,12 @@ import { useTheme } from "@/theme/use-theme";
 interface MessageListProps {
   messages: PagerMessage[];
   loading?: boolean;
-  onRefresh?: () => void;
   query?: string;
   listRef?: RefObject<LegendListRef | null>;
 }
 
 export const MessageList: FC<MessageListProps> = (props) => {
-  const { messages, loading = false, onRefresh, query, listRef } = props;
+  const { messages, loading = false, query, listRef } = props;
   const theme = useTheme();
   const { unitNames } = useMessageHistory();
   const searching = query !== undefined;
@@ -34,9 +33,7 @@ export const MessageList: FC<MessageListProps> = (props) => {
     () => (index && query?.trim() ? searchMessages(index, query) : messages),
     [messages, index, query],
   );
-  let emptyMessage = onRefresh
-    ? "No messages yet. Pull to refresh."
-    : "No messages yet.";
+  let emptyMessage = "No messages yet.";
   if (loading) emptyMessage = "Loading messages…";
   if (query?.trim()) emptyMessage = "No matching messages";
 
@@ -56,16 +53,6 @@ export const MessageList: FC<MessageListProps> = (props) => {
       keyboardDismissMode="on-drag"
       showsVerticalScrollIndicator
       indicatorStyle={theme.themeName === "dark" ? "white" : "black"}
-      refreshControl={
-        onRefresh && (
-          <RefreshControl
-            refreshing={loading}
-            onRefresh={onRefresh}
-            tintColor={theme.colors.accent}
-            colors={[theme.colors.accent]}
-          />
-        )
-      }
       contentContainerStyle={{ flexGrow: 1 }}
       ListEmptyComponent={
         <View
