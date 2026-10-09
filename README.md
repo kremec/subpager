@@ -24,7 +24,7 @@ Deploy the rules after signing into the Firebase CLI:
 bunx firebase-tools deploy --only firestore:rules --project subpager-subbyte
 ```
 
-`firestore.rules` permits a device to read its own approval. Only approved devices can read messages and RIC mappings or register their own Expo token. Clients cannot approve members, write messages or access private jobs. The receiver uses the official Firebase Admin SDK with a private service account. See the receiver README for configuration.
+`firestore.rules` permits a device to read its own approval. Only approved devices can read messages and RIC mappings or register their own Expo token. Clients can update only their own push token; they cannot change approval or labels, write messages or access private jobs. The receiver uses the official Firebase Admin SDK with a private service account. See the receiver README for configuration.
 
 The app creates an anonymous account and displays its ID in onboarding and settings. In the receiver repository:
 
@@ -34,13 +34,13 @@ bun run member:list
 bun run member:revoke FIREBASE_DEVICE_ID
 ```
 
-Approval is `members/{uid}.approved`; push tokens are `devices/{uid}.expoPushToken`. Existing Firebase identities retain their ID. Convex identities do not grant Firebase access. Reinstalling or clearing app data can require a new approval.
+User approval, labels and push tokens share `users/{uid}` as `approved`, `label` and `expoPushToken`. Existing Firebase identities retain their ID. Convex identities do not grant Firebase access. Reinstalling or clearing app data can require a new approval.
 
 Online, the app waits for server-confirmed approval before syncing history. Offline, it permits saved history only for the same previously approved Firebase UID. A server-confirmed revocation clears saved history and dismisses notifications. An offline phone retains its cache until it reconnects and observes revocation.
 
 ## History and locations
 
-Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet and arrive automatically without manual refresh. Search matches text, RIC and unit names without case or accent differences. Messages use sequential Firestore document IDs such as `1`, `2` and `3`. Firebase identities keep their UIDs, and RIC mappings keep their RIC keys.
+Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet and arrive automatically without manual refresh. Search matches text, RIC and unit names without case or accent differences. Messages use sequential Firestore document IDs such as `1`, `2` and `3`. Firebase identities keep their UIDs. RIC mappings use `ricUnits/{ric}` with `ric` and `unitName` fields; none were configured before migration.
 
 The receiver transaction saves each message and queues private `pushJobs` and `locationJobs`. Separate listeners process those jobs without repeated polling reads. The receiver must be running to finish background work. Durable retry times and leases allow recovery after restart. The receiver has no SQLite database, HTTP API, domain or tunnel.
 

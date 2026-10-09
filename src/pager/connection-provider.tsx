@@ -113,7 +113,7 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
             currentUid.current === nextUid &&
             auth.currentUser?.uid === nextUid;
           unsubscribeMember = onSnapshot(
-            doc(database, "members", nextUid),
+            doc(database, "users", nextUid),
             { includeMetadataChanges: true },
             (snapshot) => {
               if (!matchingIdentity() || snapshot.metadata.fromCache) return;

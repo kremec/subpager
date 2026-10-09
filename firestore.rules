@@ -7,11 +7,17 @@ service cloud.firestore {
 
     function approved() {
       return request.auth != null
-        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.approved == true;
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.approved == true;
     }
 
-    match /members/{uid} {
+    match /users/{uid} {
       allow get: if owner(uid);
+      allow update: if owner(uid) && approved()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['expoPushToken'])
+        && (request.resource.data.expoPushToken == null
+          || (request.resource.data.expoPushToken is string
+            && request.resource.data.expoPushToken.size() <= 256
+            && request.resource.data.expoPushToken.matches('(Expo|Exponent)PushToken\\[.+\\]')));
     }
 
     match /messages/{id} {
@@ -20,16 +26,6 @@ service cloud.firestore {
 
     match /ricUnits/{id} {
       allow read: if approved();
-    }
-
-    match /devices/{uid} {
-      allow get, delete: if owner(uid) && approved();
-      allow create, update: if owner(uid) && approved()
-        && request.resource.data.keys().hasOnly(['expoPushToken'])
-        && (request.resource.data.expoPushToken == null
-          || (request.resource.data.expoPushToken is string
-            && request.resource.data.expoPushToken.size() <= 256
-            && request.resource.data.expoPushToken.matches('(Expo|Exponent)PushToken\\[.+\\]')));
     }
   }
 }

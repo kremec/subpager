@@ -82,5 +82,5 @@ export async function registerDevice(
 ) {
   const { database } = getFirebase();
   // setDoc resolves after server acknowledgement, including when a write starts offline.
-  await setDoc(doc(database, "devices", uid), { expoPushToken });
+  await setDoc(doc(database, "users", uid), { expoPushToken }, { merge: true });
 }

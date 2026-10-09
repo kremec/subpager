@@ -64,8 +64,13 @@ mock.module("firebase/firestore", () => ({
     return () => {};
   },
   doc: (_db: object, collection: string, uid: string) => `${collection}/${uid}`,
-  setDoc: async (path: string, data: { expoPushToken: string | null }) => {
+  setDoc: async (
+    path: string,
+    data: { expoPushToken: string | null },
+    options: { merge: boolean },
+  ) => {
     expect(Object.keys(data)).toEqual(["expoPushToken"]);
+    expect(options).toEqual({ merge: true });
     writes.push({ path, token: data.expoPushToken });
   },
 }));
@@ -113,11 +118,11 @@ test("Firestore document identity wins over a legacy data id field", () => {
   expect(received[0]?.[0]?.id).toBe("document-id");
 });
 
-test("device tokens are scoped to Firebase UID and can be explicitly cleared", async () => {
+test("user tokens are scoped to Firebase UID, preserve approval fields and can be explicitly cleared", async () => {
   await registerDevice("firebase-device", "ExpoPushToken[test]");
   await registerDevice("firebase-device", null);
   expect(writes).toEqual([
-    { path: "devices/firebase-device", token: "ExpoPushToken[test]" },
-    { path: "devices/firebase-device", token: null },
+    { path: "users/firebase-device", token: "ExpoPushToken[test]" },
+    { path: "users/firebase-device", token: null },
   ]);
 });

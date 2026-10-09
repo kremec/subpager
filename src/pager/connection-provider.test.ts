@@ -42,6 +42,7 @@ let cleared = 0;
 let signIns = 0;
 const errors: string[] = [];
 const cacheWrites: [string, boolean][] = [];
+const subscriptions: string[] = [];
 const auth: TestAuth = {
   currentUser: { uid: "firebase-device" },
   authStateReady: async () => {
@@ -94,12 +95,13 @@ mock.module("firebase/firestore", () => ({
     uid,
   }),
   onSnapshot: (
-    _doc: object,
+    document: { collection: string; uid: string },
     _options: object,
     success: typeof memberListener,
     failure: typeof memberError,
   ) => {
     memberSubscriptions++;
+    subscriptions.push(`${document.collection}/${document.uid}`);
     memberListener = success;
     memberError = failure;
     return () => {};
@@ -163,6 +165,7 @@ beforeEach(() => {
   refs.length = 0;
   errors.length = 0;
   cacheWrites.length = 0;
+  subscriptions.length = 0;
   auth.currentUser = { uid: "firebase-device" };
   cachedUid = null;
   cacheFailure = false;
@@ -181,7 +184,7 @@ afterEach(() => {
   cleanup = undefined;
 });
 
-test("persisted Firebase identity loads before member subscriptions", async () => {
+test("persisted Firebase identity loads before subscribing to the matching user approval", async () => {
   let finish = () => {};
   authReady = () =>
     new Promise<void>((resolve) => {
@@ -195,6 +198,7 @@ test("persisted Firebase identity loads before member subscriptions", async () =
   expect(render().uid).toBe("firebase-device");
   expect(signIns).toBe(0);
   expect(memberSubscriptions).toBe(1);
+  expect(subscriptions).toEqual(["users/firebase-device"]);
 });
 
 test("only a matching previously approved identity has offline access", async () => {
