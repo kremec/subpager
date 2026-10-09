@@ -75,10 +75,20 @@ export class FirebaseBackend {
         content: normalizeContent(raw.content),
       };
       await this.db.runTransaction(async (transaction) => {
-        const reference = this.db.collection("messages").doc(message.sourceId);
-        const existing = await transaction.get(reference);
-        if (existing.exists) {
-          const stored = existing.data() as FirebaseMessage;
+        // Read the shared allocator first so concurrent UUID retries and new
+        // receptions serialize on the same transaction document.
+        const counterRef = this.db.collection("counters").doc("ids");
+        const counter = (await transaction.get(counterRef)).data() as
+          | { messages: number; pushJobs: number }
+          | undefined;
+        const existing = await transaction.get(
+          this.db
+            .collection("messages")
+            .where("sourceId", "==", message.sourceId)
+            .limit(1),
+        );
+        if (existing.docs.length) {
+          const stored = existing.docs[0]!.data() as FirebaseMessage;
           if (
             stored.receivedAt !== message.receivedAt ||
             stored.ric !== message.ric ||
@@ -127,7 +137,20 @@ export class FirebaseBackend {
             .map((doc) => doc.id),
         );
         const location = source?.get("location") as string | null | undefined;
-        transaction.create(reference, {
+        const ids = counter ?? { messages: 0, pushJobs: 0 };
+        if (
+          !Number.isSafeInteger(ids.messages) ||
+          ids.messages < 0 ||
+          !Number.isSafeInteger(ids.pushJobs) ||
+          ids.pushJobs < 0 ||
+          !Number.isSafeInteger(ids.messages + 1)
+        )
+          throw new FirebaseInputError(
+            "Invalid or exhausted document ID counters",
+          );
+        const messageId = String(ids.messages + 1);
+        let pushJobs = ids.pushJobs;
+        transaction.create(this.db.collection("messages").doc(messageId), {
           ...message,
           duplicateOf,
           ...(location !== undefined ? { location } : {}),
@@ -139,11 +162,11 @@ export class FirebaseBackend {
           message.content.trim()
         ) {
           transaction.create(
-            this.db.collection("locationJobs").doc(message.sourceId),
+            this.db.collection("locationJobs").doc(messageId),
             {
               active: true,
               state: "pending",
-              messageId: message.sourceId,
+              messageId,
               content: message.content,
               nextAttempt: now,
               attempts: 0,
@@ -158,14 +181,15 @@ export class FirebaseBackend {
             | null
             | undefined;
           if (!approved.has(device.id) || !token) continue;
+          pushJobs++;
+          if (!Number.isSafeInteger(pushJobs))
+            throw new FirebaseInputError("Push job document IDs are exhausted");
           transaction.create(
-            this.db
-              .collection("pushJobs")
-              .doc(`${message.sourceId}_${device.id}`),
+            this.db.collection("pushJobs").doc(String(pushJobs)),
             {
               active: true,
               state: "pending",
-              messageId: message.sourceId,
+              messageId,
               deviceId: device.id,
               expoPushToken: token,
               tokenUpdatedAt: device.updateTime,
@@ -178,6 +202,7 @@ export class FirebaseBackend {
             },
           );
         }
+        transaction.set(counterRef, { messages: ids.messages + 1, pushJobs });
       });
     }
   }
