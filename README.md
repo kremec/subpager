@@ -4,7 +4,7 @@ Receive Slovenian POCSAG pages with a Nooelec NESDR SMArt. This Bun/TypeScript p
 
 ## Branches
 
-Use `develop` for active changes and `main` for reviewed releases. The previous SQLite/Firebase receiver is preserved at commit `39829c3`; private data and configuration have separate backups outside Git. No deployment automation is configured.
+Use `develop` for active changes and `main` for reviewed releases. The previous SQLite/Firebase receiver is preserved at commit `39829c3`; the temporary migration archives were deleted after verifying Firestore. No deployment automation is configured.
 
 ## Physical setup
 
@@ -76,7 +76,7 @@ Each reception gets a UUID before it is written to `outbox`, default `./data/out
 
 Uploads use batches of at most 100 pages, ordered by reception time with UUID ties. One upload runs at a time. Files are deleted only after all messages in the batch have committed to Firestore. A connection failure, lost acknowledgement or restart retains the same UUID, so Firestore transactions can recognize retries without creating duplicate messages or notification jobs. Transient failures back off from 15 seconds to five minutes; invalid data and authentication failures pause uploads for one hour. Shutdown waits for an upload already in flight. Unsent files are never removed by recording retention. Run only one receiver process against an outbox. When moving computers, copy pending outbox files before starting reception on the new computer.
 
-Decoded-call audio stays in `clips.directory` as WAV files with adjacent JSON metadata. Defaults retain eight seconds before decoding and four seconds after. Nearby calls can share a clip. `clips.maxFiles`, default 500, and `clips.maxBytes`, default 256 MiB, bound those recordings by deleting older clips and their metadata. `clips.continuous` remains false. Manual captures outside this generated clip naming scheme need manual cleanup. Audio is not uploaded to Firestore. Existing SQLite history and recordings are retained in the migration backup, but this receiver version does not read or change them.
+Automatic audio recording is disabled by default, so normal operation only uses `data/outbox`. For debugging, set `clips.enabled` to `true` to save decoded-call audio in `clips.directory` as WAV files with adjacent JSON metadata. Recording retains eight seconds before decoding and four seconds after. Nearby calls can share a clip. `clips.maxFiles`, default 500, and `clips.maxBytes`, default 256 MiB, bound those recordings by deleting older clips and their metadata. `clips.continuous` remains false. Manual captures outside this generated clip naming scheme need manual cleanup. Audio is not uploaded to Firestore. Old SQLite databases and migration archives have been removed.
 
 Server output uses UTC timestamps and severity. Received-call logs include UUID, reception time, RIC, function, type and raw content. Known tuner startup diagnostics and continuous-clip success logs are suppressed. Repeated errors print at most once every five minutes; changed failures and recovery print immediately. Control characters are escaped and log lines are bounded.
 

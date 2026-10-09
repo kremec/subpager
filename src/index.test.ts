@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { defaultConfig, initConfig, loadConfig } from "./config";
 import { wavPcm } from "./radio/audio";
 
-test.skipIf(process.platform === "win32")(
-  "receiver keeps decoded audio files and awaits an in-flight outbox upload on shutdown",
-  async () => {
+test
+  .skipIf(process.platform === "win32")
+  .each([defaultConfig.clips.enabled, true])(
+  "receiver awaits an in-flight outbox upload on shutdown with recording enabled=%s",
+  async (enabled) => {
     const directory = await mkdtemp(join(tmpdir(), "subpager-receiver-"));
     const config = join(directory, "config.json");
     const clips = join(directory, "clips");
@@ -35,6 +37,7 @@ test.skipIf(process.platform === "win32")(
           },
           clips: {
             ...defaultConfig.clips,
+            enabled,
             directory: clips,
             preSeconds: 1,
             postSeconds: 1,
@@ -113,16 +116,20 @@ test.skipIf(process.platform === "win32")(
       expect(await child.exited).toBe(0);
       expect(await Bun.file(acknowledgement).exists()).toBe(true);
       expect(await readdir(outbox)).toHaveLength(0);
-      const files = await readdir(clips);
-      const wavName = files.find((name) => name.endsWith(".wav"))!;
-      expect(wavName).toBeDefined();
-      const pcm = wavPcm(
-        Buffer.from(await Bun.file(join(clips, wavName)).bytes()),
-      );
-      expect(pcm.length).toBeGreaterThanOrEqual(44100);
-      expect(pcm).toEqual(Buffer.alloc(pcm.length, 42));
-      const metadata = await Bun.file(join(clips, `${wavName}.json`)).json();
-      expect(metadata.calls[0].content).toBe(call.alpha);
+      if (enabled) {
+        const files = await readdir(clips);
+        const wavName = files.find((name) => name.endsWith(".wav"))!;
+        expect(wavName).toBeDefined();
+        const pcm = wavPcm(
+          Buffer.from(await Bun.file(join(clips, wavName)).bytes()),
+        );
+        expect(pcm.length).toBeGreaterThanOrEqual(44100);
+        expect(pcm).toEqual(Buffer.alloc(pcm.length, 42));
+        const metadata = await Bun.file(join(clips, `${wavName}.json`)).json();
+        expect(metadata.calls[0].content).toBe(call.alpha);
+      } else {
+        expect(await readdir(directory)).not.toContain("clips");
+      }
       for (const file of [rtlPid, decoderPid]) {
         const pid = Number(await Bun.file(file).text());
         expect(() => process.kill(pid, 0)).toThrow();

@@ -26,7 +26,7 @@ export const defaultConfig: Config = {
     ),
   },
   clips: {
-    enabled: true,
+    enabled: false,
     directory: "./data/clips",
     preSeconds: 8,
     postSeconds: 4,
