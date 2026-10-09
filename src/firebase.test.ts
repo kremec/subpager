@@ -23,8 +23,18 @@ class Collection {
     readonly path: string,
     private documents: Map<string, Fields>,
   ) {}
-  doc(id: string): Reference {
-    return { path: `${this.path}/${id}`, id };
+  doc(id: string) {
+    const path = `${this.path}/${id}`;
+    return {
+      path,
+      id,
+      set: async (fields: Fields, options?: { merge: boolean }) => {
+        this.documents.set(path, {
+          ...(options?.merge ? this.documents.get(path) : {}),
+          ...fields,
+        });
+      },
+    };
   }
   where(key: string, operation: string, value: string) {
     this.filters.push({ key, operation, value });
@@ -128,26 +138,26 @@ function page(offset = 0, source = offset + 1): Reception {
 
 test("message, push and location jobs commit together, and UUID retries never recreate them", async () => {
   const { backend, documents, fail } = database();
-  documents.set("devices/approved", {
+  documents.set("users/approved", {
     expoPushToken: "ExponentPushToken[test]",
+    approved: true,
   });
-  documents.set("members/approved", { approved: true });
-  documents.set("devices/unapproved", {
+  documents.set("users/unapproved", {
     expoPushToken: "ExponentPushToken[other]",
+    approved: false,
   });
-  documents.set("members/unapproved", { approved: false });
   const reception = page();
   const now = Date.parse(reception.receivedAt);
   fail(true);
   await expect(backend.ingest([reception], true, now)).rejects.toThrow(
     "Commit not acknowledged",
   );
-  expect(documents.size).toBe(4);
+  expect(documents.size).toBe(2);
   expect(documents.has("counters/ids")).toBe(false);
   fail(false);
   await backend.ingest([reception], true, now);
   expect(documents.get("counters/ids")).toEqual({ messages: 1, pushJobs: 1 });
-  expect(documents.size).toBe(8);
+  expect(documents.size).toBe(6);
   expect(documents.get("messages/1")?.content).toBe("ŠOLA GOLO");
   const push = documents.get("pushJobs/1")!;
   expect(push.messageId).toBe("1");
@@ -158,11 +168,11 @@ test("message, push and location jobs commit together, and UUID retries never re
   expect(push.tokenUpdatedAt).toEqual(Timestamp.fromMillis(1));
   expect(documents.get("locationJobs/1")?.content).toBe("ŠOLA GOLO");
   await backend.ingest([reception], true, now);
-  expect(documents.size).toBe(8);
+  expect(documents.size).toBe(6);
   await expect(
     backend.ingest([{ ...reception, content: "different" }], true, now),
   ).rejects.toThrow("conflicting content");
-  expect(documents.size).toBe(8);
+  expect(documents.size).toBe(6);
   expect(documents.get("counters/ids")).toEqual({ messages: 1, pushJobs: 1 });
 });
 
@@ -186,8 +196,10 @@ test("dedupe stays anchored to the canonical page and copies resolved locations"
 
 test("imports suppress all jobs, expiry suppresses push, and tone/empty pages skip inference", async () => {
   const { backend, documents } = database();
-  documents.set("devices/device", { expoPushToken: "ExponentPushToken[test]" });
-  documents.set("members/device", { approved: true });
+  documents.set("users/device", {
+    expoPushToken: "ExponentPushToken[test]",
+    approved: true,
+  });
   await backend.ingest([page()], false, Date.parse(page().receivedAt));
   expect(
     [...documents.keys()].filter((key) => key.includes("Jobs/")),
@@ -210,8 +222,10 @@ test("imports suppress all jobs, expiry suppresses push, and tone/empty pages sk
 
 test("a lost commit acknowledgement reuses numeric IDs and the UUID source key", async () => {
   const { backend, documents, loseAcknowledgement } = database();
-  documents.set("devices/device", { expoPushToken: "ExponentPushToken[test]" });
-  documents.set("members/device", { approved: true });
+  documents.set("users/device", {
+    expoPushToken: "ExponentPushToken[test]",
+    approved: true,
+  });
   loseAcknowledgement(true);
   await expect(
     backend.ingest([page()], true, Date.parse(page().receivedAt)),
@@ -227,10 +241,10 @@ test("allocation continues from imported counters and numbers multi-device push 
   const { backend, documents } = database();
   documents.set("counters/ids", { messages: 22, pushJobs: 7 });
   for (const uid of ["one", "two"]) {
-    documents.set(`devices/${uid}`, {
+    documents.set(`users/${uid}`, {
       expoPushToken: `ExponentPushToken[${uid}]`,
+      approved: true,
     });
-    documents.set(`members/${uid}`, { approved: true });
   }
   const first = page();
   const second = { ...page(1), content: "Different call" };
@@ -261,10 +275,10 @@ test.each([
   async (ids) => {
     const { backend, documents } = database();
     documents.set("counters/ids", ids);
-    documents.set("devices/device", {
+    documents.set("users/device", {
       expoPushToken: "ExponentPushToken[test]",
+      approved: true,
     });
-    documents.set("members/device", { approved: true });
     const initial = [...documents.entries()];
     await expect(
       backend.ingest([page()], true, Date.parse(page().receivedAt)),
@@ -272,6 +286,44 @@ test.each([
     expect([...documents.entries()]).toEqual(initial);
   },
 );
+
+test("approval changes preserve the user's token and label, and optional labels are saved", async () => {
+  const { backend, documents } = database();
+  const token = "ExponentPushToken[test]";
+  documents.set("users/device", {
+    expoPushToken: token,
+    label: "Existing device",
+    approved: false,
+  });
+  await backend.setMember("device", true);
+  expect(documents.get("users/device")).toEqual({
+    expoPushToken: token,
+    label: "Existing device",
+    approved: true,
+  });
+  await backend.setMember("device", false, "  [DEV] Android Emulator  ");
+  expect(documents.get("users/device")).toEqual({
+    expoPushToken: token,
+    label: "[DEV] Android Emulator",
+    approved: false,
+  });
+  await backend.setMember("device", true, "   ");
+  await backend.setMember("history-only", true, "History only");
+  expect(await backend.devices()).toEqual([
+    {
+      uid: "device",
+      approved: true,
+      label: "[DEV] Android Emulator",
+      expoPushToken: token,
+    },
+    {
+      uid: "history-only",
+      approved: true,
+      label: "History only",
+      expoPushToken: null,
+    },
+  ]);
+});
 
 test("a service account from another project is rejected before SDK initialization", async () => {
   const directory = await mkdtemp(join(tmpdir(), "subpager-firebase-"));

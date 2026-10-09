@@ -41,7 +41,7 @@ bun run start:sync                             # upload pending pages with radio
 bun run record /tmp/page.wav 60
 bun run replay /tmp/page.wav
 bun run calibrate 120                          # manual gain comparison
-bun run member:approve DEVICE_UID
+bun run member:approve DEVICE_UID "Name"
 bun run member:revoke DEVICE_UID
 bun run member:list
 bun run ric:sync /path/ric-units.json            # replace cloud RIC unit mappings
@@ -105,12 +105,12 @@ Add `OPENAI_API_KEY` to the receiver's ignored `.env` file to enable location ex
 The app silently creates a Firebase anonymous identity. Approve the device ID shown in its settings:
 
 ```sh
-bun run member:approve DEVICE_UID
+bun run member:approve DEVICE_UID "Name"
 bun run member:revoke DEVICE_UID
 bun run member:list
 ```
 
-Approval is stored in `members/{uid}`; push tokens are stored separately in `devices/{uid}`. Reinstalling or clearing app data can create an identity that needs approval again. Revocation stops cloud reads and future notifications. Notifications already submitted to Expo cannot be recalled; an offline phone can keep cached history until it reconnects and receives revocation. Firebase Cloud Messaging remains Expo's Android transport.
+Approval, labels and push tokens are stored together in `users/{uid}` as `approved`, `label` and `expoPushToken`. Reinstalling or clearing app data can create an identity that needs approval again. Revocation stops cloud reads and future notifications. Notifications already submitted to Expo cannot be recalled; an offline phone can keep cached history until it reconnects and receives revocation. Firebase Cloud Messaging remains Expo's Android transport.
 
 ### RIC unit mappings
 
@@ -130,7 +130,7 @@ A macOS 524288-byte stdout buffer previously delayed PCM by about 12 seconds. Th
 
 ## Message fields
 
-The receiver preserves decoded `content`, including rendered markers and raw line breaks. The receiver removes trailing `<EOT>`/`<NUL>` padding and replaces rendered or raw LF/CR line breaks with spaces once, preserving Slovenian characters and other content. Each decoded recording's JSON metadata contains the raw calls; its WAV contains original audio for replay. A reception's `sourceId` UUID makes network retries idempotent. Firestore message document IDs are sequential numbers stored as strings. The original history uses IDs `1–22`; the next message uses `23`. Push jobs have a separate sequence, and location jobs reuse their message ID. The private `counters/ids` document stores the last allocated message and push-job IDs. Allocation, the message and its jobs commit in one transaction; retries find the existing message by `sourceId` without consuming IDs. Firebase device and member UIDs and RIC mapping keys retain their original format.
+The receiver preserves decoded `content`, including rendered markers and raw line breaks. The receiver removes trailing `<EOT>`/`<NUL>` padding and replaces rendered or raw LF/CR line breaks with spaces once, preserving Slovenian characters and other content. Each decoded recording's JSON metadata contains the raw calls; its WAV contains original audio for replay. A reception's `sourceId` UUID makes network retries idempotent. Firestore message document IDs are sequential numbers stored as strings. The original history uses IDs `1–22`; the next message uses `23`. Push jobs have a separate sequence, and location jobs reuse their message ID. The private `counters/ids` document stores the last allocated message and push-job IDs. Allocation, the message and its jobs commit in one transaction; retries find the existing message by `sourceId` without consuming IDs. Firebase user UIDs and RIC mapping keys retain their original format.
 
 `function` is the transmitted two-bit function value, 0–3, often called A–D. Its meaning depends on pager programming; it is not a known incident priority or unit label. All three verified calls used 3. `type` is `alpha` for text, `numeric` for numeric payload, or `tone` for an address-only alert with no content. The configured decoder forces alphanumeric interpretation for local paging, so `type` and function are not interchangeable. See the [pinned decoder implementation](https://github.com/EliasOenal/multimon-ng/blob/1.6.1/pocsag.c).
 

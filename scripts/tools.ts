@@ -227,14 +227,18 @@ async function cloudClient() {
   return { client: await FirebaseBackend.open(config.firebase) };
 }
 
-export async function setMember(uid: string | undefined, approved: boolean) {
+export async function setMember(
+  uid: string | undefined,
+  approved: boolean,
+  label?: string,
+) {
   if (!uid || !/^[A-Za-z0-9_-]{1,128}$/.test(uid))
     throw new Error(
-      `Usage: bun run member:${approved ? "approve" : "revoke"} DEVICE_UID`,
+      `Usage: bun run member:${approved ? "approve" : "revoke"} DEVICE_UID [LABEL]`,
     );
   const { client } = await cloudClient();
   try {
-    await client.setMember(uid, approved);
+    await client.setMember(uid, approved, label);
   } finally {
     await client.db.terminate();
   }
@@ -248,7 +252,7 @@ export async function listMembers() {
   try {
     for (const device of await client.devices())
       console.log(
-        `${device.uid}\t${device.approved ? "approved" : "revoked"}\t${device.expoPushToken ? "push enabled" : "push disabled"}`,
+        `${device.uid}\t${device.label ?? ""}\t${device.approved ? "approved" : "revoked"}\t${device.expoPushToken ? "push enabled" : "push disabled"}`,
       );
   } finally {
     await client.db.terminate();

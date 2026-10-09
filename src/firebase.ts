@@ -11,6 +11,7 @@ export interface RicUnit {
 export interface CloudDevice {
   uid: string;
   approved: boolean;
+  label?: string;
   expoPushToken?: string | null;
 }
 export interface FirebaseMessage extends Reception {
@@ -125,17 +126,9 @@ export class FirebaseBackend {
         const duplicateOf = source?.id ?? null;
         const expiresAt = Date.parse(message.receivedAt) + 300_000;
         const fresh = notify && duplicateOf === null && expiresAt > now;
-        const devices = fresh
-          ? await transaction.get(this.db.collection("devices"))
+        const users = fresh
+          ? await transaction.get(this.db.collection("users"))
           : null;
-        const members = fresh
-          ? await transaction.get(this.db.collection("members"))
-          : null;
-        const approved = new Set(
-          members?.docs
-            .filter((doc) => doc.get("approved") === true)
-            .map((doc) => doc.id),
-        );
         const location = source?.get("location") as string | null | undefined;
         const ids = counter ?? { messages: 0, pushJobs: 0 };
         if (
@@ -175,12 +168,12 @@ export class FirebaseBackend {
             },
           );
         }
-        for (const device of devices?.docs ?? []) {
+        for (const device of users?.docs ?? []) {
           const token = device.get("expoPushToken") as
             | string
             | null
             | undefined;
-          if (!approved.has(device.id) || !token) continue;
+          if (device.get("approved") !== true || !token) continue;
           pushJobs++;
           if (!Number.isSafeInteger(pushJobs))
             throw new FirebaseInputError("Push job document IDs are exhausted");
@@ -223,28 +216,24 @@ export class FirebaseBackend {
     });
   }
 
-  async setMember(uid: string, approved: boolean) {
-    await this.db.collection("members").doc(uid).set({ approved });
+  async setMember(uid: string, approved: boolean, label?: string) {
+    const name = label?.trim();
+    await this.db
+      .collection("users")
+      .doc(uid)
+      .set(
+        { approved, ...(name ? { label: name } : {}) },
+        { merge: true },
+      );
   }
 
   async devices(): Promise<CloudDevice[]> {
-    const [devices, members] = await Promise.all([
-      this.db.collection("devices").get(),
-      this.db.collection("members").get(),
-    ]);
-    const approvals = new Map(
-      members.docs.map((doc) => [doc.id, doc.get("approved") === true]),
-    );
-    const tokens = new Map(
-      devices.docs.map((doc) => [
-        doc.id,
-        doc.get("expoPushToken") as string | null,
-      ]),
-    );
-    return [...new Set([...approvals.keys(), ...tokens.keys()])].map((uid) => ({
-      uid,
-      approved: approvals.get(uid) ?? false,
-      expoPushToken: tokens.get(uid) ?? null,
+    const users = await this.db.collection("users").get();
+    return users.docs.map((doc) => ({
+      uid: doc.id,
+      approved: doc.get("approved") === true,
+      label: doc.get("label") as string | undefined,
+      expoPushToken: (doc.get("expoPushToken") as string | null) ?? null,
     }));
   }
 }

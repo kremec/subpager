@@ -98,12 +98,11 @@ export class PushDelivery {
         return null;
       }
       if (job.state === "pending") {
-        const [device, member] = await Promise.all([
-          tx.get(this.db.collection("devices").doc(job.deviceId)),
-          tx.get(this.db.collection("members").doc(job.deviceId)),
-        ]);
+        const device = await tx.get(
+          this.db.collection("users").doc(job.deviceId),
+        );
         if (
-          member.get("approved") !== true ||
+          device.get("approved") !== true ||
           device.get("expoPushToken") !== job.expoPushToken
         ) {
           tx.update(ref, {
@@ -179,9 +178,7 @@ export class PushDelivery {
         const current = (await tx.get(ref)).data() as PushJob | undefined;
         if (!current?.active || current.attempts !== update.job.attempts)
           return;
-        const deviceRef = this.db
-          .collection("devices")
-          .doc(update.job.deviceId);
+        const deviceRef = this.db.collection("users").doc(update.job.deviceId);
         const device = update.disableToken ? await tx.get(deviceRef) : null;
         tx.update(ref, update.patch);
         if (
@@ -211,15 +208,10 @@ export class PushDelivery {
             );
             const snapshots = await tx.getAll(...refs);
             const deviceRefs = candidates.map((job) =>
-              this.db.collection("devices").doc(job.deviceId),
-            );
-            const memberRefs = candidates.map((job) =>
-              this.db.collection("members").doc(job.deviceId),
+              this.db.collection("users").doc(job.deviceId),
             );
             const devices =
               state === "pending" ? await tx.getAll(...deviceRefs) : [];
-            const members =
-              state === "pending" ? await tx.getAll(...memberRefs) : [];
             const now = Date.now();
             return candidates.filter((job, index) => {
               const current = snapshots[index]!.data() as PushJob | undefined;
@@ -233,7 +225,7 @@ export class PushDelivery {
                 state === "pending" ? job.expiresAt : job.receiptExpiresAt!;
               const authorized =
                 state === "receipt" ||
-                (members[index]!.get("approved") === true &&
+                (devices[index]!.get("approved") === true &&
                   devices[index]!.get("expoPushToken") === job.expoPushToken);
               if (!authorized || deadline <= now) {
                 tx.update(refs[index]!, {

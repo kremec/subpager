@@ -142,15 +142,18 @@ function pushFixture(
   id = "push",
   overrides: Partial<PushJob> = {},
 ) {
-  store.put(`devices/${id}`, { expoPushToken: `token-${id}` });
-  store.put(`members/${id}`, { approved: true });
+  store.put(`users/${id}`, {
+    expoPushToken: `token-${id}`,
+    approved: true,
+    label: `Device ${id}`,
+  });
   const job: PushJob = {
     active: true,
     state: "pending",
     messageId: "message",
     deviceId: id,
     expoPushToken: `token-${id}`,
-    tokenUpdatedAt: store.versions.get(`devices/${id}`)!,
+    tokenUpdatedAt: store.versions.get(`users/${id}`)!,
     title: "0790793 · 08/10/2026, 08:57",
     body: "VAJA GORI V ŠOLI GOLO.",
     expiresAt: now + 300_000,
@@ -236,9 +239,18 @@ describe("durable Expo jobs", () => {
     pushFixture(store, "revoked");
     pushFixture(store, "rotated");
     pushFixture(store, "same");
-    store.put("members/revoked", { approved: false });
-    store.put("devices/rotated", { expoPushToken: "new-token" });
-    store.put("devices/same", { expoPushToken: "token-same" });
+    store.put("users/revoked", {
+      ...store.docs.get("users/revoked"),
+      approved: false,
+    });
+    store.put("users/rotated", {
+      ...store.docs.get("users/rotated"),
+      expoPushToken: "new-token",
+    });
+    store.put("users/same", {
+      ...store.docs.get("users/same"),
+      expoPushToken: "token-same",
+    });
     let sent = 0;
     await new PushDelivery(store.db, async (_url, options) => {
       const body = JSON.parse(options.body as string) as {
@@ -270,7 +282,10 @@ describe("durable Expo jobs", () => {
       ticketId: "current-ticket",
       receiptExpiresAt: now + 86_400_000,
     });
-    store.put("devices/old", { expoPushToken: "token-old" });
+    store.put("users/old", {
+      ...store.docs.get("users/old"),
+      expoPushToken: "token-old",
+    });
     await new PushDelivery(store.db, async () =>
       Response.json({
         data: {
@@ -285,8 +300,11 @@ describe("durable Expo jobs", () => {
         },
       }),
     ).run(["old", "current"]);
-    expect(store.docs.get("devices/old")?.expoPushToken).toBe("token-old");
-    expect(store.docs.get("devices/current")?.expoPushToken).toBeUndefined();
+    expect(store.docs.get("users/old")?.expoPushToken).toBe("token-old");
+    expect(store.docs.get("users/current")).toEqual({
+      approved: true,
+      label: "Device current",
+    });
   });
 
   test("accepted ticket survives a failed database write without sending again", async () => {
