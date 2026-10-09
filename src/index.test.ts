@@ -46,8 +46,10 @@ test.skipIf(process.platform === "win32").each([false, true])(
       await Bun.write(
         preload,
         `import { mock } from 'bun:test';
+        import { Firestore } from ${JSON.stringify(import.meta.resolve("firebase-admin/firestore"))};
         import { FirebaseBackend } from ${JSON.stringify(join(import.meta.dir, "firebase.ts"))};
-        const backend = new FirebaseBackend({terminate:async()=>{}});
+        const db = new Firestore({projectId:"subpager-test"});
+        const backend = new FirebaseBackend(db);
         backend.ingest = async (messages) => {
           await Bun.write(${JSON.stringify(sending)}, JSON.stringify({messages}));
           await Bun.sleep(2500);
@@ -104,7 +106,7 @@ test.skipIf(process.platform === "win32").each([false, true])(
       expect(await Bun.file(sending).exists()).toBe(true);
       const payload = JSON.parse(await Bun.file(sending).text());
       expect(payload.messages[0].content).toBe(call.alpha);
-      expect(payload.messages[0].sourceId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(payload.messages[0].sourceId).toMatch(/^[A-Za-z0-9]{20}$/);
       expect(payload.messages[0].id).toBeUndefined();
       expect(
         (await readdir(outbox)).filter((name) => name.endsWith(".json")),

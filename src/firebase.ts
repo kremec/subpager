@@ -1,8 +1,8 @@
 import { cert, initializeApp, type ServiceAccount } from "firebase-admin/app";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import type { Config } from "./config";
-import type { Outbox, Reception } from "./outbox";
-import { isObject, isRic } from "./radio/decoder";
+import { isReceptionId, type Outbox, type Reception } from "./outbox";
+import { isObject, isRic, type Page } from "./radio/decoder";
 
 export interface RicUnit {
   ric: number;
@@ -14,7 +14,7 @@ export interface CloudDevice {
   label?: string;
   expoPushToken?: string | null;
 }
-export interface FirebaseMessage extends Reception {
+export interface FirebaseMessage extends Page {
   duplicateOf: string | null;
   location?: string | null;
 }
@@ -58,9 +58,7 @@ export class FirebaseBackend {
   async ingest(messages: Reception[], notify = true, now = Date.now()) {
     for (const raw of messages) {
       if (
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-          raw.sourceId,
-        ) ||
+        !isReceptionId(raw.sourceId) ||
         !Number.isFinite(Date.parse(raw.receivedAt)) ||
         !isRic(raw.ric) ||
         !Number.isInteger(raw.function) ||
@@ -70,26 +68,17 @@ export class FirebaseBackend {
         typeof raw.content !== "string"
       )
         throw new FirebaseInputError("Invalid pager reception");
+      const { sourceId: messageId, ...page } = raw;
       const message = {
-        ...raw,
+        ...page,
         receivedAt: new Date(raw.receivedAt).toISOString(),
         content: normalizeContent(raw.content),
       };
       await this.db.runTransaction(async (transaction) => {
-        // Read the shared allocator first so concurrent UUID retries and new
-        // receptions serialize on the same transaction document.
-        const counterRef = this.db.collection("counters").doc("ids");
-        const counter = (await transaction.get(counterRef)).data() as
-          | { messages: number; pushJobs: number }
-          | undefined;
-        const existing = await transaction.get(
-          this.db
-            .collection("messages")
-            .where("sourceId", "==", message.sourceId)
-            .limit(1),
-        );
-        if (existing.docs.length) {
-          const stored = existing.docs[0]!.data() as FirebaseMessage;
+        const messageRef = this.db.collection("messages").doc(messageId);
+        const existing = await transaction.get(messageRef);
+        if (existing.exists) {
+          const stored = existing.data() as FirebaseMessage;
           if (
             stored.receivedAt !== message.receivedAt ||
             stored.ric !== message.ric ||
@@ -98,7 +87,7 @@ export class FirebaseBackend {
             normalizeContent(stored.content) !== message.content
           )
             throw new FirebaseInputError(
-              `Source ID ${message.sourceId} has conflicting content`,
+              `Source ID ${messageId} has conflicting content`,
             );
           return;
         }
@@ -130,20 +119,7 @@ export class FirebaseBackend {
           ? await transaction.get(this.db.collection("users"))
           : null;
         const location = source?.get("location") as string | null | undefined;
-        const ids = counter ?? { messages: 0, pushJobs: 0 };
-        if (
-          !Number.isSafeInteger(ids.messages) ||
-          ids.messages < 0 ||
-          !Number.isSafeInteger(ids.pushJobs) ||
-          ids.pushJobs < 0 ||
-          !Number.isSafeInteger(ids.messages + 1)
-        )
-          throw new FirebaseInputError(
-            "Invalid or exhausted document ID counters",
-          );
-        const messageId = String(ids.messages + 1);
-        let pushJobs = ids.pushJobs;
-        transaction.create(this.db.collection("messages").doc(messageId), {
+        transaction.create(messageRef, {
           ...message,
           duplicateOf,
           ...(location !== undefined ? { location } : {}),
@@ -174,28 +150,21 @@ export class FirebaseBackend {
             | null
             | undefined;
           if (device.get("approved") !== true || !token) continue;
-          pushJobs++;
-          if (!Number.isSafeInteger(pushJobs))
-            throw new FirebaseInputError("Push job document IDs are exhausted");
-          transaction.create(
-            this.db.collection("pushJobs").doc(String(pushJobs)),
-            {
-              active: true,
-              state: "pending",
-              messageId,
-              deviceId: device.id,
-              expoPushToken: token,
-              tokenUpdatedAt: device.updateTime,
-              title: `${String(message.ric).padStart(7, "0")} · ${receivedAtFormatter.format(new Date(message.receivedAt))}`,
-              body: message.content,
-              expiresAt,
-              nextAttempt: now,
-              attempts: 0,
-              leaseUntil: 0,
-            },
-          );
+          transaction.create(this.db.collection("pushJobs").doc(), {
+            active: true,
+            state: "pending",
+            messageId,
+            deviceId: device.id,
+            expoPushToken: token,
+            tokenUpdatedAt: device.updateTime,
+            title: `${String(message.ric).padStart(7, "0")} · ${receivedAtFormatter.format(new Date(message.receivedAt))}`,
+            body: message.content,
+            expiresAt,
+            nextAttempt: now,
+            attempts: 0,
+            leaseUntil: 0,
+          });
         }
-        transaction.set(counterRef, { messages: ids.messages + 1, pushJobs });
       });
     }
   }
@@ -221,10 +190,7 @@ export class FirebaseBackend {
     await this.db
       .collection("users")
       .doc(uid)
-      .set(
-        { approved, ...(name ? { label: name } : {}) },
-        { merge: true },
-      );
+      .set({ approved, ...(name ? { label: name } : {}) }, { merge: true });
   }
 
   async devices(): Promise<CloudDevice[]> {

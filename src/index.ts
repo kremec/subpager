@@ -72,7 +72,10 @@ async function main() {
       onCall: (call) => {
         if (stopping) return;
         try {
-          const reception = outbox.save(call);
+          const reception = outbox.save(
+            call,
+            client.db.collection("messages").doc().id,
+          );
           logInfo(
             `Received call ${reception.sourceId}; receivedAt=${call.receivedAt}; RIC=${String(call.ric).padStart(7, "0")}; function=${call.function}; type=${call.type}; content=${JSON.stringify(call.content)}`,
           );

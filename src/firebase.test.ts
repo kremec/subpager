@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Timestamp,
-  type Firestore,
+  Firestore,
   type Transaction,
 } from "firebase-admin/firestore";
 import { FirebaseBackend } from "./firebase";
 import type { Reception } from "./outbox";
+
+const idGenerator = new Firestore({ projectId: "subpager-test" });
 
 type Fields = Record<string, string | number | boolean | null | Timestamp>;
 interface Reference {
@@ -23,7 +25,7 @@ class Collection {
     readonly path: string,
     private documents: Map<string, Fields>,
   ) {}
-  doc(id: string) {
+  doc(id = idGenerator.collection(this.path).doc().id) {
     const path = `${this.path}/${id}`;
     return {
       path,
@@ -127,7 +129,7 @@ function database() {
 }
 function page(offset = 0, source = offset + 1): Reception {
   return {
-    sourceId: `00000000-0000-4000-8000-${String(source).padStart(12, "0")}`,
+    sourceId: `Reception${String(source).padStart(11, "0")}`,
     receivedAt: new Date(1_790_000_000_000 + offset).toISOString(),
     ric: 123,
     function: 3,
@@ -136,7 +138,7 @@ function page(offset = 0, source = offset + 1): Reception {
   };
 }
 
-test("message, push and location jobs commit together, and UUID retries never recreate them", async () => {
+test("message, push and location jobs commit together, and persisted IDs prevent duplicate retries", async () => {
   const { backend, documents, fail } = database();
   documents.set("users/approved", {
     expoPushToken: "ExponentPushToken[test]",
@@ -153,45 +155,49 @@ test("message, push and location jobs commit together, and UUID retries never re
     "Commit not acknowledged",
   );
   expect(documents.size).toBe(2);
-  expect(documents.has("counters/ids")).toBe(false);
   fail(false);
   await backend.ingest([reception], true, now);
-  expect(documents.get("counters/ids")).toEqual({ messages: 1, pushJobs: 1 });
-  expect(documents.size).toBe(6);
-  expect(documents.get("messages/1")?.content).toBe("ŠOLA GOLO");
-  const push = documents.get("pushJobs/1")!;
-  expect(push.messageId).toBe("1");
-  expect(documents.get("messages/1")?.sourceId).toBe(reception.sourceId);
-  expect(documents.get("messages/1")?.id).toBeUndefined();
+  expect(documents.size).toBe(5);
+  const message = documents.get(`messages/${reception.sourceId}`)!;
+  expect(message.content).toBe("ŠOLA GOLO");
+  expect(message.sourceId).toBeUndefined();
+  expect(message.id).toBeUndefined();
+  const [pushPath, push] = [...documents.entries()].find(([path]) =>
+    path.startsWith("pushJobs/"),
+  )!;
+  expect(pushPath).toMatch(/^pushJobs\/[A-Za-z0-9]{20}$/);
+  expect(push.messageId).toBe(reception.sourceId);
   expect(push.body).toBe("ŠOLA GOLO");
   expect(push.title).toBe("0000123 · 21/09/2026, 16:13");
   expect(push.tokenUpdatedAt).toEqual(Timestamp.fromMillis(1));
-  expect(documents.get("locationJobs/1")?.content).toBe("ŠOLA GOLO");
+  expect(documents.get(`locationJobs/${reception.sourceId}`)?.content).toBe(
+    "ŠOLA GOLO",
+  );
+  const committed = [...documents.entries()];
   await backend.ingest([reception], true, now);
-  expect(documents.size).toBe(6);
   await expect(
     backend.ingest([{ ...reception, content: "different" }], true, now),
   ).rejects.toThrow("conflicting content");
-  expect(documents.size).toBe(6);
-  expect(documents.get("counters/ids")).toEqual({ messages: 1, pushJobs: 1 });
+  expect([...documents.entries()]).toEqual(committed);
 });
 
 test("dedupe stays anchored to the canonical page and copies resolved locations", async () => {
   const { backend, documents } = database();
   const first = page();
+  const second = page(25_000);
+  const third = page(40_000);
   await backend.ingest([first], true, Date.parse(first.receivedAt));
-  documents.get("messages/1")!.location = "ŠOLA GOLO";
-  await backend.ingest(
-    [page(25_000), page(40_000)],
-    true,
-    Date.parse(first.receivedAt),
+  documents.get(`messages/${first.sourceId}`)!.location = "ŠOLA GOLO";
+  await backend.ingest([second, third], true, Date.parse(first.receivedAt));
+  expect(documents.get(`messages/${second.sourceId}`)?.duplicateOf).toBe(
+    first.sourceId,
   );
-  expect(documents.get("messages/2")?.duplicateOf).toBe("1");
-  expect(documents.get("messages/2")?.location).toBe("ŠOLA GOLO");
-  expect(documents.has("locationJobs/2")).toBe(false);
-  expect(documents.get("messages/3")?.duplicateOf).toBeNull();
-  expect(documents.has("locationJobs/3")).toBe(true);
-  expect(documents.get("counters/ids")).toEqual({ messages: 3, pushJobs: 0 });
+  expect(documents.get(`messages/${second.sourceId}`)?.location).toBe(
+    "ŠOLA GOLO",
+  );
+  expect(documents.has(`locationJobs/${second.sourceId}`)).toBe(false);
+  expect(documents.get(`messages/${third.sourceId}`)?.duplicateOf).toBeNull();
+  expect(documents.has(`locationJobs/${third.sourceId}`)).toBe(true);
 });
 
 test("imports suppress all jobs, expiry suppresses push, and tone/empty pages skip inference", async () => {
@@ -210,36 +216,43 @@ test("imports suppress all jobs, expiry suppresses push, and tone/empty pages sk
     true,
     Date.parse(expired.receivedAt) + 300_000,
   );
-  expect(documents.has("pushJobs/1")).toBe(false);
-  expect(documents.has("locationJobs/2")).toBe(true);
+  expect(
+    [...documents.keys()].filter((key) => key.startsWith("pushJobs/")),
+  ).toHaveLength(0);
+  expect(documents.has(`locationJobs/${expired.sourceId}`)).toBe(true);
   const tone = { ...page(80_000), type: "tone" as const, content: "" };
   const empty = { ...page(120_000), content: "<EOT><NUL>" };
   await backend.ingest([tone, empty], true, Date.parse(tone.receivedAt));
-  expect(documents.has("locationJobs/3")).toBe(false);
-  expect(documents.has("locationJobs/4")).toBe(false);
-  expect(documents.get("counters/ids")).toEqual({ messages: 4, pushJobs: 2 });
+  expect(documents.has(`locationJobs/${tone.sourceId}`)).toBe(false);
+  expect(documents.has(`locationJobs/${empty.sourceId}`)).toBe(false);
+  expect(
+    [...documents.keys()].filter((key) => key.startsWith("pushJobs/")),
+  ).toHaveLength(2);
 });
 
-test("a lost commit acknowledgement reuses numeric IDs and the UUID source key", async () => {
-  const { backend, documents, loseAcknowledgement } = database();
-  documents.set("users/device", {
-    expoPushToken: "ExponentPushToken[test]",
-    approved: true,
-  });
-  loseAcknowledgement(true);
-  await expect(
-    backend.ingest([page()], true, Date.parse(page().receivedAt)),
-  ).rejects.toThrow("Commit acknowledgement lost");
-  expect(documents.get("counters/ids")).toEqual({ messages: 1, pushJobs: 1 });
-  const committed = [...documents.entries()];
-  loseAcknowledgement(false);
-  await backend.ingest([page()], true, Date.parse(page().receivedAt));
-  expect([...documents.entries()]).toEqual(committed);
-});
+test.each(["Reception00000000001", "00000000-0000-4000-8000-000000000001"])(
+  "a lost commit acknowledgement reuses the persisted message ID %s and its jobs",
+  async (sourceId) => {
+    const { backend, documents, loseAcknowledgement } = database();
+    documents.set("users/device", {
+      expoPushToken: "ExponentPushToken[test]",
+      approved: true,
+    });
+    const reception = { ...page(), sourceId };
+    loseAcknowledgement(true);
+    await expect(
+      backend.ingest([reception], true, Date.parse(reception.receivedAt)),
+    ).rejects.toThrow("Commit acknowledgement lost");
+    expect(documents.has(`messages/${sourceId}`)).toBe(true);
+    const committed = [...documents.entries()];
+    loseAcknowledgement(false);
+    await backend.ingest([reception], true, Date.parse(reception.receivedAt));
+    expect([...documents.entries()]).toEqual(committed);
+  },
+);
 
-test("allocation continues from imported counters and numbers multi-device push jobs sequentially", async () => {
+test("multiple devices get independent automatic push IDs referencing the same message", async () => {
   const { backend, documents } = database();
-  documents.set("counters/ids", { messages: 22, pushJobs: 7 });
   for (const uid of ["one", "two"]) {
     documents.set(`users/${uid}`, {
       expoPushToken: `ExponentPushToken[${uid}]`,
@@ -249,41 +262,34 @@ test("allocation continues from imported counters and numbers multi-device push 
   const first = page();
   const second = { ...page(1), content: "Different call" };
   await backend.ingest([first, second], true, Date.parse(first.receivedAt));
-  expect(documents.get("counters/ids")).toEqual({ messages: 24, pushJobs: 11 });
-  expect(documents.get("messages/23")?.sourceId).toBe(first.sourceId);
-  expect(documents.get("messages/24")?.sourceId).toBe(second.sourceId);
-  expect(documents.get("locationJobs/23")?.messageId).toBe("23");
-  expect(documents.get("locationJobs/24")?.messageId).toBe("24");
-  expect(
-    ["8", "9", "10", "11"].map(
-      (id) => documents.get(`pushJobs/${id}`)?.messageId,
-    ),
-  ).toEqual(["23", "23", "24", "24"]);
+  const pushes = [...documents.entries()].filter(([path]) =>
+    path.startsWith("pushJobs/"),
+  );
+  expect(pushes).toHaveLength(4);
+  for (const [path] of pushes)
+    expect(path).toMatch(/^pushJobs\/[A-Za-z0-9]{20}$/);
+  expect(pushes.map(([, fields]) => fields.messageId)).toEqual([
+    first.sourceId,
+    first.sourceId,
+    second.sourceId,
+    second.sourceId,
+  ]);
+  expect(documents.get(`locationJobs/${first.sourceId}`)?.messageId).toBe(
+    first.sourceId,
+  );
   const committed = [...documents.entries()];
   await backend.ingest([first, second], true, Date.parse(first.receivedAt));
   expect([...documents.entries()]).toEqual(committed);
 });
 
-test.each([
-  { messages: -1, pushJobs: 0 },
-  { messages: 0.5, pushJobs: 0 },
-  { messages: Number.MAX_SAFE_INTEGER, pushJobs: 0 },
-  { messages: 0, pushJobs: -1 },
-  { messages: 0, pushJobs: Number.MAX_SAFE_INTEGER },
-])(
-  "invalid or exhausted counters roll back every message and job write: %j",
-  async (ids) => {
+test.each(["../message", "", "23", "invalid-ID-of-20-char"])(
+  "invalid message ID %s is rejected before any writes",
+  async (sourceId) => {
     const { backend, documents } = database();
-    documents.set("counters/ids", ids);
-    documents.set("users/device", {
-      expoPushToken: "ExponentPushToken[test]",
-      approved: true,
-    });
-    const initial = [...documents.entries()];
-    await expect(
-      backend.ingest([page()], true, Date.parse(page().receivedAt)),
-    ).rejects.toThrow();
-    expect([...documents.entries()]).toEqual(initial);
+    await expect(backend.ingest([{ ...page(), sourceId }])).rejects.toThrow(
+      "Invalid pager reception",
+    );
+    expect(documents.size).toBe(0);
   },
 );
 

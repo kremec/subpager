@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   closeSync,
   fsyncSync,
@@ -13,6 +12,12 @@ import {
 import { join } from "node:path";
 import { isObject, isRic, type Page } from "./radio/decoder";
 import { logError } from "./log";
+
+export function isReceptionId(id: string) {
+  return /^(?:[A-Za-z0-9]{20}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$/i.test(
+    id,
+  );
+}
 
 export interface Reception extends Page {
   sourceId: string;
@@ -71,7 +76,7 @@ export class Outbox {
     const { sourceId, receivedAt, ric, function: fn, type, content } = value;
     if (
       typeof sourceId !== "string" ||
-      !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(sourceId) ||
+      !isReceptionId(sourceId) ||
       typeof receivedAt !== "string" ||
       !Number.isFinite(Date.parse(receivedAt)) ||
       !isRic(ric) ||
@@ -86,11 +91,12 @@ export class Outbox {
     return { sourceId, receivedAt, ric, function: fn, type, content };
   }
 
-  save(page: Page): Reception {
+  save(page: Page, sourceId: string): Reception {
+    if (!isReceptionId(sourceId)) throw new Error("Invalid reception ID");
     const timestamp = Date.parse(page.receivedAt);
     if (!Number.isFinite(timestamp) || timestamp < 0)
       throw new Error("Invalid reception timestamp");
-    const reception = { ...page, sourceId: randomUUID() };
+    const reception = { ...page, sourceId };
     const name = `${String(timestamp).padStart(16, "0")}-${reception.sourceId}.json`;
     const temporary = join(this.directory, `${name}.tmp`);
     const descriptor = openSync(temporary, "wx", 0o600);
