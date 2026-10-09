@@ -12,6 +12,7 @@ interface HistoryValue {
   messages: PagerMessage[];
   unitNames: ReadonlyMap<number, string>;
   loading: boolean;
+  syncVersion: number;
 }
 type State =
   | PagerMessage[]
@@ -208,6 +209,24 @@ test("foreground keeps healthy live subscriptions attached", () => {
   foreground?.("active");
   expect([messagesAttached, unitsAttached]).toEqual([1, 1]);
   expect([messagesDetached, unitsDetached]).toEqual([0, 0]);
+});
+
+test("sync version changes only for the first message batch after subscribing", () => {
+  expect(render().syncVersion).toBe(0);
+  onMessages?.([message]);
+  expect(render().syncVersion).toBe(1);
+  onMessages?.([{ ...message, id: "live-message" }]);
+  expect(render().syncVersion).toBe(1);
+
+  const lateMessages = onMessages;
+  foreground?.("background");
+  lateMessages?.([message]);
+  expect(render().syncVersion).toBe(1);
+  foreground?.("active");
+  onMessages?.([]);
+  expect(render().syncVersion).toBe(2);
+  onMessages?.([message]);
+  expect(render().syncVersion).toBe(2);
 });
 
 test("query failures show toasts and retry only failed subscriptions on foreground", () => {

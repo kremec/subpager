@@ -26,6 +26,7 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
     new Map(),
   );
   const [loading, setLoading] = useState(false);
+  const [syncVersion, setSyncVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +68,7 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
       unsubscribeMessages();
       const generation = ++messageGeneration;
       messagesAttached = true;
+      let first = true;
       unsubscribeMessages = watchMessages(
         sync,
         (next) => {
@@ -88,6 +90,10 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
             );
           });
           setLoading(false);
+          if (first) {
+            first = false;
+            setSyncVersion((version) => version + 1);
+          }
           try {
             if (!cacheMessages(uid, next.messages, next)) return false;
             sync = { ...sync, initialized: true, cursor: next.cursor };
@@ -166,6 +172,7 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
         messages: visible ? messages : [],
         unitNames: visible ? unitNames : new Map(),
         loading: visible && loading,
+        syncVersion,
       }}
     >
       {props.children}

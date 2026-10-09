@@ -18,10 +18,17 @@ interface MessageListProps {
   loading?: boolean;
   query?: string;
   listRef?: RefObject<LegendListRef | null>;
+  onScrollBeginDrag?: () => void;
 }
 
 export const MessageList: FC<MessageListProps> = (props) => {
-  const { messages, loading = false, query, listRef } = props;
+  const {
+    messages,
+    loading = false,
+    query,
+    listRef,
+    onScrollBeginDrag,
+  } = props;
   const theme = useTheme();
   const { unitNames } = useMessageHistory();
   const searching = query !== undefined;
@@ -49,6 +56,7 @@ export const MessageList: FC<MessageListProps> = (props) => {
         <MessageRow message={item} unitName={unitNames.get(item.ric)} />
       )}
       maintainVisibleContentPosition={searching ? false : { data: true }}
+      onScrollBeginDrag={onScrollBeginDrag}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
       showsVerticalScrollIndicator
