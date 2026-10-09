@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import type { EffectCallback, ReactElement } from "react";
 
-import type { PagerMessage, RicUnit } from "@/pager/types";
+import type {
+  CachedSync,
+  MessageChanges,
+  PagerMessage,
+  RicUnit,
+} from "@/pager/types";
 
 interface HistoryValue {
   messages: PagerMessage[];
@@ -36,6 +41,8 @@ let onUnits: ((units: RicUnit[]) => void) | undefined;
 let messagesError: ((error: Error) => void) | undefined;
 let unitsError: ((error: Error) => void) | undefined;
 const errors: string[] = [];
+const queries: CachedSync[] = [];
+let batchCursor = { seconds: 100, nanoseconds: 1 };
 
 mock.module("react", () => ({
   ...react,
@@ -55,6 +62,7 @@ mock.module("react", () => ({
 }));
 mock.module("react-native", () => ({
   AppState: {
+    currentState: "active",
     addEventListener: (_event: string, listener: (state: string) => void) => {
       foreground = listener;
       return { remove: () => (foreground = undefined) };
@@ -72,31 +80,42 @@ mock.module("@/pager/database", () => ({
     if (cacheFailure) throw new Error("Cache unavailable");
     return saved;
   },
+  cachedSync: () => ({
+    initialized: false,
+    cursor: { seconds: 0, nanoseconds: 0 },
+    ricRevision: null,
+  }),
   cacheMessages: (_uid: string, messages: PagerMessage[]) => {
     if (cacheFailure) throw new Error("Cache unavailable");
     savedMessages.push(messages);
+    return true;
   },
   cacheRicUnits: (_uid: string, units: RicUnit[]) => {
     if (cacheFailure) throw new Error("Cache unavailable");
     savedUnits.push(units);
+    return true;
   },
 }));
 mock.module("@/pager/firebase", () => ({
   watchMessages: (
-    success: (messages: PagerMessage[]) => void,
+    sync: CachedSync,
+    success: (changes: MessageChanges) => boolean,
     failure: (error: Error) => void,
   ) => {
+    queries.push(sync);
     messagesAttached++;
-    onMessages = success;
+    onMessages = (messages) =>
+      success({ messages, removedIds: [], cursor: batchCursor, reset: false });
     messagesError = failure;
     return () => messagesDetached++;
   },
   watchRicUnits: (
-    success: (units: RicUnit[]) => void,
+    _savedRevision: () => string | null,
+    success: (units: RicUnit[], revision: string) => void,
     failure: (error: Error) => void,
   ) => {
     unitsAttached++;
-    onUnits = success;
+    onUnits = (units) => success(units, "r1");
     unitsError = failure;
     return () => unitsDetached++;
   },
@@ -138,6 +157,8 @@ beforeEach(() => {
   messagesDetached = 0;
   unitsDetached = 0;
   errors.length = 0;
+  queries.length = 0;
+  batchCursor = { seconds: 100, nanoseconds: 1 };
   render();
   const result = effects[0]!();
   if (typeof result === "function") cleanup = result;
@@ -196,7 +217,7 @@ test("query failures show toasts and retry only failed subscriptions on foregrou
   foreground?.("background");
   expect(messagesAttached).toBe(1);
   foreground?.("active");
-  expect([messagesAttached, unitsAttached]).toEqual([2, 1]);
+  expect([messagesAttached, unitsAttached]).toEqual([2, 2]);
   onMessages?.([message]);
   expect(render().messages).toEqual([message]);
 
@@ -205,7 +226,7 @@ test("query failures show toasts and retry only failed subscriptions on foregrou
   onUnits?.([{ ric: 123, unitName: "Recovered unit" }]);
   expect(render().unitNames.get(123)).toBe("Recovered unit");
   foreground?.("active");
-  expect([messagesAttached, unitsAttached]).toEqual([2, 2]);
+  expect([messagesAttached, unitsAttached]).toEqual([2, 3]);
 });
 
 test("revocation hides history immediately and cleanup blocks late callbacks", () => {
@@ -268,4 +289,32 @@ test("approved identity changes hide previous history before the replacement eff
   const afterEffect = render();
   expect(afterEffect.messages).toEqual([replacement]);
   expect(afterEffect.unitNames.get(123)).toBe("Replacement unit");
+});
+
+test("background pauses history and catalogs, then resumes from the last saved cursor", () => {
+  onMessages?.([message]);
+  const lateMessages = onMessages;
+  const lateUnits = onUnits;
+  foreground?.("background");
+  expect([messagesDetached, unitsDetached]).toEqual([1, 1]);
+  lateMessages?.([{ ...message, location: "Late callback" }]);
+  lateUnits?.([{ ric: 123, unitName: "Late catalog" }]);
+  expect(render().messages[0]?.location).toBeUndefined();
+  foreground?.("active");
+  expect(queries.at(-1)?.cursor).toEqual(batchCursor);
+  expect(queries.at(-1)?.initialized).toBe(true);
+  foreground?.("active");
+  expect([messagesAttached, unitsAttached]).toEqual([2, 2]);
+});
+
+test("cache failure leaves the resume cursor unchanged while keeping live history visible", () => {
+  onMessages?.([message]);
+  const savedCursor = batchCursor;
+  cacheFailure = true;
+  batchCursor = { seconds: 200, nanoseconds: 2 };
+  onMessages?.([{ ...message, location: "Golo" }]);
+  expect(render().messages[0]?.location).toBe("Golo");
+  foreground?.("background");
+  foreground?.("active");
+  expect(queries.at(-1)?.cursor).toEqual(savedCursor);
 });

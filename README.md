@@ -1,6 +1,6 @@
 # subpager app
 
-Private pager history and Expo push notifications with Firebase anonymous Auth and Firestore. Firestore is the only backend database. The receiver uploads decoded calls from a small filesystem outbox and handles durable push and location jobs independently. The app keeps one SQLite row for offline reading.
+Private pager history and Expo push notifications with Firebase anonymous Auth and Firestore. Firestore is the only backend database. The receiver uploads decoded calls from a small filesystem outbox and handles durable push and location jobs independently. The app keeps a SQLite cache for offline reading.
 
 ## Install and check
 
@@ -13,6 +13,8 @@ bun run test
 ```
 
 Use Bun. Do not start another Metro server if one is running. Native dependency and permission changes require a new native build. Subpager blocks external storage read/write permissions. Firebase Auth persists the anonymous account in AsyncStorage.
+
+Bun applies the checked-in MaskedView manifest patch during installation. EAS uses the uploaded `google-services.json` when present so local and cloud builds use the same Firebase client file for fingerprinting.
 
 ## Firebase setup
 
@@ -40,9 +42,13 @@ Online, the app waits for server-confirmed approval before syncing history. Offl
 
 ## History and locations
 
-Firestore listeners replace the full message and RIC mapping snapshots, including changes and removals. The app saves the latest snapshots in one SQLite row. New messages and location updates require internet and arrive automatically without manual refresh. Search matches text, RIC and unit names without case or accent differences. New messages use Firestore automatic document IDs; existing history retains its original IDs. Firebase identities keep their UIDs. RIC mappings use `ricUnits/{ric}` with `ric` and `unitName` fields; none were configured before migration.
+The app saves complete history in separate SQLite `messages` and `ric_units` tables with columns for each field; `approval` identifies the cache owner. Existing JSON caches migrate automatically. The first connection loads full message history, including legacy documents. Later connections query `updatedAt` at or after the saved Firestore timestamp, then save changed rows and the cursor in one transaction. Later location updates use the same server timestamp field, so they reach cached older messages. History stays unlimited without a full archive download at every open. Listeners pause in the background and resume from the saved cursor. New messages and location updates require internet and arrive automatically without manual refresh. Search matches text, RIC and unit names without case or accent differences. New messages use Firestore automatic document IDs; existing history retains its original IDs. Firebase identities keep their UIDs. Manual hard deletes while a phone is offline require a fresh cache to reconcile; normal receiver operations append messages and update locations.
 
-The receiver transaction saves each message and queues private `pushJobs` and `locationJobs`. Separate listeners process those jobs without repeated polling reads. The receiver must be running to finish background work. Durable retry times and leases allow recovery after restart. The receiver has no SQLite database, HTTP API, domain or tunnel.
+RIC names use a versioned catalog: `config/ricUnitsRevision` holds the small revision, and `config/ricUnits` holds that revision and the complete `units` array. The app watches the revision and fetches the catalog only when it changes. Units and revision are saved together. One thousand mappings therefore cost one revision read per connection, with no repeated catalog transfer. Publish the JSON through the updated receiver's `bun run ric:sync FILE`. Legacy `ricUnits` documents are not used by this app.
+
+The receiver transaction saves each message and queues private `pushJobs` and `locationJobs`. Push jobs contain up to 100 recipients with separate ticket and retry state. A shared users listener avoids rereading the device roster per message. Separate listeners process jobs without repeated polling reads. The receiver must be running to finish background work. Durable retry times and leases allow recovery after restart. The receiver has no SQLite database, HTTP API, domain or tunnel.
+
+Activate the protocol together with the updated server: deploy the checked-in rules and index exemptions, finish the old server's active push jobs, restart with the new server and update phones, then publish the RIC catalog once. A phone performs one full bootstrap before using deltas. No history backfill is required. These source edits do not deploy rules, restart the receiver or update installed apps. Unchanged push tokens are compared with the server-confirmed user record and do not need a write at each cold start.
 
 Location extraction uses OpenAI Responses with `gpt-6-luna`, no reasoning and structured output containing an exact message substring or null. Set `OPENAI_API_KEY` in the receiver ignored `.env`. API billing is separate from ChatGPT subscriptions. Extraction does not delay the initial feed or push. Completed results update canonical messages and repeats without sending another alert.
 

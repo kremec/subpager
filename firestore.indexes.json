@@ -1,0 +1,20 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    { "collectionGroup": "config", "fieldPath": "units", "indexes": [] },
+    { "collectionGroup": "pushJobs", "fieldPath": "*", "indexes": [] },
+    {
+      "collectionGroup": "pushJobs",
+      "fieldPath": "active",
+      "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }]
+    },
+    { "collectionGroup": "locationJobs", "fieldPath": "*", "indexes": [] },
+    {
+      "collectionGroup": "locationJobs",
+      "fieldPath": "active",
+      "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }]
+    },
+    { "collectionGroup": "messages", "fieldPath": "content", "indexes": [] },
+    { "collectionGroup": "messages", "fieldPath": "location", "indexes": [] }
+  ]
+}

@@ -19,7 +19,14 @@ Notifications.setNotificationHandler({
 });
 
 export function useNotifications() {
-  const { connection, pushStatus, setPushStatus } = useConnection();
+  const {
+    connection,
+    pushStatus,
+    setPushStatus,
+    serverTokenKnown,
+    getRegisteredToken,
+    confirmRegisteredToken,
+  } = useConnection();
   const router = useRouter();
   const response = Notifications.useLastNotificationResponse();
 
@@ -36,16 +43,17 @@ export function useNotifications() {
       setPushStatus("Waiting for approval");
       return;
     }
+    if (!serverTokenKnown) return;
     const uid = connection.uid;
     let cancelled = false;
     let running = false;
     let pending = false;
     let pendingDeviceToken: Notifications.DevicePushToken | undefined;
-    let registeredToken: string | null | undefined;
     async function saveToken(token: string | null) {
-      if (registeredToken === token) return;
+      const currentToken = getRegisteredToken(uid);
+      if (currentToken === undefined || currentToken === token) return;
       await registerDevice(uid, token);
-      registeredToken = token;
+      confirmRegisteredToken(uid, token);
     }
     async function register(devicePushToken?: Notifications.DevicePushToken) {
       if (cancelled || !connection) return;
@@ -120,7 +128,13 @@ export function useNotifications() {
       appState.remove();
       tokenChanged.remove();
     };
-  }, [connection, setPushStatus]);
+  }, [
+    connection,
+    serverTokenKnown,
+    getRegisteredToken,
+    confirmRegisteredToken,
+    setPushStatus,
+  ]);
 
   return pushStatus;
 }

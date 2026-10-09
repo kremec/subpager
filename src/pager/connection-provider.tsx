@@ -39,6 +39,9 @@ interface ConnectionContextValue {
   setPushStatus: (status: string) => void;
   retry: () => void;
   hasAccess: (uid: string) => boolean;
+  serverTokenKnown: boolean;
+  getRegisteredToken: (uid: string) => string | null | undefined;
+  confirmRegisteredToken: (uid: string, token: string | null) => void;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -57,15 +60,28 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [pushStatus, setPushStatus] = useState("Waiting for approval");
+  const [serverTokenKnown, setServerTokenKnown] = useState(false);
   const authRef = useRef<Auth | null>(null);
   const currentUid = useRef<string | null>(null);
   const accessUid = useRef<string | null>(null);
+  const serverToken = useRef<string | null | undefined>(undefined);
   const hasAccess = useCallback(
     (value: string) =>
       authRef.current?.currentUser?.uid === value &&
       currentUid.current === value &&
       accessUid.current === value,
     [],
+  );
+  const getRegisteredToken = useCallback(
+    (value: string) => (hasAccess(value) ? serverToken.current : undefined),
+    [hasAccess],
+  );
+  const confirmRegisteredToken = useCallback(
+    (value: string, token: string | null) => {
+      // A write acknowledgement can arrive before its listener snapshot.
+      if (hasAccess(value)) serverToken.current = token;
+    },
+    [hasAccess],
   );
   const approved = !!uid && access?.uid === uid && access.approved;
   const connection = useMemo<Connection | null>(
@@ -90,6 +106,8 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
           unsubscribeMember();
           const nextUid = user?.uid ?? null;
           currentUid.current = nextUid;
+          serverToken.current = undefined;
+          setServerTokenKnown(false);
           let allowed = false;
           try {
             initializeDatabase();
@@ -116,8 +134,16 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
             doc(database, "users", nextUid),
             { includeMetadataChanges: true },
             (snapshot) => {
-              if (!matchingIdentity() || snapshot.metadata.fromCache) return;
+              if (
+                !matchingIdentity() ||
+                snapshot.metadata.fromCache ||
+                snapshot.metadata.hasPendingWrites
+              )
+                return;
               const approvedByServer = snapshot.data()?.approved === true;
+              const token = snapshot.data()?.expoPushToken;
+              serverToken.current = typeof token === "string" ? token : null;
+              setServerTokenKnown(true);
               accessUid.current = approvedByServer ? nextUid : null;
               setAccess({ uid: nextUid, approved: approvedByServer });
               try {
@@ -187,6 +213,9 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
         setPushStatus,
         retry,
         hasAccess,
+        serverTokenKnown,
+        getRegisteredToken,
+        confirmRegisteredToken,
       }}
     >
       {props.children}

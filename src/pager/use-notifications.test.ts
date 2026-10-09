@@ -11,6 +11,8 @@ let conversionCalls = 0;
 let failWrites = 0;
 let granted = true;
 let approved = true;
+let serverTokenKnown = true;
+let serverToken: string | null | undefined = null;
 let permissionLookup: (() => Promise<void>) | undefined;
 let tokenLookup: (() => Promise<void>) | undefined;
 let response: {
@@ -75,6 +77,12 @@ mock.module("@/pager/connection-provider", () => ({
   useConnection: () => ({
     connection: approved ? { uid: "test-device" } : null,
     pushStatus: "",
+    serverTokenKnown,
+    getRegisteredToken: () => serverToken,
+    confirmRegisteredToken: (uid: string, token: string | null) => {
+      expect(uid).toBe("test-device");
+      serverToken = token;
+    },
     setPushStatus: (status: string) => statuses.push(status),
   }),
 }));
@@ -122,6 +130,8 @@ beforeEach(() => {
   failWrites = 0;
   granted = true;
   approved = true;
+  serverTokenKnown = true;
+  serverToken = null;
   permissionLookup = undefined;
   tokenLookup = undefined;
   response = null;
@@ -311,4 +321,32 @@ test("notification taps open the feed only after approval", () => {
   effects[0]!();
   expect(openedRoutes).toEqual(["/", "/"]);
   expect(clearedResponses).toBe(2);
+});
+
+test("unchanged tokens on a cold start do not write", async () => {
+  serverToken = "ExpoPushToken[first]";
+  await mount();
+  expect(writes).toEqual([]);
+  expect(statuses).toContain("Push notifications registered");
+});
+
+test("registration waits for the existing user listener to confirm the server token", async () => {
+  serverTokenKnown = false;
+  serverToken = undefined;
+  await mount();
+  expect(conversionCalls).toBe(0);
+  expect(writes).toEqual([]);
+  serverTokenKnown = true;
+  serverToken = "ExpoPushToken[first]";
+  effects.length = 0;
+  await mount();
+  expect(writes).toEqual([]);
+});
+
+test("server-cleared tokens are restored on foreground even when the device token is unchanged", async () => {
+  await mount();
+  serverToken = null;
+  appStateListener?.("active");
+  await settle();
+  expect(writes).toEqual(["ExpoPushToken[first]", "ExpoPushToken[first]"]);
 });

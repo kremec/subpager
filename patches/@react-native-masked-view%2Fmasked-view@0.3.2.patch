@@ -1,0 +1,8 @@
+diff --git a/android/src/main/AndroidManifest.xml b/android/src/main/AndroidManifest.xml
+index 5d1b95eed3202902e42f155179cca2cef0bb8117..a64081153e663401d46002d0c529c7f4221e7535 100644
+--- a/android/src/main/AndroidManifest.xml
++++ b/android/src/main/AndroidManifest.xml
+@@ -1,2 +1,2 @@
+-<manifest package="org.reactnative.maskedview" xmlns:android="http://schemas.android.com/apk/res/android">
++<manifest  xmlns:android="http://schemas.android.com/apk/res/android">
+ </manifest>

@@ -12,10 +12,13 @@ interface ConnectionValue {
   connection: { uid: string } | null;
   error: string | null;
   hasAccess: (uid: string) => boolean;
+  serverTokenKnown: boolean;
+  getRegisteredToken: (uid: string) => string | null | undefined;
+  confirmRegisteredToken: (uid: string, token: string | null) => void;
 }
 interface MemberSnapshot {
   metadata: { fromCache: boolean };
-  data: () => { approved: boolean } | undefined;
+  data: () => { approved: boolean; expoPushToken?: string | null } | undefined;
 }
 type State = Access | string | boolean | number | null;
 interface TestAuth {
@@ -25,7 +28,7 @@ interface TestAuth {
 const react = await import("react");
 const effects: EffectCallback[] = [];
 const states: State[] = [];
-const refs: { current: TestAuth | string | null }[] = [];
+const refs: { current: TestAuth | string | null | undefined }[] = [];
 let stateIndex = 0;
 let refIndex = 0;
 let cleanup: (() => void) | undefined;
@@ -64,7 +67,7 @@ mock.module("react", () => ({
       },
     ];
   },
-  useRef: <T extends TestAuth | string | null>(initial: T) => {
+  useRef: <T extends TestAuth | string | null | undefined>(initial: T) => {
     const index = refIndex++;
     refs[index] ??= { current: initial };
     return refs[index];
@@ -308,4 +311,44 @@ test("cleanup during auth hydration prevents subscriptions and state updates", a
   await settle();
   expect(render().uid).toBeNull();
   expect(memberSubscriptions).toBe(0);
+});
+
+test("the existing user snapshot provides an identity-scoped current token without a separate read", async () => {
+  cachedUid = "firebase-device";
+  await initialize();
+  expect(render().serverTokenKnown).toBe(false);
+  memberListener?.({
+    metadata: { fromCache: false },
+    data: () => ({ approved: true, expoPushToken: "ExpoPushToken[existing]" }),
+  });
+  expect(render().serverTokenKnown).toBe(true);
+  expect(render().getRegisteredToken("firebase-device")).toBe(
+    "ExpoPushToken[existing]",
+  );
+  memberListener?.({
+    metadata: { fromCache: false },
+    data: () => ({ approved: true, expoPushToken: null }),
+  });
+  expect(render().getRegisteredToken("firebase-device")).toBeNull();
+  expect(memberSubscriptions).toBe(1);
+  auth.currentUser = { uid: "another-device" };
+  expect(render().getRegisteredToken("firebase-device")).toBeUndefined();
+});
+
+test("acknowledged tokens deduplicate before listener delivery and later server clearing stays visible", async () => {
+  await initialize();
+  member(true);
+  const value = render();
+  value.confirmRegisteredToken(
+    "firebase-device",
+    "ExpoPushToken[acknowledged]",
+  );
+  expect(value.getRegisteredToken("firebase-device")).toBe(
+    "ExpoPushToken[acknowledged]",
+  );
+  member(true);
+  expect(render().getRegisteredToken("firebase-device")).toBeNull();
+  auth.currentUser = { uid: "replacement-device" };
+  value.confirmRegisteredToken("firebase-device", "ExpoPushToken[stale]");
+  expect(value.getRegisteredToken("firebase-device")).toBeUndefined();
 });

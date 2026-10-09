@@ -55,5 +55,8 @@
     "oxfmt": "^0.59.0",
     "oxlint": "^1.74.0",
     "typescript": "~6.0.3"
+  },
+  "patchedDependencies": {
+    "@react-native-masked-view/masked-view@0.3.2": "patches/@react-native-masked-view%2Fmasked-view@0.3.2.patch"
   }
 }

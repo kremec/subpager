@@ -2,8 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 
 const IS_DEV = process.env.APP_VARIANT === "development";
 const projectId = "0f53fe8f-bb64-4106-bb76-86ac5139e53e";
-const googleServicesFile =
-  process.env.GOOGLE_SERVICES_JSON ?? "./google-services.json";
+// EAS uploads this public client file, so use the same contents on both machines.
+const googleServicesFile = existsSync("./google-services.json")
+  ? "./google-services.json"
+  : (process.env.GOOGLE_SERVICES_JSON ?? "./google-services.json");
 interface GoogleServices {
   project_info: { project_id: string; project_number: string };
   client: {
