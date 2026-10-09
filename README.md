@@ -58,9 +58,9 @@ Firebase Cloud Messaging remains the Android push transport. Keep `google-servic
 
 The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The final Convex checkpoints are app `def4ee6` and receiver `6462a62`, also tagged `firebase-return-checkpoint-*`. Private exports and configuration are backed up outside both repositories.
 
-A verified private SQLite migration backup holds all 22 messages, 14 completed locations, original Firebase approvals and device tokens, plus the complete Convex export. Firestore import is pending the free write quota reset. Importing these documents directly does not create notification or model jobs. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
+A verified private SQLite migration backup holds all 22 messages, 14 completed locations, original Firebase approvals and device tokens, plus the complete Convex export. On 2026-10-09, all 26 prepared documents were imported into Firestore and checked against the backup. No notification or model jobs were created. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
 
-The backup is `firebase-return.sqlite` in the private migration backup directory. Its adjacent `restore-firestore.ts` imports the prepared documents atomically and checks the cloud readback. Run it with Bun after writes become available. The importer reports quota errors without a long SDK retry and can be rerun with the same document IDs. Stop the receiver during this history import; new pages can upload from its outbox afterwards. The Convex project was deleted after verifying the SQLite backup and full export.
+The backup is `firebase-return.sqlite` in the private migration backup directory. Its adjacent `restore-firestore.ts` performed the atomic import and cloud readback, preserving document IDs and duplicate references. Keep the private backup for rollback. The Convex project was deleted after verifying the SQLite backup and full export.
 
 ## Google Play internal releases
 
