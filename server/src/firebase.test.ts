@@ -99,6 +99,17 @@ function database() {
   let loseAcknowledgement = false;
   const db = {
     collection: (name: string) => new Collection(name, documents),
+    bulkWriter: () => ({
+      set: async (reference: Reference, fields: Fields) => {
+        if (failCommit) throw new Error("Commit not acknowledged");
+        documents.set(reference.path, fields);
+      },
+      delete: async (reference: Reference) => {
+        if (failCommit) throw new Error("Commit not acknowledged");
+        documents.delete(reference.path);
+      },
+      close: async () => {},
+    }),
     batch: () => {
       const writes: (() => void)[] = [];
       return {
@@ -334,19 +345,17 @@ test("251 push recipients require three jobs and no user query in the ingest tra
   ]);
 });
 
-test("one thousand RIC mappings publish as an atomic versioned catalog", async () => {
+test("one thousand RIC mappings publish as flat documents and empty imports clear them", async () => {
   const { backend, documents, fail } = database();
+  documents.set("ricUnits/_placeholder", { placeholder: true });
   const units = Array.from({ length: 1000 }, (_, ric) => ({
     ric,
     unitName: `Unit ${ric}`,
   }));
   await backend.syncRicUnits(units);
-  expect(documents.size).toBe(2);
-  const catalog = documents.get("config/ricUnits")!;
-  expect(catalog.units).toEqual(units);
-  expect(documents.get("config/ricUnitsRevision")?.revision).toBe(
-    catalog.revision,
-  );
+  expect(documents.size).toBe(1000);
+  expect(documents.has("ricUnits/_placeholder")).toBe(false);
+  expect(documents.get("ricUnits/999")).toEqual(units[999]);
   const committed = [...documents.entries()];
   fail(true);
   await expect(backend.syncRicUnits([])).rejects.toThrow(
@@ -355,18 +364,25 @@ test("one thousand RIC mappings publish as an atomic versioned catalog", async (
   expect([...documents.entries()]).toEqual(committed);
   fail(false);
   await backend.syncRicUnits([]);
-  expect(documents.get("config/ricUnits")?.units).toEqual([]);
-  expect(documents.get("config/ricUnitsRevision")?.revision).not.toBe(
-    catalog.revision,
-  );
+  expect(documents.size).toBe(0);
 });
 
-test("an oversized RIC catalog is rejected before any writes", async () => {
+test("RIC import updates names and removes omitted mappings without changing messages", async () => {
   const { backend, documents } = database();
-  await expect(
-    backend.syncRicUnits([{ ric: 1, unitName: "x".repeat(900_000) }]),
-  ).rejects.toThrow("RIC catalog exceeds");
-  expect(documents.size).toBe(0);
+  documents.set("messages/example", { content: "Original pager" });
+  await backend.syncRicUnits([
+    { ric: 123, unitName: "Old name" },
+    { ric: 456, unitName: "Removed unit" },
+  ]);
+  await backend.syncRicUnits([{ ric: 123, unitName: "New name" }]);
+  expect(documents.get("ricUnits/123")).toEqual({
+    ric: 123,
+    unitName: "New name",
+  });
+  expect(documents.has("ricUnits/456")).toBe(false);
+  expect(documents.get("messages/example")).toEqual({
+    content: "Original pager",
+  });
 });
 
 test.each(["../message", "", "23", "invalid-ID-of-20-char"])(

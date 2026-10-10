@@ -178,16 +178,22 @@ export class FirebaseBackend {
   }
 
   async syncRicUnits(units: RicUnit[]) {
-    const catalog = { revision: crypto.randomUUID(), units };
-    // Leave room for Firestore's document and array-field encoding overhead.
-    if (Buffer.byteLength(JSON.stringify(catalog)) > 900_000)
-      throw new FirebaseInputError("RIC catalog exceeds 900 KB");
-    const batch = this.db.batch();
-    batch.set(this.db.collection("config").doc("ricUnits"), catalog);
-    batch.set(this.db.collection("config").doc("ricUnitsRevision"), {
-      revision: catalog.revision,
-    });
-    await batch.commit();
+    const collection = this.db.collection("ricUnits");
+    const existing = await collection.get();
+    const ids = new Set(units.map((unit) => String(unit.ric)));
+    const writer = this.db.bulkWriter();
+    try {
+      await Promise.all([
+        ...units.map((unit) =>
+          writer.set(collection.doc(String(unit.ric)), unit),
+        ),
+        ...existing.docs
+          .filter((doc) => !ids.has(doc.id))
+          .map((doc) => writer.delete(doc.ref)),
+      ]);
+    } finally {
+      await writer.close();
+    }
   }
 
   async setMember(uid: string, approved: boolean, label?: string) {

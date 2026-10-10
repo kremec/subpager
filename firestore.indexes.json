@@ -1,7 +1,6 @@
 {
   "indexes": [],
   "fieldOverrides": [
-    { "collectionGroup": "config", "fieldPath": "units", "indexes": [] },
     { "collectionGroup": "pushJobs", "fieldPath": "*", "indexes": [] },
     {
       "collectionGroup": "pushJobs",

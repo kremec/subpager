@@ -27,9 +27,5 @@ service cloud.firestore {
     match /ricUnits/{id} {
       allow read: if approved();
     }
-
-    match /config/{id} {
-      allow get: if id in ['ricUnits', 'ricUnitsRevision'] && approved();
-    }
   }
 }

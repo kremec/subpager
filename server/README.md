@@ -144,7 +144,7 @@ Publish a complete JSON array with `bun run ric:sync FILE`:
 [{ "ric": 90473, "unitName": "Unit name" }]
 ```
 
-The command atomically writes two documents: `config/ricUnits` contains the complete array and its revision; `config/ricUnitsRevision` contains only the revision. Phones watch the small revision document and download the catalog only when it changes, saving the units and revision together in SQLite. An unchanged catalog costs one document read per connection, even with 1,000 mappings, without downloading the names again. An empty array clears it. RICs must be unique integers from 0 to 2097151 and names must be nonempty. The catalog has a 900 KB JSON safety budget for Firestore's 1 MiB document limit. Renaming a unit updates existing local history without rewriting messages. Legacy `ricUnits` documents are left untouched; new clients use the catalog.
+The command replaces `ricUnits` with one document per RIC: `ricUnits/{RIC}` contains `{ ric, unitName }` with an unpadded document ID. Omitted mappings are deleted, and an empty array clears the collection. Phones listen directly to this collection and cache the names in SQLite. Each foreground connection reads all mappings; subsequent snapshots read changed documents. RICs must be unique integers from 0 to 2097151 and names must be nonempty. Renaming a unit updates existing local history without rewriting messages. The importer uses Firestore BulkWriter, so a large import is not atomic; rerunning a failed import finishes synchronization.
 
 ### Activating the optimized protocol
 
