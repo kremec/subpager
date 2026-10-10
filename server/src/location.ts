@@ -204,6 +204,8 @@ export class LocationExtraction {
       ]);
       if (!message.exists)
         throw new Error("Location destination message is missing");
+      const spinRef = this.db.collection("spinJobs").doc(job.messageId);
+      const spin = await tx.get(spinRef);
       parseLocation(JSON.stringify({ location: current.result }), job.content);
       const patch = {
         location: current.result,
@@ -211,6 +213,14 @@ export class LocationExtraction {
       };
       tx.update(messageRef, patch);
       for (const repeated of repeats.docs) tx.update(repeated.ref, patch);
+      if (current.result && spin.get("active") && spin.get("state") !== "ready")
+        tx.update(spinRef, {
+          state: "pending",
+          checkedRevision: FieldValue.delete(),
+          attempts: (spin.get("attempts") ?? 0) + 1,
+          leaseUntil: 0,
+          nextAttempt: Date.now(),
+        });
       tx.delete(jobRef);
     });
   }

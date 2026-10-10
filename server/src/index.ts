@@ -4,6 +4,7 @@ import { Outbox } from "./outbox";
 import { FirebaseBackend, FirebaseWorker } from "./firebase";
 import { FirestoreJobsProcessor } from "./processor";
 import { createErrorReporter, logError, logInfo } from "./log";
+import { dirname, join } from "node:path";
 
 async function main() {
   const config = await loadConfig();
@@ -15,6 +16,9 @@ async function main() {
     client.db,
     {
       openaiApiKey: process.env.OPENAI_API_KEY,
+      spinRssUrl:
+        process.env.SPIN_RSS_URL ?? "https://spin3.sos112.si/javno/ODApi/184",
+      spinCachePath: join(dirname(config.outbox), "spin-candidates.json"),
       expoAccessToken: process.env.EXPO_ACCESS_TOKEN,
     },
     client.users,

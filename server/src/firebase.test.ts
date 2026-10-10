@@ -170,7 +170,7 @@ function page(offset = 0, source = offset + 1): Reception {
   };
 }
 
-test("message, push and location jobs commit together, and persisted IDs prevent duplicate retries", async () => {
+test("message, push, location and SPIN jobs commit together, and persisted IDs prevent duplicate retries", async () => {
   const { backend, documents, fail } = database();
   documents.set("users/approved", {
     expoPushToken: "ExponentPushToken[test]",
@@ -189,7 +189,7 @@ test("message, push and location jobs commit together, and persisted IDs prevent
   expect(documents.size).toBe(2);
   fail(false);
   await backend.ingest([reception], true, now);
-  expect(documents.size).toBe(5);
+  expect(documents.size).toBe(6);
   const message = documents.get(`messages/${reception.sourceId}`)!;
   expect(message.content).toBe("ŠOLA GOLO");
   expect(message.sourceId).toBeUndefined();
@@ -215,6 +215,15 @@ test("message, push and location jobs commit together, and persisted IDs prevent
   expect(documents.get(`locationJobs/${reception.sourceId}`)?.content).toBe(
     "ŠOLA GOLO",
   );
+  expect(documents.get(`spinJobs/${reception.sourceId}`)).toEqual({
+    active: true,
+    state: "pending",
+    expiresAt: now + 3 * 24 * 60 * 60 * 1000,
+    nextAttempt: now,
+    attempts: 0,
+    failures: 0,
+    leaseUntil: 0,
+  });
   const committed = [...documents.entries()];
   await backend.ingest([reception], true, now);
   await expect(
@@ -223,13 +232,15 @@ test("message, push and location jobs commit together, and persisted IDs prevent
   expect([...documents.entries()]).toEqual(committed);
 });
 
-test("dedupe stays anchored to the canonical page and copies resolved locations", async () => {
+test("dedupe stays anchored to the canonical page and copies resolved location and SPIN references", async () => {
   const { backend, documents } = database();
   const first = page();
   const second = page(25_000);
   const third = page(40_000);
   await backend.ingest([first], true, Date.parse(first.receivedAt));
   documents.get(`messages/${first.sourceId}`)!.location = "ŠOLA GOLO";
+  documents.get(`messages/${first.sourceId}`)!.spinEventId = "472470";
+  documents.get(`messages/${first.sourceId}`)!.spinMatchStatus = "provisional";
   await backend.ingest([second, third], true, Date.parse(first.receivedAt));
   expect(documents.get(`messages/${second.sourceId}`)?.duplicateOf).toBe(
     first.sourceId,
@@ -237,9 +248,20 @@ test("dedupe stays anchored to the canonical page and copies resolved locations"
   expect(documents.get(`messages/${second.sourceId}`)?.location).toBe(
     "ŠOLA GOLO",
   );
+  expect(documents.get(`messages/${second.sourceId}`)?.spinEventId).toBe(
+    "472470",
+  );
+  expect(documents.get(`messages/${second.sourceId}`)?.spinMatchStatus).toBe(
+    "provisional",
+  );
   expect(documents.has(`locationJobs/${second.sourceId}`)).toBe(false);
+  expect(documents.has(`spinJobs/${second.sourceId}`)).toBe(false);
   expect(documents.get(`messages/${third.sourceId}`)?.duplicateOf).toBeNull();
   expect(documents.has(`locationJobs/${third.sourceId}`)).toBe(true);
+  expect(documents.has(`spinJobs/${third.sourceId}`)).toBe(true);
+  expect(
+    documents.get(`messages/${third.sourceId}`)?.spinEventId,
+  ).toBeUndefined();
 });
 
 test("imports suppress all jobs, expiry suppresses push, and tone/empty pages skip inference", async () => {
@@ -262,11 +284,14 @@ test("imports suppress all jobs, expiry suppresses push, and tone/empty pages sk
     [...documents.keys()].filter((key) => key.startsWith("pushJobs/")),
   ).toHaveLength(0);
   expect(documents.has(`locationJobs/${expired.sourceId}`)).toBe(true);
+  expect(documents.has(`spinJobs/${expired.sourceId}`)).toBe(true);
   const tone = { ...page(80_000), type: "tone" as const, content: "" };
   const empty = { ...page(120_000), content: "<EOT><NUL>" };
   await backend.ingest([tone, empty], true, Date.parse(tone.receivedAt));
   expect(documents.has(`locationJobs/${tone.sourceId}`)).toBe(false);
   expect(documents.has(`locationJobs/${empty.sourceId}`)).toBe(false);
+  expect(documents.has(`spinJobs/${tone.sourceId}`)).toBe(false);
+  expect(documents.has(`spinJobs/${empty.sourceId}`)).toBe(false);
   expect(
     [...documents.keys()].filter((key) => key.startsWith("pushJobs/")),
   ).toHaveLength(2);
@@ -286,6 +311,7 @@ test.each(["Reception00000000001", "00000000-0000-4000-8000-000000000001"])(
       backend.ingest([reception], true, Date.parse(reception.receivedAt)),
     ).rejects.toThrow("Commit acknowledgement lost");
     expect(documents.has(`messages/${sourceId}`)).toBe(true);
+    expect(documents.has(`spinJobs/${sourceId}`)).toBe(true);
     const committed = [...documents.entries()];
     loseAcknowledgement(false);
     await backend.ingest([reception], true, Date.parse(reception.receivedAt));

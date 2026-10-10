@@ -17,6 +17,7 @@
     "member:revoke": "bun -e 'import { setMember } from \"./scripts/tools\"; await setMember(Bun.argv[1], false, Bun.argv[2])'",
     "member:list": "bun -e 'import { listMembers } from \"./scripts/tools\"; await listMembers()'",
     "ric:sync": "bun -e 'import { syncRicUnits } from \"./scripts/tools\"; await syncRicUnits(Bun.argv[1])'",
+    "spin:unlink": "bun -e 'import { unlinkSpin } from \"./scripts/tools\"; await unlinkSpin(Bun.argv[1])'",
     "check": "tsc --noEmit",
     "test": "bun test",
     "lint": "oxlint src scripts",
@@ -25,6 +26,7 @@
     "start:sync": "SUBPAGER_NO_RADIO=1 bun src/index.ts"
   },
   "dependencies": {
+    "fast-xml-parser": "^5.11.2",
     "firebase-admin": "^14.5.0"
   },
   "devDependencies": {

@@ -6,6 +6,9 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   FieldValue,
   Timestamp,
@@ -21,6 +24,14 @@ import {
   readLocationResponse,
   type LocationJob,
 } from "./location";
+import {
+  SPIN_MATCHING_HORIZON,
+  SpinMatching,
+  unlinkSpinEvent,
+  type SpinJob,
+} from "./spin";
+import type { SpinEvent } from "./spin-feed";
+import { SpinSync } from "./spin-sync";
 
 type Data = Record<string, unknown>;
 interface Reference {
@@ -35,7 +46,7 @@ interface Query {
 interface Listener {
   name: string;
   next: (snapshot: { docs: ReturnType<TestFirestore["snapshot"]>[] }) => void;
-  error: () => void;
+  error: (error: Error) => void;
   closed: boolean;
 }
 
@@ -87,13 +98,27 @@ class TestFirestore {
       };
     };
     return {
-      doc: (id: string): Reference => ({ id, path: `${name}/${id}` }),
+      doc: (id: string) => {
+        const ref = { id, path: `${name}/${id}` };
+        return { ...ref, get: async () => this.snapshot(ref) };
+      },
       onSnapshot,
-      where: (field: string, _operator: string, value: unknown) => ({
+      where: (field: string, operator: string, value: unknown) => ({
         collection: name,
         field,
         value,
         onSnapshot,
+        get: async () => ({
+          docs: [...this.docs.entries()]
+            .filter(
+              ([path, data]) =>
+                path.startsWith(`${name}/`) &&
+                (operator === ">="
+                  ? String(data[field]) >= String(value)
+                  : data[field] === value),
+            )
+            .map(([path]) => this.snapshot({ path, id: path.split("/")[1]! })),
+        }),
       }),
     };
   }
@@ -102,7 +127,13 @@ class TestFirestore {
     const data = this.docs.get(ref.path);
     return {
       id: ref.id,
-      ref,
+      ref: {
+        ...ref,
+        update: async (patch: Data) =>
+          this.runTransaction(async (tx) => {
+            tx.update(ref, patch);
+          }),
+      },
       exists: data !== undefined,
       updateTime: this.versions.get(ref.path),
       data: () => data,
@@ -122,10 +153,13 @@ class TestFirestore {
         ...references: Reference[]
       ) => Promise<ReturnType<TestFirestore["snapshot"]>[]>;
       update: (reference: Reference, patch: Data) => void;
+      create: (reference: Reference, patch: Data) => void;
+      set: (reference: Reference, patch: Data) => void;
       delete: (reference: Reference) => void;
     }) => Promise<T>,
   ) {
-    const writes: { reference: Reference; patch: Data }[] = [];
+    const writes: { reference: Reference; patch: Data; replace?: boolean }[] =
+      [];
     const deletes: Reference[] = [];
     const result = await callback({
       get: async (target) => {
@@ -147,6 +181,13 @@ class TestFirestore {
       update: (reference, patch) => {
         writes.push({ reference, patch });
       },
+      create: (reference, patch) => {
+        if (this.docs.has(reference.path)) throw new Error("Existing document");
+        writes.push({ reference, patch });
+      },
+      set: (reference, patch) => {
+        writes.push({ reference, patch, replace: true });
+      },
       delete: (reference) => {
         deletes.push(reference);
       },
@@ -157,8 +198,8 @@ class TestFirestore {
       )
     )
       throw new Error("Simulated Firestore write outage");
-    for (const { reference, patch } of writes) {
-      const data = { ...this.docs.get(reference.path) };
+    for (const { reference, patch, replace } of writes) {
+      const data = replace ? {} : { ...this.docs.get(reference.path) };
       for (const [key, value] of Object.entries(patch)) {
         if (value instanceof FieldValue && value.isEqual(FieldValue.delete()))
           delete data[key];
@@ -439,7 +480,9 @@ describe("durable Expo batches", () => {
     const store = new TestFirestore();
     pushFixture(store);
     const users = usersFixture(store);
-    store.listeners.find((listener) => listener.name === "users")!.error();
+    store.listeners
+      .find((listener) => listener.name === "users")!
+      .error(new Error("User listener disconnected"));
     let requests = 0;
     await expect(
       new PushDelivery(
@@ -716,7 +759,7 @@ test("user listener failures reject readiness and require a fresh snapshot after
   try {
     const ready = users.ready();
     const first = store.listeners[0]!;
-    first.error();
+    first.error(new Error("User listener disconnected"));
     await expect(ready).rejects.toThrow("disconnected");
     await expect(users.ready()).rejects.toThrow("disconnected");
     reconnect!();
@@ -728,7 +771,7 @@ test("user listener failures reject readiness and require a fresh snapshot after
     expect(users.recipients()).toEqual([]);
     users.stop();
     store.listeners[1]!.next({ docs: [] });
-    store.listeners[1]!.error();
+    store.listeners[1]!.error(new Error("User listener disconnected"));
     expect(() => users.recipients()).toThrow("disconnected");
     await expect(users.ready()).rejects.toThrow("stopped");
   } finally {
@@ -916,6 +959,881 @@ describe("durable location jobs", () => {
   });
 });
 
+const spinEvent: SpinEvent = {
+  id: "472470",
+  title: "Požar, eksplozija",
+  description:
+    "Ob 14.27 je na Golem zagorela ograja. Gasilci so požar pogasili.",
+  eventAt: new Date(now - 120_000).toISOString(),
+  municipality: "Ig",
+};
+
+function spinFixture(store: TestFirestore, overrides: Partial<SpinJob> = {}) {
+  const job: SpinJob = {
+    active: true,
+    state: "pending",
+    expiresAt: now + SPIN_MATCHING_HORIZON,
+    nextAttempt: now,
+    attempts: 0,
+    failures: 0,
+    leaseUntil: 0,
+    ...overrides,
+  };
+  store.put("spinJobs/spin", { ...job });
+  store.put("messages/spin", {
+    content: "GORI OGRAJA PRED HIŠO - GOLO 40",
+    receivedAt: new Date(now).toISOString(),
+    type: "alpha",
+    duplicateOf: null,
+    location: "GOLO 40",
+  });
+}
+
+function spinResponse(
+  incidentId: string | null,
+  addressIndex: number | null = null,
+  currentLinkStatus = "absent",
+) {
+  return Response.json({
+    status: "completed",
+    output: [
+      {
+        content: [
+          {
+            type: "output_text",
+            text: JSON.stringify({
+              incidentId,
+              addressIndex,
+              currentLinkStatus,
+            }),
+          },
+        ],
+      },
+    ],
+  });
+}
+
+describe("durable SPIN matching", () => {
+  test("seeding stores only matching state and skips messages at or beyond three days", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    const message = {
+      type: "alpha",
+      content: "GORI OGRAJA PRED HIŠO - GOLO 40",
+      duplicateOf: null,
+    };
+    for (const [id, age] of [
+      ["recent", 60_000],
+      ["boundary", SPIN_MATCHING_HORIZON],
+      ["older", SPIN_MATCHING_HORIZON + 1],
+    ] as const) {
+      store.put(`messages/${id}`, {
+        ...message,
+        receivedAt: new Date(now - age).toISOString(),
+      });
+    }
+    const worker = new SpinMatching(store.db, {
+      ready: false,
+      revision: "",
+      events: [],
+    });
+    await worker.seed();
+    expect(store.docs.get("spinJobs/recent")).toEqual({
+      active: true,
+      state: "pending",
+      expiresAt: now - 60_000 + SPIN_MATCHING_HORIZON,
+      nextAttempt: now,
+      attempts: 0,
+      failures: 0,
+      leaseUntil: 0,
+    });
+    expect(store.docs.has("spinJobs/boundary")).toBe(false);
+    expect(store.docs.has("spinJobs/older")).toBe(false);
+    await worker.seed();
+    expect(store.docs.get("spinJobs/recent")?.attempts).toBe(0);
+  });
+
+  test("unchanged waiting revisions skip inference and a changed report retries a null decision", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    const catalog = { ready: true, revision: "r1", events: [spinEvent] };
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      catalog,
+      "benchmark-key",
+      undefined,
+      async (_url, options) => {
+        const body = JSON.parse(options!.body as string) as {
+          model: string;
+          store: boolean;
+          input: { content: string }[];
+          text: {
+            format: {
+              schema: {
+                properties: { incidentId: { enum: (string | null)[] } };
+              };
+            };
+          };
+        };
+        expect(body.model).toBe("gpt-6-luna");
+        expect(body.store).toBe(false);
+        expect(body.text.format.schema.properties.incidentId.enum).toEqual([
+          spinEvent.id,
+          null,
+        ]);
+        expect(JSON.parse(body.input[1]!.content).pager).toEqual({
+          message: "GORI OGRAJA PRED HIŠO - GOLO 40",
+          receivedAt: new Date(now).toISOString(),
+          location: "GOLO 40",
+        });
+        requests++;
+        return spinResponse(null);
+      },
+    );
+    await worker.run(["spin"]);
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "waiting",
+      checkedRevision: "r1",
+      leaseUntil: 0,
+    });
+    expect(store.docs.get("spinJobs/spin")).not.toHaveProperty("result");
+    for (const field of ["messageId", "content", "receivedAt"])
+      expect(store.docs.get("spinJobs/spin")).not.toHaveProperty(field);
+    expect(
+      worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+    ).toBe(false);
+    await worker.run(["spin"]);
+    expect(requests).toBe(1);
+    catalog.revision = "r2";
+    catalog.events = [
+      { ...spinEvent, description: "A revised public report." },
+    ];
+    expect(
+      worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+    ).toBe(true);
+    await worker.run(["spin"]);
+    expect(requests).toBe(2);
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "waiting",
+      checkedRevision: "r2",
+    });
+    expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+  });
+
+  test.each(["ready", "waiting"])(
+    "paid %s results survive failed writes without another API call",
+    async (state) => {
+      setSystemTime(now);
+      const store = new TestFirestore();
+      spinFixture(store);
+      store.put("messages/repeat", {
+        duplicateOf: "spin",
+        content: "Repeated original pager",
+      });
+      const catalog = { ready: true, revision: "r1", events: [spinEvent] };
+      let requests = 0;
+      const worker = new SpinMatching(
+        store.db,
+        catalog,
+        "benchmark-key",
+        undefined,
+        async () => {
+          requests++;
+          return spinResponse(state === "ready" ? spinEvent.id : null);
+        },
+      );
+      store.rejectWrite = (_path, patch) => patch.state === state;
+      await expect(worker.run(["spin"])).rejects.toThrow("write outage");
+      expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
+      store.rejectWrite = undefined;
+      await worker.run(["spin"]);
+      expect(requests).toBe(1);
+      if (state === "ready") {
+        expect(store.docs.get("messages/spin")?.spinEventId).toBe(spinEvent.id);
+        expect(store.docs.get("messages/repeat")?.spinEventId).toBe(
+          spinEvent.id,
+        );
+        expect(store.docs.has("spinJobs/spin")).toBe(false);
+      } else {
+        expect(store.docs.get("spinJobs/spin")).toMatchObject({
+          state: "waiting",
+          checkedRevision: "r1",
+        });
+        expect(store.docs.get("spinJobs/spin")).not.toHaveProperty("result");
+      }
+    },
+  );
+
+  test("a persisted ready result publishes after restart during a quota pause and links repeats atomically", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store, { state: "ready", result: spinEvent });
+    store.put("messages/repeat", {
+      duplicateOf: "spin",
+      content: "Repeated original pager",
+    });
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      { ready: false, revision: "", events: [] },
+      "benchmark-key",
+      undefined,
+      async () => {
+        requests++;
+        return spinResponse(null);
+      },
+    );
+    worker.pausedUntil = now + 3_600_000;
+    store.rejectWrite = (path, patch) =>
+      path === "messages/repeat" && patch.spinEventId === spinEvent.id;
+    await expect(worker.run(["spin"])).rejects.toThrow("write outage");
+    expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
+    expect(store.docs.get("messages/repeat")?.spinEventId).toBeUndefined();
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+    expect(store.docs.has("spinJobs/spin")).toBe(true);
+    store.rejectWrite = undefined;
+    setSystemTime(now + SPIN_MATCHING_HORIZON + 60_000);
+    await worker.run(["spin"]);
+    expect(requests).toBe(0);
+    for (const id of ["spin", "repeat"]) {
+      expect(store.docs.get(`messages/${id}`)?.spinEventId).toBe(spinEvent.id);
+      expect(store.docs.get(`messages/${id}`)?.updatedAt).toEqual(
+        FieldValue.serverTimestamp(),
+      );
+    }
+    expect(store.docs.get("messages/spin")?.content).toBe(
+      "GORI OGRAJA PRED HIŠO - GOLO 40",
+    );
+    expect(store.docs.get("messages/repeat")?.content).toBe(
+      "Repeated original pager",
+    );
+    expect(store.docs.has("spinJobs/spin")).toBe(false);
+    expect(store.docs.get(`spinEvents/${spinEvent.id}`)).toEqual({
+      ...spinEvent,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  test("a positive decision retains its public report and creates it only when publishing a pager link", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    const candidate = { ...spinEvent, nextDetailAt: now, rssRevision: "rss" };
+    const catalog = { ready: true, revision: "r1", events: [candidate] };
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      catalog,
+      "benchmark-key",
+      undefined,
+      async () => {
+        requests++;
+        return spinResponse(spinEvent.id);
+      },
+    );
+    await worker.run(["spin"]);
+    expect(store.docs.get("spinJobs/spin")?.result).toEqual(spinEvent);
+    expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+    catalog.events = [];
+    await new SpinMatching(store.db, catalog).run(["spin"]);
+    expect(requests).toBe(1);
+    expect(store.docs.get(`spinEvents/${spinEvent.id}`)).toEqual({
+      ...spinEvent,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    expect(store.docs.get("messages/spin")?.spinEventId).toBe(spinEvent.id);
+    expect(store.docs.has("spinJobs/spin")).toBe(false);
+  });
+
+  test("publishing another pager link preserves an existing newer report", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store, { state: "ready", result: spinEvent });
+    const newer = { ...spinEvent, description: "Updated public report." };
+    store.put(`spinEvents/${spinEvent.id}`, newer);
+    await new SpinMatching(store.db, {
+      ready: false,
+      revision: "",
+      events: [],
+    }).run(["spin"]);
+    expect(store.docs.get(`spinEvents/${spinEvent.id}`)).toEqual(newer);
+    expect(store.docs.get("messages/spin")?.spinEventId).toBe(spinEvent.id);
+  });
+
+  test.each(["missing", "linked"])(
+    "a %s pager never creates an orphan report from a persisted ready result",
+    async (state) => {
+      setSystemTime(now);
+      const store = new TestFirestore();
+      spinFixture(store, { state: "ready", result: spinEvent });
+      if (state === "missing") store.docs.delete("messages/spin");
+      else
+        store.put("messages/spin", {
+          ...store.docs.get("messages/spin"),
+          spinEventId: "another-event",
+        });
+      await new SpinMatching(store.db, {
+        ready: false,
+        revision: "",
+        events: [],
+      }).run(["spin"]);
+      expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+      expect(store.docs.has("spinJobs/spin")).toBe(false);
+    },
+  );
+
+  test("unmatched jobs expire after three days without inference during a quota pause before the feed is ready", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store, { nextAttempt: now + 4 * 86_400_000 });
+    setSystemTime(now + SPIN_MATCHING_HORIZON);
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      { ready: false, revision: "", events: [] },
+      "benchmark-key",
+      undefined,
+      async () => {
+        requests++;
+        return spinResponse(null);
+      },
+    );
+    worker.pausedUntil = now + 4 * 86_400_000;
+    expect(
+      worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+    ).toBe(true);
+    await worker.run(["spin"]);
+    expect(requests).toBe(0);
+    expect(store.docs.has("spinJobs/spin")).toBe(false);
+  });
+
+  test("a provisional publication retains its review job and notices a report revision received before publication", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      ric: 790241,
+    });
+    store.put("ricUnits/790241", { unitName: "Gasilska brigada Ljubljana" });
+    store.put("messages/repeat", { duplicateOf: "spin" });
+    const partial = {
+      ...spinEvent,
+      description: "Ig",
+      latitude: 45.909,
+      longitude: 14.549,
+    };
+    const catalog = { ready: true, revision: "r1", events: [partial] };
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      catalog,
+      "test-key",
+      undefined,
+      async (_url, options) => {
+        const input = JSON.parse(
+          JSON.parse(options.body as string).input[1].content,
+        );
+        expect(input.pager.unitName).toBe("Gasilska brigada Ljubljana");
+        requests++;
+        return requests === 1
+          ? spinResponse(partial.id, 0)
+          : spinResponse(spinEvent.id, null, "valid");
+      },
+      async () => [
+        { address: "Golo, 40, Ig", latitude: 45.909, longitude: 14.549 },
+      ],
+    );
+    await worker.run(["spin"]);
+    expect(store.docs.has(`spinEvents/${partial.id}`)).toBe(false);
+    catalog.revision = "r2";
+    catalog.events = [{ ...partial, description: spinEvent.description }];
+    await worker.run(["spin"]);
+    for (const id of ["spin", "repeat"])
+      expect(store.docs.get(`messages/${id}`)).toMatchObject({
+        spinEventId: partial.id,
+        spinMatchStatus: "provisional",
+      });
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "waiting",
+      reviewEventId: partial.id,
+      checkedRevision: "r1",
+    });
+    expect(
+      worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+    ).toBe(true);
+    await worker.run(["spin"]);
+    await worker.run(["spin"]);
+    expect(requests).toBe(2);
+    expect(store.docs.get("messages/spin")?.spinMatchStatus).toBe("confirmed");
+    expect(store.docs.get("messages/repeat")?.spinMatchStatus).toBe(
+      "confirmed",
+    );
+    expect(store.docs.get(`spinEvents/${partial.id}`)?.description).toBe(
+      spinEvent.description,
+    );
+    expect(store.docs.has("spinJobs/spin")).toBe(false);
+  });
+
+  test.each([false, true])(
+    "an invalid reviewed link rematches atomically and preserves a shared report: %s",
+    async (shared) => {
+      setSystemTime(now);
+      const store = new TestFirestore();
+      const oldId = "472568";
+      spinFixture(store, { reviewEventId: oldId });
+      store.put("messages/spin", {
+        ...store.docs.get("messages/spin"),
+        spinEventId: oldId,
+        spinMatchStatus: "provisional",
+      });
+      store.put("messages/repeat", { duplicateOf: "spin", spinEventId: oldId });
+      const old = {
+        ...spinEvent,
+        id: oldId,
+        description: "Unrelated fire in another town",
+      };
+      store.put(`spinEvents/${oldId}`, old);
+      if (shared) store.put("messages/another-unit", { spinEventId: oldId });
+      const worker = new SpinMatching(
+        store.db,
+        { ready: true, revision: "r2", events: [old, spinEvent] },
+        "test-key",
+        undefined,
+        async () => spinResponse(spinEvent.id, null, "invalid"),
+      );
+      await worker.run(["spin"]);
+      expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+      await worker.run(["spin"]);
+      for (const id of ["spin", "repeat"])
+        expect(store.docs.get(`messages/${id}`)).toMatchObject({
+          spinEventId: spinEvent.id,
+          spinMatchStatus: "confirmed",
+          spinRejectedEventIds: [oldId],
+        });
+      expect(store.docs.has(`spinEvents/${oldId}`)).toBe(shared);
+      if (shared)
+        expect(store.docs.get("messages/another-unit")?.spinEventId).toBe(
+          oldId,
+        );
+      expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(true);
+      expect(store.docs.has("spinJobs/spin")).toBe(false);
+    },
+  );
+
+  test("a missing source preserves a provisional link and does not create a replacement", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    const missingId = "472584";
+    spinFixture(store, { reviewEventId: missingId });
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      spinEventId: missingId,
+      spinMatchStatus: "provisional",
+    });
+    store.put(`spinEvents/${missingId}`, { ...spinEvent, id: missingId });
+    const worker = new SpinMatching(
+      store.db,
+      { ready: true, revision: "r2", events: [spinEvent] },
+      "test-key",
+      undefined,
+      async () => spinResponse(null, null, "invalid"),
+    );
+    await worker.run(["spin"]);
+    expect(store.docs.get("messages/spin")?.spinEventId).toBe(missingId);
+    expect(store.docs.has(`spinEvents/${missingId}`)).toBe(true);
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "waiting",
+      reviewStatus: "uncertain",
+    });
+  });
+
+  test("manual unlinking a repeat rejects its original pair, preserves other units and excludes the rejected incident from rematching", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store, { state: "ready", result: spinEvent });
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      spinEventId: spinEvent.id,
+      spinMatchStatus: "confirmed",
+    });
+    store.put("messages/repeat", {
+      duplicateOf: "spin",
+      spinEventId: spinEvent.id,
+    });
+    store.put("messages/another-unit", { spinEventId: spinEvent.id });
+    store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
+    expect(await unlinkSpinEvent(store.db, "repeat")).toBe(true);
+    for (const id of ["spin", "repeat"]) {
+      expect(store.docs.get(`messages/${id}`)?.spinEventId).toBeUndefined();
+      expect(store.docs.get(`messages/${id}`)?.spinMatchStatus).toBeUndefined();
+      expect(store.docs.get(`messages/${id}`)?.spinRejectedEventIds).toEqual([
+        spinEvent.id,
+      ]);
+    }
+    expect(store.docs.get("messages/another-unit")?.spinEventId).toBe(
+      spinEvent.id,
+    );
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(true);
+    expect(store.docs.get("spinJobs/spin")).not.toHaveProperty("result");
+    const alternative = { ...spinEvent, id: "472222" };
+    const worker = new SpinMatching(
+      store.db,
+      { ready: true, revision: "r2", events: [spinEvent, alternative] },
+      "test-key",
+      undefined,
+      async (_url, options) => {
+        const input = JSON.parse(
+          JSON.parse(options.body as string).input[1].content,
+        );
+        expect(input.currentLinkId).toBeNull();
+        expect(input.incidents.map((event: SpinEvent) => event.id)).toEqual([
+          alternative.id,
+        ]);
+        return spinResponse(alternative.id);
+      },
+    );
+    await worker.run(["spin"]);
+    await worker.run(["spin"]);
+    expect(store.docs.get("messages/spin")?.spinEventId).toBe(alternative.id);
+    expect(store.docs.get("messages/repeat")?.spinEventId).toBe(alternative.id);
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(true);
+  });
+
+  test("invalid evidence without a replacement unlinks the family, deletes its unused report and retains a rematch job", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store, { reviewEventId: spinEvent.id });
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      spinEventId: spinEvent.id,
+    });
+    store.put("messages/repeat", {
+      duplicateOf: "spin",
+      spinEventId: spinEvent.id,
+    });
+    store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
+    const worker = new SpinMatching(
+      store.db,
+      { ready: true, revision: "r2", events: [spinEvent] },
+      "test-key",
+      undefined,
+      async () => spinResponse(null, null, "invalid"),
+    );
+    await worker.run(["spin"]);
+    await worker.run(["spin"]);
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+    for (const id of ["spin", "repeat"]) {
+      expect(store.docs.get(`messages/${id}`)?.spinEventId).toBeUndefined();
+      expect(store.docs.get(`messages/${id}`)?.spinRejectedEventIds).toEqual([
+        spinEvent.id,
+      ]);
+    }
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "pending",
+      leaseUntil: 0,
+    });
+    expect(store.docs.get("spinJobs/spin")).not.toHaveProperty("reviewEventId");
+  });
+
+  test("location publication wakes matching and invalidates an in-flight decision made without its address", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    const message = { ...store.docs.get("messages/spin") };
+    delete message.location;
+    locationFixture(store, "spin", {
+      state: "ready",
+      content: message.content as string,
+      result: "GOLO 40",
+    });
+    store.put("messages/spin", message);
+    const partial = {
+      ...spinEvent,
+      description: "Ig",
+      latitude: 45.909,
+      longitude: 14.549,
+    };
+    let started!: () => void;
+    let respond!: (response: Response) => void;
+    const startedRequest = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const response = new Promise<Response>((resolve) => {
+      respond = resolve;
+    });
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      { ready: true, revision: "r1", events: [partial] },
+      "test-key",
+      undefined,
+      async () => {
+        requests++;
+        if (requests === 1) {
+          started();
+          return response;
+        }
+        return spinResponse(partial.id, 0);
+      },
+      async () => [
+        { address: "Golo, 40, Ig", latitude: 45.909, longitude: 14.549 },
+      ],
+    );
+    const inFlight = worker.run(["spin"]);
+    await startedRequest;
+    await new LocationExtraction(store.db).run(["spin"]);
+    expect(store.docs.get("messages/spin")?.location).toBe("GOLO 40");
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "pending",
+      attempts: 2,
+      leaseUntil: 0,
+    });
+    respond(spinResponse(null));
+    await inFlight;
+    expect(store.docs.get("spinJobs/spin")?.state).toBe("pending");
+    await worker.run(["spin"]);
+    expect(requests).toBe(2);
+    expect(store.docs.get("spinJobs/spin")?.result).toEqual(partial);
+  });
+
+  test("a source revision received during inference retains a review after publishing the full result", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    const catalog = { ready: true, revision: "r1", events: [spinEvent] };
+    const worker = new SpinMatching(
+      store.db,
+      catalog,
+      "test-key",
+      undefined,
+      async () => {
+        catalog.revision = "r2";
+        catalog.events = [
+          { ...spinEvent, description: "Revised full narrative" },
+        ];
+        return spinResponse(spinEvent.id);
+      },
+    );
+    await worker.run(["spin"]);
+    await worker.run(["spin"]);
+    expect(store.docs.get("messages/spin")?.spinMatchStatus).toBe("confirmed");
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "waiting",
+      reviewEventId: spinEvent.id,
+      checkedRevision: "r1",
+    });
+    expect(
+      worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+    ).toBe(true);
+  });
+
+  test("retrying a report update retains an unprocessed review of the changed catalog", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    store.docs.delete("spinJobs/spin");
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      spinEventId: spinEvent.id,
+      spinMatchStatus: "confirmed",
+    });
+    store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
+    const temporary = await mkdtemp(join(tmpdir(), "subpager-spin-review-"));
+    const cachePath = join(temporary, "candidates.json");
+    const feedUrl = "https://spin3.sos112.si/javno/ODApi/184";
+    let description = spinEvent.description;
+    let worker: SpinMatching;
+    const sync = new SpinSync(
+      store.db,
+      feedUrl,
+      () => {},
+      cachePath,
+      (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith("/odObmocje"))
+          return Response.json({ value: [{ items: [{ naziv: "Ig" }] }] });
+        if (url === feedUrl)
+          return new Response(
+            `<rss><channel><item><title>${spinEvent.title}</title><guid>https://spin3.sos112.si/javno/zemljevid/${spinEvent.id}</guid><description>${description}</description><pubDate>${new Date(spinEvent.eventAt).toUTCString()}</pubDate></item></channel></rss>`,
+          );
+        return Response.json({ value: { obcinaNaziv: "Ig" } });
+      }) as typeof fetch,
+      (id) => worker.review(id),
+    );
+    let requests = 0;
+    worker = new SpinMatching(
+      store.db,
+      sync,
+      "test-key",
+      undefined,
+      async () => {
+        requests++;
+        return spinResponse(null, null, "invalid");
+      },
+    );
+    try {
+      await sync.run();
+      const revision = sync.revision;
+      description = "A different incident.";
+      store.rejectWrite = (path) => path === `spinEvents/${spinEvent.id}`;
+      await expect(sync.run()).rejects.toThrow(
+        "Simulated Firestore write outage",
+      );
+      expect(sync.revision).toBe(revision);
+      expect(sync.events[0]?.description).toBe(spinEvent.description);
+      expect(
+        JSON.parse(await readFile(cachePath, "utf8"))[0]?.description,
+      ).toBe(description);
+      expect(store.docs.get("spinJobs/spin")?.checkedRevision).toBe(revision);
+      expect(
+        worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+      ).toBe(false);
+      store.rejectWrite = undefined;
+      await sync.run();
+      expect(sync.revision).not.toBe(revision);
+      expect(store.docs.get("spinJobs/spin")?.checkedRevision).toBe(revision);
+      expect(
+        worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+      ).toBe(true);
+      await worker.run(["spin"]);
+      await worker.run(["spin"]);
+      expect(requests).toBe(1);
+      expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
+      expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+    } finally {
+      await sync.stop();
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  test("a report review invalidates an in-flight removal decision and waits for the updated catalog", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store, { reviewEventId: spinEvent.id });
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      spinEventId: spinEvent.id,
+    });
+    store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
+    const catalog = { ready: true, revision: "r1", events: [spinEvent] };
+    let started!: () => void;
+    let respond!: (response: Response) => void;
+    const startedRequest = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const response = new Promise<Response>((resolve) => {
+      respond = resolve;
+    });
+    const worker = new SpinMatching(
+      store.db,
+      catalog,
+      "test-key",
+      undefined,
+      async () => {
+        started();
+        return response;
+      },
+    );
+    const inFlight = worker.run(["spin"]);
+    await startedRequest;
+    await worker.review(spinEvent.id);
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "waiting",
+      attempts: 2,
+      leaseUntil: 0,
+      checkedRevision: "r1",
+    });
+    catalog.revision = "r2";
+    respond(spinResponse(null, null, "invalid"));
+    await inFlight;
+    expect(store.docs.get("messages/spin")?.spinEventId).toBe(spinEvent.id);
+    expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(true);
+    expect(store.docs.get("spinJobs/spin")?.state).toBe("waiting");
+    expect(
+      worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
+    ).toBe(true);
+  });
+
+  test("quota pauses persist their next attempt without consuming the ordinary failure budget", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      { ready: true, revision: "r1", events: [spinEvent] },
+      "benchmark-key",
+      undefined,
+      async () => {
+        requests++;
+        return new Response("", { status: 429 });
+      },
+    );
+    await worker.run(["spin"]);
+    expect(worker.pausedUntil).toBe(now + 3_600_000);
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      active: true,
+      state: "pending",
+      failures: 0,
+      nextAttempt: now + 3_600_000,
+      leaseUntil: 0,
+      lastError: "OpenAI HTTP 429",
+    });
+    await worker.run(["spin"]);
+    expect(requests).toBe(1);
+  });
+});
+
+test("an idle listener logs recovery on its first reconnected snapshot without repeating connection logs", async () => {
+  const store = new TestFirestore();
+  let reconnect: (() => void) | undefined;
+  const timeout = spyOn(globalThis, "setTimeout").mockImplementation(((
+    callback: () => void,
+    delay?: number,
+  ) => {
+    expect(delay).toBe(30_000);
+    reconnect = callback;
+    return 1 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout);
+  const info = spyOn(console, "log").mockImplementation(() => {});
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  const run = spyOn(PushDelivery.prototype, "run").mockResolvedValue();
+  const worker = new FirestoreJobsProcessor(store.db);
+  try {
+    worker.start();
+    const listener = store.listeners.find(
+      (candidate) => candidate.name === "pushJobs",
+    )!;
+    listener.error(new Error("Index is not ready"));
+    expect(errors.mock.calls[0]![0]).toContain("Index is not ready");
+    expect(info).not.toHaveBeenCalled();
+    reconnect!();
+    const connected = store.listeners.at(-1)!;
+    expect(connected.name).toBe("pushJobs");
+    connected.next({ docs: [] });
+    expect(info.mock.calls.map(([line]) => line)).toEqual([
+      expect.stringContaining("pushJobs recovered"),
+      expect.stringContaining("pushJobs listener connected"),
+    ]);
+    connected.next({ docs: [] });
+    connected.next({ docs: [] });
+    expect(info).toHaveBeenCalledTimes(2);
+    expect(run).not.toHaveBeenCalled();
+  } finally {
+    await worker.stop();
+    run.mockRestore();
+    errors.mockRestore();
+    info.mockRestore();
+    timeout.mockRestore();
+  }
+});
+
 test("listener reconnect survives an in-flight job finishing", async () => {
   setSystemTime(now);
   const store = new TestFirestore();
@@ -976,7 +1894,7 @@ test("listener reconnect survives an in-flight job finishing", async () => {
     });
     timers.find((timer) => timer.delay === 0)!.callback();
     await entered;
-    listener.error();
+    listener.error(new Error("Job listener disconnected"));
     const reconnect = timers.find((timer) => timer.delay === 30_000)!;
     release!();
     await Bun.sleep(1);

@@ -24,6 +24,10 @@ service cloud.firestore {
       allow read: if approved();
     }
 
+    match /spinEvents/{id} {
+      allow read: if approved();
+    }
+
     match /ricUnits/{id} {
       allow read: if approved();
     }

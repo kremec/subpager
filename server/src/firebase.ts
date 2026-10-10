@@ -8,6 +8,7 @@ import { FirestoreUsers } from "./users";
 import type { Config } from "./config";
 import { isReceptionId, type Outbox, type Reception } from "./outbox";
 import { isObject, isRic, type Page } from "./radio/decoder";
+import { SPIN_MATCHING_HORIZON } from "./spin";
 
 export interface RicUnit {
   ric: number;
@@ -22,6 +23,8 @@ export interface CloudDevice {
 export interface FirebaseMessage extends Page {
   duplicateOf: string | null;
   location?: string | null;
+  spinEventId?: string;
+  spinMatchStatus?: "provisional" | "confirmed";
 }
 
 function normalizeContent(content: string) {
@@ -126,11 +129,18 @@ export class FirebaseBackend {
         const fresh = notify && duplicateOf === null && expiresAt > now;
         const recipients = fresh ? this.users.recipients() : [];
         const location = source?.get("location") as string | null | undefined;
+        const spinEventId = source?.get("spinEventId");
+        const spinMatchStatus = source?.get("spinMatchStatus");
         transaction.create(messageRef, {
           ...message,
           duplicateOf,
           updatedAt: FieldValue.serverTimestamp(),
           ...(location !== undefined ? { location } : {}),
+          ...(typeof spinEventId === "string" ? { spinEventId } : {}),
+          ...(spinMatchStatus === "provisional" ||
+          spinMatchStatus === "confirmed"
+            ? { spinMatchStatus }
+            : {}),
         });
         if (
           notify &&
@@ -151,6 +161,15 @@ export class FirebaseBackend {
               leaseUntil: 0,
             },
           );
+          transaction.create(this.db.collection("spinJobs").doc(messageId), {
+            active: true,
+            state: "pending",
+            expiresAt: Date.parse(message.receivedAt) + SPIN_MATCHING_HORIZON,
+            nextAttempt: now,
+            attempts: 0,
+            failures: 0,
+            leaseUntil: 0,
+          });
         }
         for (let offset = 0; offset < recipients.length; offset += 100) {
           transaction.create(this.db.collection("pushJobs").doc(), {

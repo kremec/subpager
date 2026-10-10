@@ -13,6 +13,13 @@
       "fieldPath": "active",
       "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }]
     },
+    { "collectionGroup": "spinJobs", "fieldPath": "*", "indexes": [] },
+    {
+      "collectionGroup": "spinJobs",
+      "fieldPath": "active",
+      "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }]
+    },
+    { "collectionGroup": "spinEvents", "fieldPath": "description", "indexes": [] },
     { "collectionGroup": "messages", "fieldPath": "content", "indexes": [] },
     { "collectionGroup": "messages", "fieldPath": "location", "indexes": [] }
   ]

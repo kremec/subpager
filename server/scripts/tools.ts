@@ -4,6 +4,7 @@ import { RadioReceiver, replayWav, surveyGains } from "../src/radio";
 import { parseDecoderLine, type Page } from "../src/radio/decoder";
 import { FirebaseBackend, type RicUnit } from "../src/firebase";
 import { isObject, isRic } from "../src/radio/decoder";
+import { unlinkSpinEvent } from "../src/spin";
 
 export async function setup(configureUsb = false) {
   const install =
@@ -283,6 +284,22 @@ export async function syncRicUnits(filePath?: string) {
     await client.db.terminate();
   }
   console.log(`RIC mappings: synchronized ${units.length}.`);
+}
+
+export async function unlinkSpin(messageId?: string) {
+  if (!messageId || !/^[A-Za-z0-9_-]+$/.test(messageId))
+    throw new Error("Usage: bun run spin:unlink MESSAGE_ID");
+  const { client } = await cloudClient();
+  try {
+    const removed = await unlinkSpinEvent(client.db, messageId);
+    console.log(
+      removed
+        ? "SPIN link removed; recent pager queued for rematching."
+        : "Pager has no SPIN link.",
+    );
+  } finally {
+    await client.db.terminate();
+  }
 }
 
 function duration(value: string | undefined, fallback: number) {
