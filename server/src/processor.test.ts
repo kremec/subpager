@@ -738,6 +738,42 @@ test("user listener failures reject readiness and require a fresh snapshot after
 });
 
 describe("durable location jobs", () => {
+  test.each(["ŠOLI GOLO", null, "invented address"])(
+    "logs the returned result %j and request duration before validation or persistence",
+    async (location) => {
+      setSystemTime(now);
+      const store = new TestFirestore();
+      locationFixture(store);
+      const output = JSON.stringify({ location });
+      const logged = spyOn(console, "log").mockImplementation(() => {});
+      const clock = spyOn(performance, "now")
+        .mockReturnValueOnce(100)
+        .mockReturnValueOnce(1350);
+      try {
+        await new LocationExtraction(
+          store.db,
+          "test-key",
+          undefined,
+          async () =>
+            Response.json({
+              status: "completed",
+              output: [{ content: [{ type: "output_text", text: output }] }],
+            }),
+        ).run(["location"]);
+        expect(logged).toHaveBeenCalledTimes(1);
+        expect(logged.mock.calls[0]![0]).toBe(
+          `${new Date().toISOString()} INFO OpenAI location result for call location; model=gpt-6-luna; durationMs=1250; result=${output}`,
+        );
+        expect(store.docs.get("locationJobs/location")?.state).toBe(
+          location === "invented address" ? "pending" : "ready",
+        );
+      } finally {
+        clock.mockRestore();
+        logged.mockRestore();
+      }
+    },
+  );
+
   test("yields after one paid request instead of draining a shutdown backlog", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
@@ -796,9 +832,16 @@ describe("durable location jobs", () => {
       },
     );
     store.rejectWrite = (_path, patch) => patch.state === "ready";
-    await expect(worker.run(["location"])).rejects.toThrow("write outage");
-    store.rejectWrite = undefined;
-    await worker.run(["location"]);
+    const logged = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await expect(worker.run(["location"])).rejects.toThrow("write outage");
+      expect(logged).toHaveBeenCalledTimes(1);
+      store.rejectWrite = undefined;
+      await worker.run(["location"]);
+      expect(logged).toHaveBeenCalledTimes(1);
+    } finally {
+      logged.mockRestore();
+    }
     expect(requests).toBe(1);
     expect(store.docs.get("messages/location")?.location).toBe("ŠOLI GOLO");
     expect(store.docs.get("messages/repeat")?.location).toBe("ŠOLI GOLO");

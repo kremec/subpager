@@ -98,7 +98,7 @@ Uploads use batches of at most 100 pages, ordered by reception time with documen
 
 Decoded-message audio recording is enabled by default. Recordings stay on the server computer in `clips.directory`, default `./data/clips`, as WAV files with adjacent JSON metadata. Each clip includes eight seconds before decoding and four seconds after; nearby calls can share a clip. Recordings have no count or storage limit and are never deleted automatically. Continuous recording is not supported. Set `clips.enabled` to `false` to disable decoded-message recording. Audio is not uploaded to Firestore. The filesystem outbox remains separate from recordings.
 
-Server output uses UTC timestamps and severity. Received-call logs include message ID, reception time, RIC, function, type and raw content. Known tuner startup diagnostics are suppressed. Repeated errors print at most once every five minutes; changed failures and recovery print immediately. Control characters are escaped and log lines are bounded.
+Server output uses UTC timestamps and severity. Received-call logs include message ID, reception time, RIC, function, type and raw content. OpenAI location-result logs include the message ID, model, request duration in milliseconds and returned JSON, before validation and Firestore persistence. Known tuner startup diagnostics are suppressed. Repeated errors print at most once every five minutes; changed failures and recovery print immediately. Control characters are escaped and log lines are bounded.
 
 ## Firebase configuration
 

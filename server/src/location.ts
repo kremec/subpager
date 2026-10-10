@@ -1,6 +1,6 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { isObject } from "./radio/decoder";
-import { createErrorReporter } from "./log";
+import { createErrorReporter, logInfo } from "./log";
 
 export interface LocationJob {
   active: boolean;
@@ -213,6 +213,7 @@ export class LocationExtraction {
       return;
     }
     let result: string | null;
+    const startedAt = performance.now();
     try {
       const response = await this.request(
         "https://api.openai.com/v1/responses",
@@ -262,10 +263,11 @@ export class LocationExtraction {
         await response.body?.cancel();
         throw new OpenAIError(response.status);
       }
-      result = parseLocation(
-        readLocationResponse(await response.json()),
-        job.content,
+      const output = readLocationResponse(await response.json());
+      logInfo(
+        `OpenAI location result for call ${job.messageId}; model=${this.model}; durationMs=${Math.round(performance.now() - startedAt)}; result=${output}`,
       );
+      result = parseLocation(output, job.content);
     } catch (error) {
       await this.fail(
         job,
