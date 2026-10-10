@@ -59,7 +59,15 @@ export function readLocationResponse(payload: unknown): string {
   )
     throw new Error("Location response did not complete");
   const texts: string[] = [];
-  for (const item of payload.output) {
+  const finals = payload.output.filter(
+    (item) => isObject(item) && item.phase === "final_answer",
+  );
+  const output = finals.length
+    ? finals
+    : payload.output.filter(
+        (item) => !isObject(item) || item.phase !== "commentary",
+      );
+  for (const item of output) {
     if (!isObject(item) || !Array.isArray(item.content)) continue;
     for (const part of item.content) {
       if (!isObject(part)) throw new Error("Invalid location output");
