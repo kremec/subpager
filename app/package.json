@@ -19,7 +19,7 @@
     "test": "bun test --isolate",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "check": "tsc --noEmit"
+    "check": "bun --check"
   },
   "dependencies": {
     "@expo/ui": "~57.0.22",
