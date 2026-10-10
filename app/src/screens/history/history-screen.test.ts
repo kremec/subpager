@@ -15,7 +15,6 @@ const cleanups: (() => void)[] = [];
 const offsets: number[] = [];
 let hookIndex = 0;
 let syncVersion = 0;
-let appStateListener: ((state: string) => void) | undefined;
 
 mock.module("react", () => ({
   ...react,
@@ -30,15 +29,6 @@ mock.module("react", () => ({
     if (!previous || next.some((value, i) => !Object.is(value, previous[i])))
       effects.push(effect);
     dependencies[index] = next;
-  },
-}));
-mock.module("react-native", () => ({
-  AppState: {
-    currentState: "active",
-    addEventListener: (_event: string, listener: (state: string) => void) => {
-      appStateListener = listener;
-      return { remove: () => (appStateListener = undefined) };
-    },
   },
 }));
 mock.module("@/pager/use-message-history", () => ({
@@ -84,7 +74,7 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
-test("fresh opens reset immediately and after catch-up, while live updates do not reset", () => {
+test("fresh launches start at the top through initial catch-up, while later foreground syncs preserve position", () => {
   render();
   expect(offsets).toEqual([0]);
   syncVersion++;
@@ -93,28 +83,18 @@ test("fresh opens reset immediately and after catch-up, while live updates do no
   render();
   expect(offsets).toEqual([0, 0]);
 
-  appStateListener?.("background");
-  appStateListener?.("inactive");
-  appStateListener?.("active");
-  expect(offsets).toEqual([0, 0, 0]);
   syncVersion++;
   render();
-  expect(offsets).toEqual([0, 0, 0, 0]);
+  expect(offsets).toEqual([0, 0]);
 });
 
-test("scrolling before catch-up preserves the position until the next reopen", () => {
+test("scrolling before initial catch-up preserves position through subsequent syncs", () => {
   render().onScrollBeginDrag();
   syncVersion++;
   render();
   expect(offsets).toEqual([0]);
 
-  appStateListener?.("inactive");
-  appStateListener?.("active");
-  expect(offsets).toEqual([0]);
-
-  appStateListener?.("background");
-  appStateListener?.("active");
   syncVersion++;
   render();
-  expect(offsets).toEqual([0, 0, 0]);
+  expect(offsets).toEqual([0]);
 });

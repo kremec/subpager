@@ -1,5 +1,4 @@
 import { type FC, useEffect, useRef } from "react";
-import { AppState } from "react-native";
 
 import { type LegendListRef } from "@legendapp/list/react-native";
 
@@ -11,25 +10,13 @@ import { MessageList } from "@/screens/history/message-list";
 export const HistoryScreen: FC = () => {
   const { messages, loading, syncVersion } = useMessageHistory();
   const list = useRef<LegendListRef>(null);
-  const interacted = useRef(false);
+  const preservePosition = useRef(false);
 
   useEffect(() => {
-    let previousState = AppState.currentState;
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active" && previousState === "background") {
-        interacted.current = false;
-        void list.current?.scrollToOffset({ offset: 0, animated: false });
-      }
-      // iOS passes through inactive when returning from the background.
-      if (state !== "inactive") previousState = state;
-    });
-    return () => subscription.remove();
-  }, []);
-
-  useEffect(() => {
-    // Keep fresh opens at the top after missed messages have been loaded.
-    if (!interacted.current)
+    // Stay at the top through the initial sync, then preserve the reading position.
+    if (!preservePosition.current)
       void list.current?.scrollToOffset({ offset: 0, animated: false });
+    if (syncVersion > 0) preservePosition.current = true;
   }, [syncVersion]);
   return (
     <Screen headerShown={false} style={{ padding: 0, gap: 0 }}>
@@ -39,7 +26,7 @@ export const HistoryScreen: FC = () => {
         loading={loading}
         listRef={list}
         onScrollBeginDrag={() => {
-          interacted.current = true;
+          preservePosition.current = true;
         }}
       />
     </Screen>
