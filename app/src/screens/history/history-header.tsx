@@ -11,7 +11,11 @@ import { Typography } from "@/components/ui/typography";
 import { SettingsScreen } from "@/screens/settings/settings-screen";
 import { useTheme } from "@/theme/use-theme";
 
-export const HistoryHeader: FC = () => {
+interface HistoryHeaderProps {
+  spinPreview?: boolean;
+}
+
+export const HistoryHeader: FC<HistoryHeaderProps> = (props) => {
   const theme = useTheme();
   const router = useRouter();
   const [menuVisible, setMenuVisible] = useState(false);
@@ -34,7 +38,13 @@ export const HistoryHeader: FC = () => {
       </Typography>
       <IconButton
         accessibilityLabel="Search feed"
-        onPress={() => router.push("/search")}
+        onPress={() =>
+          router.push(
+            props.spinPreview
+              ? { pathname: "/search", params: { spinPreview: "1" } }
+              : "/search",
+          )
+        }
         style={{ width: 36, height: 36 }}
       >
         <IconSearch color={theme.colors.text} size={22} strokeWidth={1.8} />

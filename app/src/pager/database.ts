@@ -5,6 +5,7 @@ import type {
   MessageChanges,
   PagerMessage,
   RicUnit,
+  SpinEvent,
 } from "@/pager/types";
 
 let database: ReturnType<typeof openDatabaseSync> | undefined;
@@ -25,20 +26,48 @@ function getDatabase() {
             type TEXT NOT NULL,
             content TEXT NOT NULL,
             duplicateOf TEXT,
-            location TEXT
+            location TEXT,
+            spinEventId TEXT,
+            spinMatchStatus TEXT
           );
           CREATE TABLE IF NOT EXISTS ric_units (
             ric INTEGER PRIMARY KEY,
             unitName TEXT NOT NULL
           );
+          CREATE TABLE IF NOT EXISTS spin_events (
+            id TEXT PRIMARY KEY NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            eventAt TEXT NOT NULL,
+            municipality TEXT,
+            category TEXT,
+            reportedAtLocal TEXT,
+            latitude REAL,
+            longitude REAL
+          );
           CREATE TABLE IF NOT EXISTS sync_state (
             slot INTEGER PRIMARY KEY CHECK (slot = 1),
             initialized INTEGER NOT NULL DEFAULT 0,
             seconds INTEGER NOT NULL DEFAULT 0,
-            nanoseconds INTEGER NOT NULL DEFAULT 0,
-            ricRevision TEXT
+            nanoseconds INTEGER NOT NULL DEFAULT 0
           );
         `);
+        if (
+          !opened
+            .getAllSync<{ name: string }>("PRAGMA table_info(messages)")
+            .some((column) => column.name === "spinEventId")
+        ) {
+          opened.execSync("ALTER TABLE messages ADD COLUMN spinEventId TEXT");
+        }
+        if (
+          !opened
+            .getAllSync<{ name: string }>("PRAGMA table_info(messages)")
+            .some((column) => column.name === "spinMatchStatus")
+        ) {
+          opened.execSync(
+            "ALTER TABLE messages ADD COLUMN spinMatchStatus TEXT",
+          );
+        }
         if (
           opened.getFirstSync<{ name: string }>(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'history'",
@@ -90,7 +119,7 @@ export function cacheApproval(uid: string, approved: boolean) {
   try {
     cache.withTransactionSync(() => {
       cache.execSync(
-        "DELETE FROM messages; DELETE FROM ric_units; DELETE FROM sync_state; DELETE FROM approval;",
+        "DELETE FROM messages; DELETE FROM spin_events; DELETE FROM ric_units; DELETE FROM sync_state; DELETE FROM approval;",
       );
       if (approved) cache.runSync("INSERT INTO approval (uid) VALUES (?)", uid);
     });
@@ -100,6 +129,46 @@ export function cacheApproval(uid: string, approved: boolean) {
     database = undefined;
     deleteDatabaseSync(DATABASE_NAME);
   }
+}
+
+export function cachedSpinEvents(uid: string) {
+  if (!cachedApproval(uid)) return [];
+  return getDatabase().getAllSync<SpinEvent>(
+    "SELECT * FROM spin_events WHERE id IN (SELECT spinEventId FROM messages)",
+  );
+}
+
+export function cacheSpinEvent(
+  uid: string,
+  id: string,
+  event: SpinEvent | null,
+) {
+  if (!cachedApproval(uid)) return false;
+  const database = getDatabase();
+  if (!event) {
+    database.runSync("DELETE FROM spin_events WHERE id = ?", id);
+    return true;
+  }
+  database.runSync(
+    `INSERT INTO spin_events
+      (id, title, description, eventAt, municipality, category, reportedAtLocal, latitude, longitude)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title, description = excluded.description,
+      eventAt = excluded.eventAt, municipality = excluded.municipality,
+      category = excluded.category, reportedAtLocal = excluded.reportedAtLocal,
+      latitude = excluded.latitude, longitude = excluded.longitude`,
+    id,
+    event.title,
+    event.description,
+    event.eventAt,
+    event.municipality ?? null,
+    event.category ?? null,
+    event.reportedAtLocal ?? null,
+    event.latitude ?? null,
+    event.longitude ?? null,
+  );
+  return true;
 }
 
 export function cachedHistory(uid: string) {
@@ -119,7 +188,6 @@ export function cachedSync(uid: string): CachedSync {
         initialized: number;
         seconds: number;
         nanoseconds: number;
-        ricRevision: string | null;
       }>("SELECT * FROM sync_state WHERE slot = 1")
     : null;
   return {
@@ -128,7 +196,6 @@ export function cachedSync(uid: string): CachedSync {
       seconds: saved?.seconds ?? 0,
       nanoseconds: saved?.nanoseconds ?? 0,
     },
-    ricRevision: saved?.ricRevision ?? null,
   };
 }
 
@@ -147,15 +214,16 @@ export function cacheMessages(
     for (const message of messages) {
       database.runSync(
         `INSERT INTO messages
-          (id, receivedAt, ric, function, type, content, duplicateOf, location)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (id, receivedAt, ric, function, type, content, duplicateOf, location, spinEventId, spinMatchStatus)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ${
             changes
               ? `ON CONFLICT(id) DO UPDATE SET
             receivedAt = excluded.receivedAt, ric = excluded.ric,
             function = excluded.function, type = excluded.type,
             content = excluded.content, duplicateOf = excluded.duplicateOf,
-            location = excluded.location`
+            location = excluded.location, spinEventId = excluded.spinEventId,
+            spinMatchStatus = excluded.spinMatchStatus`
               : ""
           }`,
         message.id,
@@ -166,6 +234,8 @@ export function cacheMessages(
         message.content,
         message.duplicateOf,
         message.location ?? null,
+        message.spinEventId ?? null,
+        message.spinMatchStatus ?? null,
       );
     }
     if (changes) {
@@ -181,11 +251,7 @@ export function cacheMessages(
   return true;
 }
 
-export function cacheRicUnits(
-  uid: string,
-  units: RicUnit[],
-  revision?: string,
-) {
+export function cacheRicUnits(uid: string, units: RicUnit[]) {
   if (!cachedApproval(uid)) return false;
   const database = getDatabase();
   database.withTransactionSync(() => {
@@ -195,13 +261,6 @@ export function cacheRicUnits(
         "INSERT INTO ric_units (ric, unitName) VALUES (?, ?)",
         unit.ric,
         unit.unitName,
-      );
-    }
-    if (revision !== undefined) {
-      database.runSync(
-        `INSERT INTO sync_state (slot, ricRevision) VALUES (1, ?)
-          ON CONFLICT(slot) DO UPDATE SET ricRevision = excluded.ricRevision`,
-        revision,
       );
     }
   });

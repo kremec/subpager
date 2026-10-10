@@ -4,15 +4,17 @@ import { View } from "react-native";
 import { Typography } from "@/components/ui/typography";
 import { formatReceivedAt, formatRicUnit } from "@/pager/format-message";
 import { MessageContent } from "@/pager/message-content";
-import type { PagerMessage } from "@/pager/types";
+import { SpinReport } from "@/pager/spin-report";
+import type { PagerMessage, SpinEvent } from "@/pager/types";
 import { useTheme } from "@/theme/use-theme";
 
 interface MessageRowProps {
   message: PagerMessage;
   unitName?: string;
+  spinEvent?: SpinEvent;
 }
 export const MessageRow: FC<MessageRowProps> = (props) => {
-  const { message, unitName } = props;
+  const { message, unitName, spinEvent } = props;
   const theme = useTheme();
   return (
     <View
@@ -38,6 +40,9 @@ export const MessageRow: FC<MessageRowProps> = (props) => {
         </Typography>
       </View>
       <MessageContent message={message} />
+      {spinEvent && (
+        <SpinReport key={`${message.id}:${spinEvent.id}`} event={spinEvent} />
+      )}
       {message.duplicateOf !== null && (
         <Typography variant="caption" color={theme.colors.textSecondary}>
           Repeated transmission

@@ -39,6 +39,9 @@ export const AppRoot: FC = () => {
         name="search"
         options={{ presentation: "modal", headerShown: false }}
       />
+      {__DEV__ && (
+        <Stack.Screen name="spin-preview" options={{ title: "SPIN preview" }} />
+      )}
     </Stack>
   );
 };

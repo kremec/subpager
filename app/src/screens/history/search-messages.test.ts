@@ -86,3 +86,44 @@ test("unit renames update search for existing messages while RIC remains searcha
     messages[2],
   ]);
 });
+
+test("search includes the linked public SPIN report and follows its revisions", () => {
+  const message = { ...messages[0]!, spinEventId: "472470" };
+  const event = {
+    id: "472470",
+    title: "Požar",
+    description: "Gasilci PGD Golo so odstranili fasado.",
+    eventAt: "2026-10-09T12:27:37Z",
+    municipality: "Ig",
+  };
+  expect(
+    searchMessages(
+      indexMessages([message], undefined, new Map([[event.id, event]])),
+      "fasado ig",
+    ),
+  ).toEqual([message]);
+  const titleOnly = {
+    ...event,
+    title: "Tehnična pomoč",
+    description: "",
+    municipality: undefined,
+  };
+  expect(
+    searchMessages(
+      indexMessages([message], undefined, new Map([[event.id, titleOnly]])),
+      "tehnicna pomoc",
+    ),
+  ).toEqual([message]);
+  expect(
+    searchMessages(
+      indexMessages(
+        [message],
+        undefined,
+        new Map([
+          [event.id, { ...event, description: "Poročilo posodobljeno." }],
+        ]),
+      ),
+      "fasado",
+    ),
+  ).toEqual([]);
+});

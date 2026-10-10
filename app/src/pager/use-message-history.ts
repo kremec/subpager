@@ -1,10 +1,11 @@
 import { createContext, useContext } from "react";
 
-import type { PagerMessage } from "@/pager/types";
+import type { PagerMessage, SpinEvent } from "@/pager/types";
 
 interface HistoryContextValue {
   messages: PagerMessage[];
   unitNames: ReadonlyMap<number, string>;
+  spinEvents: ReadonlyMap<string, SpinEvent>;
   loading: boolean;
   syncVersion: number;
 }

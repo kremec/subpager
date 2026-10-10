@@ -11,11 +11,25 @@ export interface PagerMessage {
   content: string;
   duplicateOf: string | null;
   location?: string | null;
+  spinEventId?: string | null;
+  spinMatchStatus?: "provisional" | "confirmed" | null;
 }
 
 export interface RicUnit {
   ric: number;
   unitName: string;
+}
+
+export interface SpinEvent {
+  id: string;
+  title: string;
+  description: string;
+  eventAt: string;
+  municipality?: string | null;
+  category?: string | null;
+  reportedAtLocal?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface SyncTimestamp {
@@ -33,5 +47,4 @@ export interface MessageChanges {
 export interface CachedSync {
   initialized: boolean;
   cursor: SyncTimestamp;
-  ricRevision: string | null;
 }

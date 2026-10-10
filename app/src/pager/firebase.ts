@@ -15,7 +15,6 @@ import {
 import {
   collection,
   doc,
-  getDocFromServer,
   getFirestore,
   onSnapshot,
   orderBy,
@@ -30,6 +29,7 @@ import type {
   MessageChanges,
   PagerMessage,
   RicUnit,
+  SpinEvent,
   SyncTimestamp,
 } from "@/pager/types";
 
@@ -132,39 +132,19 @@ export function watchMessages(
 }
 
 export function watchRicUnits(
-  savedRevision: () => string | null,
-  success: (units: RicUnit[], revision: string) => void,
+  success: (units: RicUnit[]) => void,
   failure: (error: Error) => void,
 ) {
   const { database } = getFirebase();
-  let cancelled = false;
-  let request = 0;
-  const unsubscribe = onSnapshot(
-    doc(database, "config", "ricUnitsRevision"),
+  return onSnapshot(
+    query(collection(database, "ricUnits"), where("ric", ">=", 0)),
     { includeMetadataChanges: true },
     (snapshot) => {
-      if (cancelled || snapshot.metadata.fromCache) return;
-      const currentRequest = ++request;
-      const revision = snapshot.data()?.revision as string | undefined;
-      if (!revision || revision === savedRevision()) return;
-      void getDocFromServer(doc(database, "config", "ricUnits"))
-        .then((catalog) => {
-          if (cancelled || request !== currentRequest) return;
-          const data = catalog.data() as
-            | { revision: string; units: RicUnit[] }
-            | undefined;
-          if (data?.revision === revision) success(data.units, revision);
-        })
-        .catch((error: Error) => {
-          if (!cancelled && request === currentRequest) failure(error);
-        });
+      if (snapshot.metadata.fromCache) return;
+      success(snapshot.docs.map((item) => item.data() as RicUnit));
     },
     failure,
   );
-  return () => {
-    cancelled = true;
-    unsubscribe();
-  };
 }
 
 export async function registerDevice(
@@ -174,4 +154,22 @@ export async function registerDevice(
   const { database } = getFirebase();
   // setDoc resolves after server acknowledgement, including when a write starts offline.
   await setDoc(doc(database, "users", uid), { expoPushToken }, { merge: true });
+}
+
+export function watchSpinEvent(
+  id: string,
+  success: (event: SpinEvent | null) => void,
+  failure: (error: Error) => void,
+) {
+  const { database } = getFirebase();
+  return onSnapshot(
+    doc(database, "spinEvents", id),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      if (snapshot.metadata.fromCache) return;
+      const data = snapshot.data() as Omit<SpinEvent, "id"> | undefined;
+      success(data ? { ...data, id: snapshot.id } : null);
+    },
+    failure,
+  );
 }

@@ -1,5 +1,5 @@
 import { formatMessageContent, formatRic } from "@/pager/format-message";
-import type { PagerMessage } from "@/pager/types";
+import type { PagerMessage, SpinEvent } from "@/pager/types";
 
 const normalize = (text: string) =>
   text.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
@@ -7,14 +7,20 @@ const normalize = (text: string) =>
 export function indexMessages(
   messages: PagerMessage[],
   unitNames?: ReadonlyMap<number, string>,
+  spinEvents?: ReadonlyMap<string, SpinEvent>,
 ): Map<PagerMessage, string> {
   return new Map(
-    messages.map((message) => [
-      message,
-      normalize(
-        `${formatRic(message.ric)} ${unitNames?.get(message.ric) ?? ""} ${formatMessageContent(message.content) || "Tone-only call"}`,
-      ),
-    ]),
+    messages.map((message) => {
+      const event = message.spinEventId
+        ? spinEvents?.get(message.spinEventId)
+        : undefined;
+      return [
+        message,
+        normalize(
+          `${formatRic(message.ric)} ${unitNames?.get(message.ric) ?? ""} ${formatMessageContent(message.content) || "Tone-only call"} ${event?.title ?? ""} ${event?.description ?? ""} ${event?.municipality ?? ""} ${event?.category ?? ""}`,
+        ),
+      ];
+    }),
   );
 }
 

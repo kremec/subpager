@@ -6,17 +6,20 @@ import type {
   MessageChanges,
   PagerMessage,
   RicUnit,
+  SpinEvent,
 } from "@/pager/types";
 
 interface HistoryValue {
   messages: PagerMessage[];
   unitNames: ReadonlyMap<number, string>;
+  spinEvents: ReadonlyMap<string, SpinEvent>;
   loading: boolean;
   syncVersion: number;
 }
 type State =
   | PagerMessage[]
   | ReadonlyMap<number, string>
+  | ReadonlyMap<string, SpinEvent>
   | boolean
   | number
   | string
@@ -33,6 +36,11 @@ let saved: { messages: PagerMessage[]; units: RicUnit[] } | null = null;
 let cacheFailure = false;
 const savedMessages: PagerMessage[][] = [];
 const savedUnits: RicUnit[][] = [];
+let savedSpinEvents: SpinEvent[] = [];
+const savedSpinReports: (SpinEvent | null)[] = [];
+const spinAttached: string[] = [];
+const spinDetached: string[] = [];
+const spinCallbacks = new Map<string, (event: SpinEvent | null) => void>();
 let messagesAttached = 0;
 let unitsAttached = 0;
 let messagesDetached = 0;
@@ -77,6 +85,11 @@ mock.module("@/pager/connection-provider", () => ({
   }),
 }));
 mock.module("@/pager/database", () => ({
+  cachedSpinEvents: () => savedSpinEvents,
+  cacheSpinEvent: (_uid: string, _id: string, event: SpinEvent | null) => {
+    savedSpinReports.push(event);
+    return true;
+  },
   cachedHistory: () => {
     if (cacheFailure) throw new Error("Cache unavailable");
     return saved;
@@ -84,7 +97,6 @@ mock.module("@/pager/database", () => ({
   cachedSync: () => ({
     initialized: false,
     cursor: { seconds: 0, nanoseconds: 0 },
-    ricRevision: null,
   }),
   cacheMessages: (_uid: string, messages: PagerMessage[]) => {
     if (cacheFailure) throw new Error("Cache unavailable");
@@ -98,6 +110,11 @@ mock.module("@/pager/database", () => ({
   },
 }));
 mock.module("@/pager/firebase", () => ({
+  watchSpinEvent: (id: string, success: (event: SpinEvent | null) => void) => {
+    spinAttached.push(id);
+    spinCallbacks.set(id, success);
+    return () => spinDetached.push(id);
+  },
   watchMessages: (
     sync: CachedSync,
     success: (changes: MessageChanges) => boolean,
@@ -111,12 +128,11 @@ mock.module("@/pager/firebase", () => ({
     return () => messagesDetached++;
   },
   watchRicUnits: (
-    _savedRevision: () => string | null,
-    success: (units: RicUnit[], revision: string) => void,
+    success: (units: RicUnit[]) => void,
     failure: (error: Error) => void,
   ) => {
     unitsAttached++;
-    onUnits = (units) => success(units, "r1");
+    onUnits = success;
     unitsError = failure;
     return () => unitsDetached++;
   },
@@ -153,6 +169,11 @@ beforeEach(() => {
   cacheFailure = false;
   savedMessages.length = 0;
   savedUnits.length = 0;
+  savedSpinEvents = [];
+  savedSpinReports.length = 0;
+  spinAttached.length = 0;
+  spinDetached.length = 0;
+  spinCallbacks.clear();
   messagesAttached = 0;
   unitsAttached = 0;
   messagesDetached = 0;
@@ -336,4 +357,71 @@ test("cache failure leaves the resume cursor unchanged while keeping live histor
   foreground?.("background");
   foreground?.("active");
   expect(queries.at(-1)?.cursor).toEqual(savedCursor);
+});
+
+const spinEvent: SpinEvent = {
+  id: "472470",
+  title: "Požar, eksplozija",
+  description: "Gasilci so pogasili požar.",
+  eventAt: "2026-10-08T10:00:00Z",
+  municipality: "Ig",
+};
+
+test("only linked SPIN reports are watched once and their revisions update the cache", () => {
+  expect(spinAttached).toEqual([]);
+  const linked: PagerMessage = {
+    ...message,
+    spinEventId: spinEvent.id,
+    spinMatchStatus: "provisional",
+  };
+  const second = { ...linked, id: "second-pager" };
+  onMessages?.([linked, second]);
+  expect(spinAttached).toEqual([spinEvent.id]);
+  expect(render().spinEvents.size).toBe(0);
+  spinCallbacks.get(spinEvent.id)?.(spinEvent);
+  expect(render().spinEvents.get(spinEvent.id)).toEqual(spinEvent);
+  const revised = { ...spinEvent, description: "Updated public report." };
+  spinCallbacks.get(spinEvent.id)?.(revised);
+  expect(savedSpinReports.at(-1)).toEqual(revised);
+  expect(render().spinEvents.get(spinEvent.id)?.description).toBe(
+    revised.description,
+  );
+  onMessages?.([
+    { ...linked, location: "GOLO", spinMatchStatus: "confirmed" },
+    { ...second, spinMatchStatus: "confirmed" },
+  ]);
+  expect(spinAttached).toEqual([spinEvent.id]);
+  expect(
+    render().messages.every((item) => item.spinMatchStatus === "confirmed"),
+  ).toBe(true);
+  onMessages?.([
+    { ...message, spinEventId: null },
+    { ...second, spinEventId: null },
+  ]);
+  expect(spinDetached).toEqual([spinEvent.id]);
+});
+
+test("cached SPIN reports remain available offline and paused callbacks cannot replace them", () => {
+  cleanup?.();
+  saved = { messages: [{ ...message, spinEventId: spinEvent.id }], units: [] };
+  savedSpinEvents = [spinEvent];
+  render();
+  const result = effects[0]!();
+  if (typeof result === "function") cleanup = result;
+  expect(render().spinEvents.get(spinEvent.id)).toEqual(spinEvent);
+  const stale = spinCallbacks.get(spinEvent.id);
+  foreground?.("background");
+  stale?.({ ...spinEvent, description: "Stale callback." });
+  expect(render().spinEvents.get(spinEvent.id)).toEqual(spinEvent);
+  foreground?.("active");
+  expect(spinAttached).toEqual([spinEvent.id, spinEvent.id]);
+  stale?.({ ...spinEvent, description: "Old subscription after resume." });
+  expect(render().spinEvents.get(spinEvent.id)).toEqual(spinEvent);
+  allowed = false;
+  spinCallbacks.get(spinEvent.id)?.({
+    ...spinEvent,
+    description: "After revocation.",
+  });
+  expect(render().spinEvents.size).toBe(0);
+  expect(savedSpinReports).toEqual([]);
 });

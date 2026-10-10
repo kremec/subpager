@@ -35,6 +35,7 @@ mock.module("@/pager/use-message-history", () => ({
   useMessageHistory: () => ({ messages: [], loading: false, syncVersion }),
 }));
 mock.module("@/components/ui/screen", () => ({ Screen: "Screen" }));
+mock.module("@/components/ui/typography", () => ({ Typography: "Typography" }));
 mock.module("@/screens/history/history-header", () => ({
   HistoryHeader: "HistoryHeader",
 }));
@@ -59,7 +60,8 @@ function render() {
     const cleanup = effect();
     if (typeof cleanup === "function") cleanups.push(cleanup);
   }
-  return screen.props.children[1]!.props;
+  return screen.props.children.find((child) => child?.type === "MessageList")!
+    .props;
 }
 
 beforeEach(() => {

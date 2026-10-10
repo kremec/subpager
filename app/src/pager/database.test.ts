@@ -14,6 +14,8 @@ const message: PagerMessage = {
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
   duplicateOf: null,
+  spinEventId: null,
+  spinMatchStatus: null,
 };
 const directory = mkdtempSync(join(tmpdir(), "subpager-cache-test-"));
 const databasePath = join(directory, "subpager-cache.db");
@@ -56,12 +58,58 @@ const {
   cachedSync,
   cacheMessages,
   cacheRicUnits,
+  cachedSpinEvents,
+  cacheSpinEvent,
 } = await import("@/pager/database");
 
 test("optional storage opens lazily and can retry after an opening failure", () => {
   expect(opens).toBe(0);
   expect(initializeDatabase).toThrow("Cache unavailable");
   failOpen = false;
+});
+
+test("adding SPIN references preserves existing messages and the sync cursor", () => {
+  const existing = new Database(databasePath);
+  existing.exec(`
+    CREATE TABLE approval (uid TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY NOT NULL, receivedAt TEXT NOT NULL,
+      ric INTEGER NOT NULL, function INTEGER NOT NULL, type TEXT NOT NULL,
+      content TEXT NOT NULL, duplicateOf TEXT, location TEXT
+    );
+    CREATE TABLE sync_state (
+      slot INTEGER PRIMARY KEY CHECK (slot = 1), initialized INTEGER NOT NULL DEFAULT 0,
+      seconds INTEGER NOT NULL DEFAULT 0, nanoseconds INTEGER NOT NULL DEFAULT 0,
+      ricRevision TEXT
+    );
+    INSERT INTO approval VALUES ('existing-device');
+    INSERT INTO sync_state VALUES (1, 1, 123, 456, 'r1');
+  `);
+  existing
+    .query("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(
+      message.id,
+      message.receivedAt,
+      message.ric,
+      message.function,
+      message.type,
+      message.content,
+      message.duplicateOf,
+      null,
+    );
+  existing.close();
+
+  initializeDatabase();
+  expect(cachedHistory("existing-device")?.messages).toEqual([
+    { ...message, location: null },
+  ]);
+  expect(cachedSync("existing-device")).toEqual({
+    initialized: true,
+    cursor: { seconds: 123, nanoseconds: 456 },
+  });
+
+  sqlite!.exec("PRAGMA query_only = ON");
+  cacheApproval("existing-device", false);
 });
 
 test("the old JSON cache migrates into columns without losing offline history", () => {
@@ -181,7 +229,6 @@ test("incremental sync preserves history and saves exact cursor together with la
   expect(cachedSync("approved-device")).toEqual({
     initialized: true,
     cursor: nextCursor,
-    ricRevision: null,
   });
 });
 
@@ -204,20 +251,130 @@ test("a failed message batch rolls back both records and cursor", () => {
   expect(cachedSync("approved-device")).toEqual(sync);
 });
 
-test("catalog revision is committed with its rows and empty bootstrap is initialized", () => {
-  cacheRicUnits("approved-device", [{ ric: 123, unitName: "Golo" }], "r1");
-  expect(cachedSync("approved-device").ricRevision).toBe("r1");
+test("late provisional SPIN references are committed with the cursor and survive reopening", () => {
+  const update: PagerMessage = {
+    ...message,
+    spinEventId: "472470",
+    spinMatchStatus: "provisional",
+  };
+  const cursor = { seconds: 124, nanoseconds: 1 };
+  cacheMessages("approved-device", [update], {
+    messages: [update],
+    removedIds: [],
+    cursor,
+    reset: false,
+  });
+  const reopened = new Database(databasePath, { readonly: true });
+  try {
+    expect(
+      reopened
+        .query("SELECT spinEventId, spinMatchStatus FROM messages WHERE id = ?")
+        .get(message.id),
+    ).toEqual({ spinEventId: "472470", spinMatchStatus: "provisional" });
+    expect(
+      reopened
+        .query("SELECT seconds, nanoseconds FROM sync_state WHERE slot = 1")
+        .get(),
+    ).toEqual(cursor);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("confirmation and unlink updates replace the cached match status", () => {
+  const confirmed: PagerMessage = {
+    ...message,
+    spinEventId: "472470",
+    spinMatchStatus: "confirmed",
+  };
+  const changes = {
+    messages: [confirmed],
+    removedIds: [],
+    cursor: { seconds: 124, nanoseconds: 2 },
+    reset: false,
+  };
+  cacheMessages("approved-device", [confirmed], changes);
+  expect(
+    cachedHistory("approved-device")?.messages.find(
+      (item) => item.id === message.id,
+    )?.spinMatchStatus,
+  ).toBe("confirmed");
+  cacheMessages("approved-device", [message], {
+    ...changes,
+    messages: [message],
+  });
+  expect(
+    cachedHistory("approved-device")?.messages.find(
+      (item) => item.id === message.id,
+    )?.spinEventId,
+  ).toBeNull();
+  expect(
+    cachedHistory("approved-device")?.messages.find(
+      (item) => item.id === message.id,
+    )?.spinMatchStatus,
+  ).toBeNull();
+  cacheMessages("approved-device", [confirmed], changes);
+});
+
+test("SPIN reports tolerate a late event document, share one row, and retain revisions offline", () => {
+  expect(cachedSpinEvents("approved-device")).toEqual([]);
+  const event = {
+    id: "472470",
+    title: "Požar, eksplozija",
+    description: "Public SPIN report.",
+    eventAt: "2026-10-09T12:27:37.000Z",
+    municipality: "Ig",
+    category: null,
+    reportedAtLocal: null,
+    latitude: 45.909,
+    longitude: 14.549,
+  };
+  cacheSpinEvent("approved-device", event.id, event);
+  expect(cachedSpinEvents("approved-device")).toEqual([event]);
+  const second = { ...message, id: "another-unit", spinEventId: event.id };
+  cacheMessages("approved-device", [second], {
+    messages: [second],
+    removedIds: [],
+    cursor: { seconds: 124, nanoseconds: 2 },
+    reset: false,
+  });
+  const revised = { ...event, description: "Revised public SPIN report." };
+  cacheSpinEvent("approved-device", event.id, revised);
+  expect(cachedSpinEvents("approved-device")).toEqual([revised]);
+  expect(cachedSpinEvents("another-device")).toEqual([]);
+  const reopened = new Database(databasePath, { readonly: true });
+  try {
+    expect(
+      reopened
+        .query("SELECT description FROM spin_events WHERE id = ?")
+        .get(event.id),
+    ).toEqual({ description: revised.description });
+    expect(
+      reopened
+        .query("SELECT COUNT(*) AS count FROM messages WHERE spinEventId = ?")
+        .get(event.id),
+    ).toEqual({ count: 2 });
+  } finally {
+    reopened.close();
+  }
+  cacheSpinEvent("approved-device", event.id, null);
+  expect(cachedSpinEvents("approved-device")).toEqual([]);
+});
+
+test("RIC snapshots replace rows atomically, empty snapshots clear them, and message sync stays independent", () => {
+  const sync = cachedSync("approved-device");
+  const units = [{ ric: 123, unitName: "Golo" }];
+  cacheRicUnits("approved-device", units);
   expect(() =>
-    cacheRicUnits(
-      "approved-device",
-      [
-        { ric: 123, unitName: "Golo" },
-        { ric: 123, unitName: "Duplicate" },
-      ],
-      "r2",
-    ),
+    cacheRicUnits("approved-device", [
+      { ric: 123, unitName: "Golo" },
+      { ric: 123, unitName: "Duplicate" },
+    ]),
   ).toThrow();
-  expect(cachedSync("approved-device").ricRevision).toBe("r1");
+  expect(cachedHistory("approved-device")?.units).toEqual(units);
+  expect(cachedSync("approved-device")).toEqual(sync);
+  cacheRicUnits("approved-device", []);
+  expect(cachedHistory("approved-device")?.units).toEqual([]);
   cacheMessages("approved-device", [], {
     messages: [],
     removedIds: [],

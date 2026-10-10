@@ -5,39 +5,34 @@ import type {
   MessageChanges,
   PagerMessage,
   RicUnit,
+  SpinEvent,
   SyncTimestamp,
 } from "@/pager/types";
 
 interface Document {
   id: string;
-  data: () => PagerMessage & { updatedAt?: SyncTimestamp };
+  data: () => (PagerMessage & { updatedAt?: SyncTimestamp }) | RicUnit;
 }
 interface Change {
   type: "added" | "modified" | "removed";
   doc: Document;
 }
 interface Snapshot {
+  id: string;
   metadata: { fromCache: boolean };
   docs: Document[];
   docChanges: () => Change[];
-  data: () => { revision: string };
+  data: () => SpinEvent | undefined;
 }
 let snapshotListener: ((snapshot: Snapshot) => void) | undefined;
 const received: MessageChanges[] = [];
 const orders: [string, string | undefined][] = [];
-const filters: [string, string, SyncTimestamp][] = [];
+const filters: [string, string, SyncTimestamp | number][] = [];
 const writes: { path: string; token: string | null }[] = [];
 const paths: string[] = [];
-let catalogReads = 0;
-let catalog: { revision: string; units: RicUnit[] } = {
-  revision: "r1",
-  units: [{ ric: 123, unitName: "Golo" }],
-};
-let catalogLookup: (() => Promise<void>) | undefined;
 const initial: CachedSync = {
   initialized: false,
   cursor: { seconds: 0, nanoseconds: 0 },
-  ricRevision: null,
 };
 const fixture: PagerMessage = {
   id: "native-message-id",
@@ -82,7 +77,7 @@ mock.module("firebase/firestore", () => ({
     orders.push([field, direction]);
     return {};
   },
-  where: (field: string, comparison: string, value: SyncTimestamp) => {
+  where: (field: string, comparison: string, value: SyncTimestamp | number) => {
     filters.push([field, comparison, value]);
     return {};
   },
@@ -104,13 +99,6 @@ mock.module("firebase/firestore", () => ({
     return () => {};
   },
   doc: (_db: object, collection: string, uid: string) => `${collection}/${uid}`,
-  getDocFromServer: async (path: string) => {
-    expect(path).toBe("config/ricUnits");
-    catalogReads++;
-    const data = catalog;
-    await catalogLookup?.();
-    return { data: () => data };
-  },
   setDoc: async (
     path: string,
     data: { expoPushToken: string | null },
@@ -121,7 +109,7 @@ mock.module("firebase/firestore", () => ({
     writes.push({ path, token: data.expoPushToken });
   },
 }));
-const { registerDevice, watchMessages, watchRicUnits } =
+const { registerDevice, watchMessages, watchRicUnits, watchSpinEvent } =
   await import("@/pager/firebase");
 function snapshot(
   messages: (PagerMessage & { updatedAt?: SyncTimestamp })[],
@@ -133,18 +121,16 @@ function snapshot(
     data: () => message,
   }));
   snapshotListener?.({
+    id: "snapshot-id",
     metadata: { fromCache },
     docs,
     docChanges: () => changes ?? docs.map((doc) => ({ type: "added", doc })),
-    data: () => ({ revision: catalog.revision }),
+    data: () => undefined,
   });
 }
 function accept(changes: MessageChanges) {
   received.push(changes);
   return true;
-}
-async function settle() {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 beforeEach(() => {
   received.length = 0;
@@ -152,9 +138,6 @@ beforeEach(() => {
   filters.length = 0;
   writes.length = 0;
   paths.length = 0;
-  catalogReads = 0;
-  catalogLookup = undefined;
-  catalog = { revision: "r1", units: [{ ric: 123, unitName: "Golo" }] };
 });
 
 test("bootstrap includes legacy messages and server metadata confirmation persists even an empty result", () => {
@@ -302,68 +285,74 @@ test("full confirmation detects removals from skipped cache snapshots and retrie
 test("Firestore document identity wins over a legacy data id field", () => {
   watchMessages(initial, accept, () => {});
   snapshotListener?.({
+    id: "document-id",
     metadata: { fromCache: false },
     docs: [{ id: "document-id", data: () => fixture }],
     docChanges: () => [],
-    data: () => ({ revision: "" }),
+    data: () => undefined,
   });
   expect(received[0]?.messages[0]?.id).toBe("document-id");
 });
 
-test("unchanged RIC revision reads only the small revision document", async () => {
+test("message snapshots carry provisional links and later confirmation", () => {
+  watchMessages(initial, accept, () => {});
+  const linked: PagerMessage = {
+    ...fixture,
+    spinEventId: "472584",
+    spinMatchStatus: "provisional",
+  };
+  snapshot([linked]);
+  expect(received[0]?.messages[0]).toEqual(linked);
+  const confirmed: PagerMessage = {
+    ...linked,
+    spinMatchStatus: "confirmed",
+  };
+  snapshot([confirmed], false, [
+    { type: "modified", doc: { id: confirmed.id, data: () => confirmed } },
+  ]);
+  expect(received.at(-1)?.messages[0]?.spinMatchStatus).toBe("confirmed");
+});
+
+test("RIC names query unit records without metadata and use only server-confirmed snapshots", () => {
   const units: RicUnit[][] = [];
   watchRicUnits(
-    () => "r1",
+    (next) => units.push(next),
+    () => {},
+  );
+  expect(paths).toEqual(["ricUnits"]);
+  expect(filters).toEqual([["ric", ">=", 0]]);
+  const mappings = [{ ric: 123, unitName: "Golo" }];
+  const next: Snapshot = {
+    id: "ricUnits",
+    metadata: { fromCache: true },
+    docs: mappings.map((unit) => ({
+      id: String(unit.ric),
+      data: () => unit,
+    })),
+    docChanges: () => [],
+    data: () => undefined,
+  };
+  snapshotListener?.(next);
+  expect(units).toEqual([]);
+  snapshotListener?.({ ...next, metadata: { fromCache: false } });
+  expect(units).toEqual([mappings]);
+  const revised = [{ ric: 123, unitName: "Updated Golo" }];
+  snapshotListener?.({
+    ...next,
+    metadata: { fromCache: false },
+    docs: revised.map((unit) => ({ id: String(unit.ric), data: () => unit })),
+  });
+  expect(units).toEqual([mappings, revised]);
+});
+
+test("an empty RIC server snapshot clears the mapping list", () => {
+  const units: RicUnit[][] = [];
+  watchRicUnits(
     (next) => units.push(next),
     () => {},
   );
   snapshot([]);
-  await settle();
-  expect(paths).toEqual(["config/ricUnitsRevision"]);
-  expect(catalogReads).toBe(0);
-  expect(units).toEqual([]);
-});
-
-test("changed RIC revision fetches one catalog and cleanup rejects a late response", async () => {
-  let finish = () => {};
-  catalogLookup = () =>
-    new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-  const units: RicUnit[][] = [];
-  const unsubscribe = watchRicUnits(
-    () => null,
-    (next) => units.push(next),
-    () => {},
-  );
-  snapshot([]);
-  expect(catalogReads).toBe(1);
-  unsubscribe();
-  finish();
-  await settle();
-  expect(units).toEqual([]);
-});
-
-test("outdated RIC fetch cannot replace a newer catalog", async () => {
-  const finish: (() => void)[] = [];
-  catalogLookup = () =>
-    new Promise<void>((resolve) => {
-      finish.push(resolve);
-    });
-  const revisions: string[] = [];
-  watchRicUnits(
-    () => null,
-    (_next, revision) => revisions.push(revision),
-    () => {},
-  );
-  snapshot([]);
-  catalog = { revision: "r2", units: [] };
-  snapshot([]);
-  finish[1]?.();
-  await settle();
-  finish[0]?.();
-  await settle();
-  expect(revisions).toEqual(["r2"]);
+  expect(units).toEqual([[]]);
 });
 
 test("user tokens are scoped to Firebase UID, preserve approval fields and can be explicitly cleared", async () => {
@@ -373,4 +362,43 @@ test("user tokens are scoped to Firebase UID, preserve approval fields and can b
     { path: "users/firebase-device", token: "ExpoPushToken[test]" },
     { path: "users/firebase-device", token: null },
   ]);
+});
+
+test("SPIN watches a linked document, ignores cached snapshots, and publishes server revisions and deletion", () => {
+  const events: (SpinEvent | null)[] = [];
+  watchSpinEvent(
+    "472470",
+    (event) => events.push(event),
+    () => {},
+  );
+  expect(paths).toEqual(["spinEvents/472470"]);
+  const event = {
+    id: "legacy-id",
+    title: "Požar",
+    description: "Public report.",
+    eventAt: "2026-10-09T12:27:37Z",
+  };
+  const next: Snapshot = {
+    id: "472470",
+    metadata: { fromCache: true },
+    docs: [],
+    docChanges: () => [],
+    data: () => event,
+  };
+  snapshotListener?.(next);
+  expect(events).toEqual([]);
+  snapshotListener?.({ ...next, metadata: { fromCache: false } });
+  expect(events).toEqual([{ ...event, id: "472470" }]);
+  snapshotListener?.({
+    ...next,
+    metadata: { fromCache: false },
+    data: () => ({ ...event, description: "Updated report." }),
+  });
+  expect(events.at(-1)?.description).toBe("Updated report.");
+  snapshotListener?.({
+    ...next,
+    metadata: { fromCache: false },
+    data: () => undefined,
+  });
+  expect(events.at(-1)).toBeNull();
 });

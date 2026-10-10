@@ -12,7 +12,11 @@ import { useMessageHistory } from "@/pager/use-message-history";
 import { MessageList } from "@/screens/history/message-list";
 import { useTheme } from "@/theme/use-theme";
 
-export const SearchScreen: FC = () => {
+interface SearchScreenProps {
+  spinPreview?: boolean;
+}
+
+export const SearchScreen: FC<SearchScreenProps> = (props) => {
   const theme = useTheme();
   const router = useRouter();
   const { messages, loading } = useMessageHistory();
@@ -99,6 +103,7 @@ export const SearchScreen: FC = () => {
         messages={messages}
         loading={loading}
         query={query}
+        spinPreview={props.spinPreview}
         listRef={list}
       />
     </Screen>
