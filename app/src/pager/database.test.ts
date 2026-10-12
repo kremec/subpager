@@ -71,7 +71,12 @@ test.each([
   { name: "pre-SPIN cache", spinColumns: false, version: 0 },
   { name: "already upgraded SPIN cache", spinColumns: true, version: 0 },
   { name: "cache from the first repair", spinColumns: true, version: 1 },
-  { name: "repaired cache on a later launch", spinColumns: true, version: 2 },
+  {
+    name: "cache retained across an OTA rollback",
+    spinColumns: true,
+    version: 2,
+  },
+  { name: "repaired cache on a later launch", spinColumns: true, version: 3 },
 ])(
   "$name preserves history and refreshes links only when needed",
   (fixture) => {
@@ -107,21 +112,52 @@ test.each([
         "original-message-id",
         null,
       );
+    // The rolled-back bundle cached these deletion markers as ordinary rows.
+    const staleMessages: PagerMessage[] =
+      fixture.version === 2
+        ? ["repeat", "sf", "hash", "tone"].map((id, index) => ({
+            ...message,
+            id,
+            type: id === "tone" ? "tone" : "alpha",
+            content: [message.content, "SF", " #", ""][index]!,
+          }))
+        : [];
+    for (const stale of staleMessages) {
+      existing
+        .query(
+          "INSERT INTO messages (id, receivedAt, ric, function, type, content) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          stale.id,
+          stale.receivedAt,
+          stale.ric,
+          stale.function,
+          stale.type,
+          stale.content,
+        );
+    }
     existing.close();
 
     initializeDatabase();
-    expect(cachedHistory("existing-device")?.messages).toEqual([
-      { ...message, location: null },
-    ]);
+    expect(cachedHistory("existing-device")?.messages).toEqual(
+      [message, ...staleMessages]
+        .map((row) => ({
+          ...row,
+          location: null,
+          spinEventId: null,
+          spinMatchStatus: null,
+        }))
+        .sort((a, b) => b.id.localeCompare(a.id)),
+    );
     expect(cachedSync("existing-device")).toEqual({
-      initialized: fixture.version === 2,
+      initialized: fixture.version === 3,
       cursor:
-        fixture.version === 2
+        fixture.version === 3
           ? { seconds: 123, nanoseconds: 456 }
           : { seconds: 0, nanoseconds: 0 },
     });
     expect(sqlite!.query("PRAGMA user_version").get()).toEqual({
-      user_version: 2,
+      user_version: 3,
     });
     const linked = {
       ...message,
@@ -133,11 +169,14 @@ test.each([
       messages: [linked],
       removedIds: [],
       cursor,
-      reset: fixture.version < 2,
+      reset: !cachedSync("existing-device").initialized,
     });
     expect(cachedHistory("existing-device")?.messages[0]?.spinEventId).toBe(
       linked.spinEventId,
     );
+    expect(
+      cachedHistory("existing-device")?.messages.map((row) => row.id),
+    ).toEqual([message.id]);
     expect(cachedSync("existing-device")).toEqual({
       initialized: true,
       cursor,

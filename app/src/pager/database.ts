@@ -90,11 +90,11 @@ function getDatabase() {
         }
         if (
           opened.getFirstSync<{ user_version: number }>("PRAGMA user_version")!
-            .user_version < 2
+            .user_version < 3
         ) {
-          // Replay once for caches that dropped SPIN links or saved deletion markers
-          // as ordinary messages before their app bundle supported removals.
-          opened.execSync("DELETE FROM sync_state; PRAGMA user_version = 2;");
+          // A rollback to the older bundle can save deleted rows and advance the
+          // cursor even after the version-2 repair. Replay that cache once too.
+          opened.execSync("DELETE FROM sync_state; PRAGMA user_version = 3;");
         }
       });
     } catch (error) {
