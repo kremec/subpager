@@ -68,12 +68,15 @@ export class FirestoreUsers {
       throw new Error("User listener disconnected");
   }
 
-  recipients(): PushRecipient[] {
+  recipients(kind?: "downtime"): PushRecipient[] {
     this.requireConnected();
     const now = Date.now();
     return [...this.documents.values()].flatMap((doc) => {
       const token: unknown = doc.get("expoPushToken");
-      return doc.get("approved") === true && typeof token === "string" && token
+      return doc.get("approved") === true &&
+        (kind !== "downtime" || doc.get("notifyDowntime") === true) &&
+        typeof token === "string" &&
+        token
         ? [
             {
               deviceId: doc.id,
@@ -88,11 +91,12 @@ export class FirestoreUsers {
     });
   }
 
-  authorized(recipient: PushRecipient): boolean {
+  authorized(recipient: PushRecipient, kind?: "downtime"): boolean {
     this.requireConnected();
     const device = this.documents.get(recipient.deviceId);
     return (
       device?.get("approved") === true &&
+      (kind !== "downtime" || device.get("notifyDowntime") === true) &&
       device.get("expoPushToken") === recipient.expoPushToken
     );
   }

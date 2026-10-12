@@ -5,6 +5,7 @@ import { FirebaseBackend, FirebaseWorker } from "./firebase";
 import { FirestoreJobsProcessor } from "./processor";
 import { createErrorReporter, logError, logInfo } from "./log";
 import { dirname, join } from "node:path";
+import { ReceptionMonitor } from "./downtime";
 
 async function main() {
   const config = await loadConfig();
@@ -28,6 +29,10 @@ async function main() {
     client.users,
   );
   let receiver: RadioReceiver | undefined;
+  const receptionMonitor = new ReceptionMonitor(client.db, client.users);
+  const reportDowntime = createErrorReporter("Reception monitoring");
+  let monitorTimer: ReturnType<typeof setInterval> | undefined;
+  let monitoring = Promise.resolve();
   let stopping = false;
   let delivery = Promise.resolve();
   const reportCloud = createErrorReporter("Firestore sync");
@@ -43,7 +48,9 @@ async function main() {
   );
   const cleanup = async () => {
     clearInterval(timer);
+    clearInterval(monitorTimer);
     const jobsStopping = processor.stop();
+    await monitoring;
     await receiver?.stop();
     await delivery;
     await jobsStopping;
@@ -102,6 +109,18 @@ async function main() {
     });
     try {
       await receiver.start();
+      const checkReception = () => {
+        if (stopping || !receiver) return;
+        monitoring = receptionMonitor.check(receiver.status()).then(
+          () => reportDowntime(null),
+          (error) =>
+            reportDowntime(
+              error instanceof Error ? error.message : String(error),
+            ),
+        );
+      };
+      monitorTimer = setInterval(checkReception, 30_000);
+      checkReception();
     } catch (error) {
       stopping = true;
       await cleanup();

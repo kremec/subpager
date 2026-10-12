@@ -16,6 +16,8 @@ import {
 } from "firebase-admin/firestore";
 import { PushDelivery, type PushJob, type PushRecipient } from "./delivery";
 import { FirestoreUsers } from "./users";
+import { ReceptionMonitor } from "./downtime";
+import type { RadioState } from "./radio";
 import { FirestoreJobsProcessor } from "./processor";
 import {
   LocationExtraction,
@@ -304,7 +306,215 @@ function mergePushes(store: TestFirestore, ids: string[]) {
   for (const id of ids.slice(1)) store.docs.delete(`pushJobs/${id}`);
 }
 
+describe("reception downtime", () => {
+  const down: RadioState = {
+    state: "restarting",
+    error: "No supported devices found",
+    lastAudioAt: null,
+    lastCallAt: null,
+    restartCount: 1,
+  };
+
+  test("waits two minutes, targets opt-ins, and deduplicates across restarts and completed jobs", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    store.put("users/owner", {
+      approved: true,
+      expoPushToken: "owner-token",
+      notifyDowntime: true,
+    });
+    store.put("users/other", { approved: true, expoPushToken: "other-token" });
+    const users = usersFixture(store);
+    const monitor = new ReceptionMonitor(store.db, users);
+    await monitor.check(down, now);
+    await monitor.check(down, now + 119_999);
+    expect(
+      [...store.docs.keys()].filter((id) => id.startsWith("pushJobs/")),
+    ).toHaveLength(0);
+    await monitor.check(down, now + 120_000);
+    const id = `pushJobs/reception-down-${now}-0`;
+    expect(store.docs.get(id)).toMatchObject({
+      kind: "downtime",
+      recipients: [{ deviceId: "owner" }],
+    });
+    store.docs.delete(id);
+    await new ReceptionMonitor(store.db, users).check(down, now + 180_000);
+    expect(store.docs.has(id)).toBe(false);
+    users.stop();
+  });
+
+  test("fresh audio without pager calls is healthy, short gaps do not alert, and recovery expires unsent alerts", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    store.put("users/owner", {
+      approved: true,
+      expoPushToken: "token",
+      notifyDowntime: true,
+    });
+    const users = usersFixture(store);
+    const monitor = new ReceptionMonitor(store.db, users);
+    const healthy = (at: number) => ({
+      ...down,
+      state: "running" as const,
+      error: null,
+      lastAudioAt: new Date(at).toISOString(),
+    });
+    await monitor.check(healthy(now), now);
+    await monitor.check(down, now + 30_000);
+    await monitor.check(healthy(now + 60_000), now + 60_000);
+    expect(
+      [...store.docs.keys()].filter((id) => id.startsWith("pushJobs/")),
+    ).toHaveLength(0);
+    await monitor.check(down, now + 90_000);
+    await monitor.check(down, now + 210_000);
+    const id = `pushJobs/reception-down-${now + 90_000}-0`;
+    expect(store.docs.has(id)).toBe(true);
+    await monitor.check(healthy(now + 220_000), now + 220_000);
+    expect(store.docs.get(id)?.expiresAt).toBe(now + 220_000);
+    expect(store.docs.get("receiverHealth/main")).toMatchObject({
+      outageSince: null,
+      notified: false,
+    });
+    await monitor.check(down, now + 250_000);
+    await monitor.check(down, now + 370_000);
+    expect(store.docs.has(`pushJobs/reception-down-${now + 250_000}-0`)).toBe(
+      true,
+    );
+    users.stop();
+  });
+
+  test("an ongoing outage can alert after opt-in, and a failed commit does not lose the alert", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    store.put("users/owner", { approved: true, expoPushToken: "token" });
+    const users = usersFixture(store);
+    const monitor = new ReceptionMonitor(store.db, users);
+    await monitor.check(down, now);
+    await monitor.check(down, now + 120_000);
+    expect(store.docs.get("receiverHealth/main")?.notified).toBe(false);
+    store.put("users/owner", {
+      approved: true,
+      expoPushToken: "token",
+      notifyDowntime: true,
+    });
+    store.publishUsers();
+    store.rejectWrite = (path) => path.startsWith("pushJobs/");
+    await expect(monitor.check(down, now + 150_000)).rejects.toThrow(
+      "Simulated Firestore write outage",
+    );
+    expect(store.docs.get("receiverHealth/main")?.notified).toBe(false);
+    store.rejectWrite = undefined;
+    await monitor.check(down, now + 180_000);
+    expect(store.docs.has(`pushJobs/reception-down-${now}-0`)).toBe(true);
+    users.stop();
+  });
+});
+
 describe("durable Expo batches", () => {
+  test("downtime recipients require a boolean opt-in, approval and a push token", () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    for (const [id, preference] of [
+      ["enabled", true],
+      ["disabled", false],
+      ["string", "true"],
+      ["number", 1],
+    ] as const)
+      store.put(`users/${id}`, {
+        approved: true,
+        expoPushToken: `token-${id}`,
+        notifyDowntime: preference,
+      });
+    store.put("users/missing", {
+      approved: true,
+      expoPushToken: "token-missing",
+    });
+    store.put("users/unapproved", {
+      approved: false,
+      expoPushToken: "token-unapproved",
+      notifyDowntime: true,
+    });
+    store.put("users/no-token", {
+      approved: true,
+      notifyDowntime: true,
+    });
+    store.put("users/empty-token", {
+      approved: true,
+      expoPushToken: "",
+      notifyDowntime: true,
+    });
+    const users = usersFixture(store);
+    expect(users.recipients("downtime").map((user) => user.deviceId)).toEqual([
+      "enabled",
+    ]);
+    expect(users.recipients().map((user) => user.deviceId)).toEqual([
+      "enabled",
+      "disabled",
+      "string",
+      "number",
+      "missing",
+    ]);
+    users.stop();
+  });
+
+  test("downtime delivery rechecks opt-in and needs no pager message", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    const ids = ["enabled", "disabled", "revoked", "rotated"];
+    for (const id of ids) {
+      pushFixture(store, id, {
+        kind: "downtime",
+        title: "Subpager reception is down",
+        body: "The USB receiver is unavailable.",
+      });
+      store.put(`users/${id}`, {
+        approved: true,
+        expoPushToken: `token-${id}`,
+        notifyDowntime: true,
+      });
+    }
+    mergePushes(store, ids);
+    delete store.docs.get("pushJobs/enabled")!.messageId;
+    const users = usersFixture(store);
+    for (const [id, changes] of [
+      ["disabled", { notifyDowntime: false }],
+      ["revoked", { approved: false }],
+      ["rotated", { expoPushToken: "new-token" }],
+    ] as const)
+      store.put(`users/${id}`, {
+        ...store.docs.get(`users/${id}`),
+        ...changes,
+      });
+    store.publishUsers();
+    let requests = 0;
+    await new PushDelivery(
+      store.db,
+      async (_url, options) => {
+        requests++;
+        const body = JSON.parse(options.body as string);
+        expect(body).toHaveLength(1);
+        expect(body[0]).toMatchObject({
+          to: "token-enabled",
+          title: "Subpager reception is down",
+          body: "The USB receiver is unavailable.",
+          channelId: "pager-alerts",
+        });
+        expect(body[0].data).toEqual({ kind: "downtime" });
+        return Response.json({ data: [{ status: "ok", id: "ticket" }] });
+      },
+      undefined,
+      users,
+    ).run(["enabled"]);
+    expect(requests).toBe(1);
+    expect(recipients(store, "enabled").map((user) => user.state)).toEqual([
+      "receipt",
+      "failed",
+      "failed",
+      "failed",
+    ]);
+    users.stop();
+  });
+
   test("100 recipients share one job through sending and receipt checks", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
@@ -463,6 +673,7 @@ describe("durable Expo batches", () => {
         expect(body[0]).toMatchObject({
           title: "0790793 · 08/10/2026, 08:57",
           body: "VAJA GORI V ŠOLI GOLO.",
+          data: { messageId: "message" },
         });
         return Response.json({ data: [{ status: "ok", id: "ticket" }] });
       },

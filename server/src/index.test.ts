@@ -17,6 +17,7 @@ test.skipIf(process.platform === "win32").each([false, true])(
     const decoder = join(directory, "decoder");
     const rtlPid = join(directory, "receiver.pid");
     const decoderPid = join(directory, "decoder.pid");
+    const decoderInput = join(directory, "decoder-input.pcm");
     const sending = join(directory, "sending");
     const acknowledgement = join(directory, "acknowledged");
     let child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
@@ -74,7 +75,7 @@ test.skipIf(process.platform === "win32").each([false, true])(
       };
       await Bun.write(
         decoder,
-        `#!${process.execPath}\nawait Bun.write(${JSON.stringify(decoderPid)}, String(process.pid)); let sent=false; for await(const chunk of Bun.stdin.stream()) { if(!sent && chunk.length) {sent=true; console.log(${JSON.stringify(JSON.stringify(call))});} }\n`,
+        `#!${process.execPath}\nimport { appendFileSync } from "node:fs"; await Bun.write(${JSON.stringify(decoderPid)}, String(process.pid)); let sent=false; for await(const chunk of Bun.stdin.stream()) { appendFileSync(${JSON.stringify(decoderInput)}, chunk); if(!sent && chunk.length) {sent=true; console.log(${JSON.stringify(JSON.stringify(call))});} }\n`,
       );
       await Promise.all([chmod(rtl, 0o700), chmod(decoder, 0o700)]);
       child = Bun.spawn(
@@ -126,7 +127,8 @@ test.skipIf(process.platform === "win32").each([false, true])(
           Buffer.from(await Bun.file(join(clips, wavName)).bytes()),
         );
         expect(pcm.length).toBeGreaterThanOrEqual(44100);
-        expect(pcm).toEqual(Buffer.alloc(pcm.length, 42));
+        const supplied = Buffer.from(await Bun.file(decoderInput).bytes());
+        expect(supplied.indexOf(pcm)).toBeGreaterThanOrEqual(0);
         const metadata = await Bun.file(join(clips, `${wavName}.json`)).json();
         expect(metadata.calls[0].content).toBe(call.alpha);
       } else {

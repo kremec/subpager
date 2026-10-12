@@ -24,7 +24,8 @@ export interface PushRecipient {
 export interface PushJob {
   active: boolean;
   state: PushState;
-  messageId: string;
+  messageId?: string;
+  kind?: "downtime";
   title: string;
   body: string;
   expiresAt: number;
@@ -255,9 +256,12 @@ export class PushDelivery {
         // A disconnected roster must pause delivery, never authorize old data.
         try {
           recipients = recipients.filter((recipient) => {
-            if (this.users.authorized(recipient)) return true;
+            if (this.users.authorized(recipient, job.kind)) return true;
             recipient.state = "failed";
-            recipient.lastError = "Device approval or token changed";
+            recipient.lastError =
+              job.kind === "downtime"
+                ? "Device approval, token or downtime preference changed"
+                : "Device approval or token changed";
             return false;
           });
         } catch (error) {
@@ -299,7 +303,10 @@ export class PushDelivery {
                 to: recipient.expoPushToken,
                 title: job.title,
                 body: job.body,
-                data: { messageId: job.messageId },
+                data:
+                  job.kind === "downtime"
+                    ? { kind: "downtime" }
+                    : { messageId: job.messageId },
                 sound: "default",
                 priority: "high",
                 channelId: "pager-alerts",

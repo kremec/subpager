@@ -17,6 +17,8 @@ import {
   BYTES_PER_SECOND,
   CaptureWindow,
   PcmFramer,
+  PagerLowPass,
+  POCSAG_LOW_PASS_HZ,
   PcmRing,
   secondsToBytes,
   wavHeader,
@@ -181,10 +183,14 @@ export class RadioReceiver {
     });
     this.decoder = decoder;
     this.rtl = rtl;
-    rtl.stdout.on("data", (chunk: Buffer) => {
+    const audio = rtl.stdout.pipe(new PagerLowPass());
+    audio.on("data", (chunk: Buffer) => {
       if (rtl === this.rtl) this.audio(chunk);
     });
-    rtl.stdout.pipe(decoder.stdin);
+    audio.on("error", (error) => {
+      if (rtl === this.rtl) this.failed(`Audio filter: ${error.message}`);
+    });
+    audio.pipe(decoder.stdin);
     decoder.stdin.on("error", (error) => {
       if (decoder === this.decoder)
         this.failed(`Decoder input: ${error.message}`);
@@ -370,6 +376,11 @@ export class RadioReceiver {
           sampleRate: 22_050,
           format: "PCM16 mono little-endian",
           decoderVersion: "expected 1.6.1",
+          audioFilter: {
+            type: "butterworth-lowpass",
+            order: 4,
+            cutoffHz: POCSAG_LOW_PASS_HZ,
+          },
           radio: { frequencyHz, device, gain, ppm, rtlFmPath, multimonPath },
         },
         null,

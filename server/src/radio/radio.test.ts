@@ -9,7 +9,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CaptureWindow, PcmFramer, PcmRing, wavHeader, wavPcm } from "./audio";
+import {
+  CaptureWindow,
+  PcmFramer,
+  PcmRing,
+  PagerLowPass,
+  wavHeader,
+  wavPcm,
+  SAMPLE_RATE,
+} from "./audio";
 import { parseDecoderLine, rtlFmArgs } from "./decoder";
 import { RadioReceiver, replayWav, surveyGains } from "./index";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,6 +33,51 @@ const defaultOptions: ReceiverOptions = {
   rtlFmPath: "unused simulated receiver",
   multimonPath: "unused simulated decoder",
 };
+
+async function filteredPcm(pcm: Buffer, chunkBytes = pcm.length) {
+  const filter = new PagerLowPass();
+  const chunks: Buffer[] = [];
+  const reading = (async () => {
+    for await (const chunk of filter) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  })();
+  for (let offset = 0; offset < pcm.length; offset += chunkBytes)
+    filter.write(pcm.subarray(offset, offset + chunkBytes));
+  filter.end();
+  return reading;
+}
+
+test("pager filtering preserves samples across split bytes and leaves its input untouched", async () => {
+  const pcm = Buffer.alloc(4096);
+  for (let offset = 0; offset < pcm.length; offset += 2)
+    pcm.writeInt16LE(Math.round(12000 * Math.sin(offset / 5)), offset);
+  const original = Buffer.from(pcm);
+  const whole = await filteredPcm(pcm);
+  expect(await filteredPcm(pcm, 7)).toEqual(whole);
+  expect(whole.length).toBe(pcm.length);
+  expect(pcm).toEqual(original);
+});
+
+test("pager filter retains 600 Hz data energy and suppresses 6000 Hz hiss", async () => {
+  for (const frequency of [600, 6000]) {
+    const pcm = Buffer.alloc(SAMPLE_RATE * 2);
+    for (let sample = 0; sample < SAMPLE_RATE; sample++)
+      pcm.writeInt16LE(
+        Math.round(
+          10000 * Math.sin((2 * Math.PI * frequency * sample) / SAMPLE_RATE),
+        ),
+        sample * 2,
+      );
+    const filtered = await filteredPcm(pcm);
+    let energy = 0;
+    // Ignore the filter's startup transient.
+    for (let sample = 1000; sample < SAMPLE_RATE; sample++)
+      energy += filtered.readInt16LE(sample * 2) ** 2;
+    const amplitude = Math.sqrt((2 * energy) / (SAMPLE_RATE - 1000));
+    if (frequency === 600) expect(amplitude).toBeGreaterThan(9900);
+    else expect(amplitude).toBeLessThan(50);
+  }
+});
 
 async function writeExecutable(path: string, source: string): Promise<void> {
   await writeFile(path, `#!${process.execPath}\n${source}`);
@@ -566,12 +619,13 @@ test.skipIf(process.platform === "win32")(
       rtlPath,
       `const timer = setInterval(() => process.stdout.write(Buffer.alloc(8820, 42)), 20);\n`,
     );
-    await writeExecutable(
-      decoderPath,
-      `let sent = false; for await (const chunk of Bun.stdin.stream()) { if (!sent && chunk.length) { sent = true; console.log(${JSON.stringify(JSON.stringify(call))}); } }\n`,
-    );
     const clips: AudioClip[] = [];
     const calls: Page[] = [];
+    const decoderInput = join(directory, "decoder-input.pcm");
+    await writeExecutable(
+      decoderPath,
+      `import { appendFileSync } from "node:fs"; let sent = false; for await (const chunk of Bun.stdin.stream()) { appendFileSync(${JSON.stringify(decoderInput)}, chunk); if (!sent && chunk.length) { sent = true; console.log(${JSON.stringify(JSON.stringify(call))}); } }\n`,
+    );
     const receiver = new RadioReceiver({
       ...defaultOptions,
       rtlFmPath: rtlPath,
@@ -596,15 +650,23 @@ test.skipIf(process.platform === "win32")(
       await delay(100);
       await receiver.stop();
       expect(calls[0]?.content).toBe("ŽŠČ");
-      expect(wavPcm(await readFile(manual.path))).toEqual(
-        Buffer.alloc(8820, 42),
-      );
+      const manualPcm = wavPcm(await readFile(manual.path));
+      expect(manualPcm.length).toBe(8820);
+      // The WAV must contain the decoder's actual input, including filtering.
+      expect(
+        (await readFile(decoderInput)).indexOf(manualPcm),
+      ).toBeGreaterThanOrEqual(0);
       const decoded = clips.find((clip) => clip.reason === "decoded")!;
       expect(decoded).toBeDefined();
       const metadata = JSON.parse(
         await readFile(`${decoded.path}.json`, "utf8"),
       );
       expect(metadata.radio.gain).toBe("auto");
+      expect(metadata.audioFilter).toEqual({
+        type: "butterworth-lowpass",
+        order: 4,
+        cutoffHz: 1200,
+      });
       expect(metadata.calls[0].ric).toBe(42);
       expect(
         wavPcm(await readFile(decoded.path)).length,
@@ -821,23 +883,23 @@ test.skipIf(process.platform === "win32")(
       ...defaultOptions,
       rtlFmPath: rtlPath,
       multimonPath: decoderPath,
-      audioTimeoutMs: 250,
+      audioTimeoutMs: 500,
     });
     try {
       await receiver.start();
-      await delay(750);
+      await delay(1500);
       expect(receiver.status().state).toBe("running");
       expect(receiver.status().lastAudioAt).not.toBeNull();
       expect(receiver.status().restartCount).toBe(0);
       await receiver.stop();
-      await delay(300);
+      await delay(600);
       expect(receiver.status().state).toBe("stopped");
       expect(receiver.status().restartCount).toBe(0);
       const starting = receiver.start();
       await receiver.stop();
       await starting;
       expect(receiver.status().state).toBe("stopped");
-      await delay(300);
+      await delay(600);
       expect(receiver.status().restartCount).toBe(0);
       expect(receiver.status().state).toBe("stopped");
       await writeExecutable(rtlPath, `setInterval(() => {}, 1000);\n`);

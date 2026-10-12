@@ -1,5 +1,8 @@
+import { Transform, type TransformCallback } from "node:stream";
+
 export const SAMPLE_RATE = 22_050;
 export const BYTES_PER_SECOND = SAMPLE_RATE * 2;
+export const POCSAG_LOW_PASS_HZ = 1_200;
 
 export function wavHeader(pcmBytes: number): Buffer {
   if (
@@ -117,6 +120,48 @@ export class PcmFramer {
     const length = input.length - (input.length % 2);
     this.tail = Buffer.from(input.subarray(length));
     return input.subarray(0, length);
+  }
+}
+
+// Two biquads form a fourth-order Butterworth low-pass. POCSAG1200 needs the
+// baseband data transitions, not the broadband FM hiss that perturbs its clock.
+export class PagerLowPass extends Transform {
+  private readonly framer = new PcmFramer();
+  private readonly stages = [0.541196100146197, 1.306562964876377].map((q) => {
+    const omega = (2 * Math.PI * POCSAG_LOW_PASS_HZ) / SAMPLE_RATE;
+    const cosine = Math.cos(omega);
+    const a0 = 1 + Math.sin(omega) / (2 * q);
+    return {
+      b0: (1 - cosine) / (2 * a0),
+      b1: (1 - cosine) / a0,
+      a1: (-2 * cosine) / a0,
+      a2: (1 - Math.sin(omega) / (2 * q)) / a0,
+      z1: 0,
+      z2: 0,
+    };
+  });
+
+  override _transform(
+    chunk: Buffer,
+    _encoding: BufferEncoding,
+    callback: TransformCallback,
+  ) {
+    const pcm = this.framer.push(chunk);
+    const output = Buffer.allocUnsafe(pcm.length);
+    for (let offset = 0; offset < pcm.length; offset += 2) {
+      let sample = pcm.readInt16LE(offset);
+      for (const stage of this.stages) {
+        const filtered = stage.b0 * sample + stage.z1;
+        stage.z1 = stage.b1 * sample - stage.a1 * filtered + stage.z2;
+        stage.z2 = stage.b0 * sample - stage.a2 * filtered;
+        sample = filtered;
+      }
+      output.writeInt16LE(
+        Math.max(-32768, Math.min(32767, Math.round(sample))),
+        offset,
+      );
+    }
+    callback(null, output);
   }
 }
 
