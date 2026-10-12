@@ -104,10 +104,10 @@ function getDatabase() {
         }
         if (
           opened.getFirstSync<{ user_version: number }>("PRAGMA user_version")!
-            .user_version < 5
+            .user_version < 6
         ) {
-          // Reload reception history once while retaining cached rows offline.
-          opened.execSync("DELETE FROM sync_state; PRAGMA user_version = 5;");
+          // Reload history once to remove the hard-deleted monthly test event.
+          opened.execSync("DELETE FROM sync_state; PRAGMA user_version = 6;");
         }
       });
     } catch (error) {

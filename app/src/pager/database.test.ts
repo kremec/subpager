@@ -78,6 +78,7 @@ test.each([
   { name: "repaired cache on a later launch", spinColumns: true, version: 3 },
   { name: "grouped cache", spinColumns: true, version: 4 },
   { name: "reception cache on a later launch", spinColumns: true, version: 5 },
+  { name: "cache after monthly test removal", spinColumns: true, version: 6 },
 ])(
   "$name preserves history and refreshes links only when needed",
   (fixture) => {
@@ -87,7 +88,7 @@ test.each([
     CREATE TABLE messages (
       id TEXT PRIMARY KEY NOT NULL,
       ${
-        fixture.version === 5
+        fixture.version >= 5
           ? "receptions TEXT NOT NULL"
           : `receivedAt TEXT NOT NULL, ${fixture.version === 4 ? "rics TEXT NOT NULL" : "ric INTEGER NOT NULL"}`
       }, function INTEGER NOT NULL, type TEXT NOT NULL,
@@ -106,14 +107,14 @@ test.each([
     existing
       .query(
         `INSERT INTO messages (id, ${
-          fixture.version === 5
+          fixture.version >= 5
             ? "receptions"
             : `receivedAt, ${fixture.version === 4 ? "rics" : "ric"}`
-        }, function, type, content, duplicateOf, location) VALUES (?, ${fixture.version === 5 ? "?" : "?, ?"}, ?, ?, ?, ?, ?)`,
+        }, function, type, content, duplicateOf, location) VALUES (?, ${fixture.version >= 5 ? "?" : "?, ?"}, ?, ?, ?, ?, ?)`,
       )
       .run(
         message.id,
-        ...(fixture.version === 5
+        ...(fixture.version >= 5
           ? [JSON.stringify(message.receptions)]
           : [
               message.receptions[0]!.time,
@@ -176,14 +177,14 @@ test.each([
         .sort((a, b) => b.id.localeCompare(a.id)),
     );
     expect(cachedSync("existing-device")).toEqual({
-      initialized: fixture.version === 5,
+      initialized: fixture.version === 6,
       cursor:
-        fixture.version === 5
+        fixture.version === 6
           ? { seconds: 123, nanoseconds: 456 }
           : { seconds: 0, nanoseconds: 0 },
     });
     expect(sqlite!.query("PRAGMA user_version").get()).toEqual({
-      user_version: 5,
+      user_version: 6,
     });
     const columns = sqlite!
       .query<{ name: string }, []>("PRAGMA table_info(messages)")
