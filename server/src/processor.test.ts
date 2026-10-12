@@ -1062,11 +1062,11 @@ describe("durable location jobs", () => {
     ).toThrow();
   });
 
-  test("paid result survives persistence failure and enriches repeats without more inference", async () => {
+  test("paid result survives persistence failure and enriches only the original without more inference", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
     locationFixture(store);
-    store.put("messages/repeat", { duplicateOf: "location" });
+    store.put("messages/repeat", { duplicateOf: "location", deleted: true });
     let requests = 0;
     const worker = new LocationExtraction(
       store.db,
@@ -1098,7 +1098,10 @@ describe("durable location jobs", () => {
     }
     expect(requests).toBe(1);
     expect(store.docs.get("messages/location")?.location).toBe("ŠOLI GOLO");
-    expect(store.docs.get("messages/repeat")?.location).toBe("ŠOLI GOLO");
+    expect(store.docs.get("messages/repeat")).toEqual({
+      duplicateOf: "location",
+      deleted: true,
+    });
     expect(store.docs.has("locationJobs/location")).toBe(false);
   });
 
@@ -1123,6 +1126,33 @@ describe("durable location jobs", () => {
     expect(store.docs.get("messages/ready")?.location).toBeNull();
     expect(store.docs.get("locationJobs/pending")?.state).toBe("pending");
   });
+
+  test.each(["pending", "ready"] as const)(
+    "deleted messages discard %s location jobs without inference or enrichment",
+    async (state) => {
+      setSystemTime(now);
+      const store = new TestFirestore();
+      locationFixture(store, "location", { state, result: "ŠOLI GOLO" });
+      const original = {
+        ...store.docs.get("messages/location"),
+        deleted: true,
+      };
+      store.put("messages/location", original);
+      let requests = 0;
+      await new LocationExtraction(
+        store.db,
+        "test-key",
+        undefined,
+        async () => {
+          requests++;
+          return openAIResult();
+        },
+      ).run(["location"]);
+      expect(requests).toBe(0);
+      expect(store.docs.get("messages/location")).toEqual(original);
+      expect(store.docs.has("locationJobs/location")).toBe(false);
+    },
+  );
 
   test("quota pause is durable and does not consume ordinary failure budget", async () => {
     setSystemTime(now);
@@ -1243,6 +1273,11 @@ describe("durable SPIN matching", () => {
         receivedAt: new Date(now - age).toISOString(),
       });
     }
+    store.put("messages/deleted", {
+      ...message,
+      receivedAt: new Date(now).toISOString(),
+      deleted: true,
+    });
     const worker = new SpinMatching(store.db, {
       ready: false,
       revision: "",
@@ -1260,9 +1295,41 @@ describe("durable SPIN matching", () => {
     });
     expect(store.docs.has("spinJobs/boundary")).toBe(false);
     expect(store.docs.has("spinJobs/older")).toBe(false);
+    expect(store.docs.has("spinJobs/deleted")).toBe(false);
     await worker.seed();
     expect(store.docs.get("spinJobs/recent")?.attempts).toBe(0);
   });
+
+  test.each(["pending", "ready"] as const)(
+    "deleted messages discard %s SPIN jobs and are not reviewed or reenriched",
+    async (state) => {
+      setSystemTime(now);
+      const store = new TestFirestore();
+      spinFixture(store, { state, result: spinEvent });
+      const original = { ...store.docs.get("messages/spin"), deleted: true };
+      store.put("messages/spin", original);
+      let requests = 0;
+      const worker = new SpinMatching(
+        store.db,
+        { ready: true, revision: "r1", events: [spinEvent] },
+        "test-key",
+        undefined,
+        async () => {
+          requests++;
+          return spinResponse(spinEvent.id);
+        },
+      );
+      await worker.run(["spin"]);
+      expect(requests).toBe(0);
+      expect(store.docs.get("messages/spin")).toEqual(original);
+      expect(store.docs.has("spinJobs/spin")).toBe(false);
+      expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
+      store.put("messages/spin", { ...original, spinEventId: spinEvent.id });
+      await worker.review(spinEvent.id);
+      expect(store.docs.has("spinJobs/spin")).toBe(false);
+      expect(await unlinkSpinEvent(store.db, "spin")).toBe(false);
+    },
+  );
 
   test("unchanged waiting revisions skip inference and a changed report retries a null decision", async () => {
     setSystemTime(now);
@@ -1342,6 +1409,7 @@ describe("durable SPIN matching", () => {
       spinFixture(store);
       store.put("messages/repeat", {
         duplicateOf: "spin",
+        deleted: true,
         content: "Repeated original pager",
       });
       const catalog = { ready: true, revision: "r1", events: [spinEvent] };
@@ -1364,9 +1432,7 @@ describe("durable SPIN matching", () => {
       expect(requests).toBe(1);
       if (state === "ready") {
         expect(store.docs.get("messages/spin")?.spinEventId).toBe(spinEvent.id);
-        expect(store.docs.get("messages/repeat")?.spinEventId).toBe(
-          spinEvent.id,
-        );
+        expect(store.docs.get("messages/repeat")?.spinEventId).toBeUndefined();
         expect(store.docs.has("spinJobs/spin")).toBe(false);
       } else {
         expect(store.docs.get("spinJobs/spin")).toMatchObject({
@@ -1378,7 +1444,7 @@ describe("durable SPIN matching", () => {
     },
   );
 
-  test("a persisted ready result publishes after restart during a quota pause and links repeats atomically", async () => {
+  test("a persisted ready result publishes after restart during a quota pause and leaves archived repeats unchanged", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
     spinFixture(store, {
@@ -1388,6 +1454,7 @@ describe("durable SPIN matching", () => {
     });
     store.put("messages/repeat", {
       duplicateOf: "spin",
+      deleted: true,
       content: "Repeated original pager",
     });
     let requests = 0;
@@ -1403,7 +1470,7 @@ describe("durable SPIN matching", () => {
     );
     worker.pausedUntil = now + 3_600_000;
     store.rejectWrite = (path, patch) =>
-      path === "messages/repeat" && patch.spinEventId === spinEvent.id;
+      path === "messages/spin" && patch.spinEventId === spinEvent.id;
     await expect(worker.run(["spin"])).rejects.toThrow("write outage");
     expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
     expect(store.docs.get("messages/repeat")?.spinEventId).toBeUndefined();
@@ -1413,12 +1480,15 @@ describe("durable SPIN matching", () => {
     setSystemTime(now + SPIN_MATCHING_HORIZON + 60_000);
     await worker.run(["spin"]);
     expect(requests).toBe(0);
-    for (const id of ["spin", "repeat"]) {
-      expect(store.docs.get(`messages/${id}`)?.spinEventId).toBe(spinEvent.id);
-      expect(store.docs.get(`messages/${id}`)?.updatedAt).toEqual(
-        FieldValue.serverTimestamp(),
-      );
-    }
+    expect(store.docs.get("messages/spin")?.spinEventId).toBe(spinEvent.id);
+    expect(store.docs.get("messages/spin")?.updatedAt).toEqual(
+      FieldValue.serverTimestamp(),
+    );
+    expect(store.docs.get("messages/repeat")).toEqual({
+      duplicateOf: "spin",
+      deleted: true,
+      content: "Repeated original pager",
+    });
     expect(store.docs.get("messages/spin")?.content).toBe(
       "GORI OGRAJA PRED HIŠO - GOLO 40",
     );
@@ -1585,9 +1655,7 @@ describe("durable SPIN matching", () => {
     await worker.run(["spin"]);
     expect(requests).toBe(2);
     expect(store.docs.get("messages/spin")?.spinMatchStatus).toBe("confirmed");
-    expect(store.docs.get("messages/repeat")?.spinMatchStatus).toBe(
-      "confirmed",
-    );
+    expect(store.docs.get("messages/repeat")?.spinMatchStatus).toBeUndefined();
     expect(store.docs.get(`spinEvents/${partial.id}`)?.description).toBe(
       spinEvent.description,
     );
@@ -1606,7 +1674,12 @@ describe("durable SPIN matching", () => {
         spinEventId: oldId,
         spinMatchStatus: "provisional",
       });
-      store.put("messages/repeat", { duplicateOf: "spin", spinEventId: oldId });
+      store.put("messages/repeat", {
+        duplicateOf: "spin",
+        deleted: true,
+        spinEventId: oldId,
+      });
+      store.put("messages/deleted-unit", { deleted: true, spinEventId: oldId });
       const old = {
         ...spinEvent,
         id: oldId,
@@ -1624,12 +1697,16 @@ describe("durable SPIN matching", () => {
       await worker.run(["spin"]);
       expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
       await worker.run(["spin"]);
-      for (const id of ["spin", "repeat"])
-        expect(store.docs.get(`messages/${id}`)).toMatchObject({
-          spinEventId: spinEvent.id,
-          spinMatchStatus: "confirmed",
-          spinRejectedEventIds: [oldId],
-        });
+      expect(store.docs.get("messages/spin")).toMatchObject({
+        spinEventId: spinEvent.id,
+        spinMatchStatus: "confirmed",
+        spinRejectedEventIds: [oldId],
+      });
+      expect(store.docs.get("messages/repeat")).toEqual({
+        duplicateOf: "spin",
+        deleted: true,
+        spinEventId: oldId,
+      });
       expect(store.docs.has(`spinEvents/${oldId}`)).toBe(shared);
       if (shared)
         expect(store.docs.get("messages/another-unit")?.spinEventId).toBe(
@@ -1679,18 +1756,22 @@ describe("durable SPIN matching", () => {
     });
     store.put("messages/repeat", {
       duplicateOf: "spin",
+      deleted: true,
       spinEventId: spinEvent.id,
     });
     store.put("messages/another-unit", { spinEventId: spinEvent.id });
     store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
     expect(await unlinkSpinEvent(store.db, "repeat")).toBe(true);
-    for (const id of ["spin", "repeat"]) {
-      expect(store.docs.get(`messages/${id}`)?.spinEventId).toBeUndefined();
-      expect(store.docs.get(`messages/${id}`)?.spinMatchStatus).toBeUndefined();
-      expect(store.docs.get(`messages/${id}`)?.spinRejectedEventIds).toEqual([
-        spinEvent.id,
-      ]);
-    }
+    expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
+    expect(store.docs.get("messages/spin")?.spinMatchStatus).toBeUndefined();
+    expect(store.docs.get("messages/spin")?.spinRejectedEventIds).toEqual([
+      spinEvent.id,
+    ]);
+    expect(store.docs.get("messages/repeat")).toEqual({
+      duplicateOf: "spin",
+      deleted: true,
+      spinEventId: spinEvent.id,
+    });
     expect(store.docs.get("messages/another-unit")?.spinEventId).toBe(
       spinEvent.id,
     );
@@ -1716,11 +1797,11 @@ describe("durable SPIN matching", () => {
     await worker.run(["spin"]);
     await worker.run(["spin"]);
     expect(store.docs.get("messages/spin")?.spinEventId).toBe(alternative.id);
-    expect(store.docs.get("messages/repeat")?.spinEventId).toBe(alternative.id);
+    expect(store.docs.get("messages/repeat")?.spinEventId).toBe(spinEvent.id);
     expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(true);
   });
 
-  test("invalid evidence without a replacement unlinks the family, deletes its unused report and retains a rematch job", async () => {
+  test("invalid evidence without a replacement unlinks the original, ignores archived links and retains a rematch job", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
     spinFixture(store, { reviewEventId: spinEvent.id });
@@ -1730,6 +1811,7 @@ describe("durable SPIN matching", () => {
     });
     store.put("messages/repeat", {
       duplicateOf: "spin",
+      deleted: true,
       spinEventId: spinEvent.id,
     });
     store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
@@ -1743,12 +1825,15 @@ describe("durable SPIN matching", () => {
     await worker.run(["spin"]);
     await worker.run(["spin"]);
     expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(false);
-    for (const id of ["spin", "repeat"]) {
-      expect(store.docs.get(`messages/${id}`)?.spinEventId).toBeUndefined();
-      expect(store.docs.get(`messages/${id}`)?.spinRejectedEventIds).toEqual([
-        spinEvent.id,
-      ]);
-    }
+    expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
+    expect(store.docs.get("messages/spin")?.spinRejectedEventIds).toEqual([
+      spinEvent.id,
+    ]);
+    expect(store.docs.get("messages/repeat")).toEqual({
+      duplicateOf: "spin",
+      deleted: true,
+      spinEventId: spinEvent.id,
+    });
     expect(store.docs.get("spinJobs/spin")).toMatchObject({
       state: "pending",
       leaseUntil: 0,
@@ -1868,6 +1953,7 @@ describe("durable SPIN matching", () => {
     });
     store.put("messages/repeat", {
       duplicateOf: "spin",
+      deleted: true,
       spinEventId: spinEvent.id,
     });
     store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });

@@ -12,6 +12,7 @@ import type {
 type MessageDocument = PagerMessage & {
   updatedAt?: SyncTimestamp;
   deleted?: boolean;
+  duplicateOf?: string | null;
 };
 interface Document {
   id: string;
@@ -45,7 +46,6 @@ const fixture: PagerMessage = {
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
-  duplicateOf: null,
 };
 
 mock.module("expo-constants", () => ({
@@ -190,6 +190,35 @@ test("resume uses an inclusive exact cursor and delivers incremental late locati
   });
   snapshot([modified, other], false, []);
   expect(received).toHaveLength(2);
+});
+
+test("repeat metadata stays server-only and a repeat deletion removes its cached row", () => {
+  const cursor = { seconds: 123, nanoseconds: 456 };
+  watchMessages({ ...initial, initialized: true, cursor }, accept, () => {});
+  const legacyRepeat = {
+    ...fixture,
+    duplicateOf: "original-message-id",
+    updatedAt: cursor,
+  };
+  snapshot([legacyRepeat]);
+  expect(received[0]?.messages).toEqual([fixture]);
+  const hiddenRepeat = {
+    ...legacyRepeat,
+    deleted: true,
+    updatedAt: { seconds: 200, nanoseconds: 1 },
+  };
+  snapshot([hiddenRepeat], false, [
+    {
+      type: "modified",
+      doc: { id: hiddenRepeat.id, data: () => hiddenRepeat },
+    },
+  ]);
+  expect(received.at(-1)).toEqual({
+    messages: [],
+    removedIds: [fixture.id],
+    cursor: hiddenRepeat.updatedAt,
+    reset: false,
+  });
 });
 
 test("an offline deletion removes an older cached pager and persists the deletion cursor", () => {

@@ -43,11 +43,6 @@ export const MessageRow: FC<MessageRowProps> = (props) => {
       {spinEvent && (
         <SpinReport key={`${message.id}:${spinEvent.id}`} event={spinEvent} />
       )}
-      {message.duplicateOf !== null && (
-        <Typography variant="caption" color={theme.colors.textSecondary}>
-          Repeated transmission
-        </Typography>
-      )}
     </View>
   );
 };

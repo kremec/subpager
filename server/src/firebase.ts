@@ -130,19 +130,11 @@ export class FirebaseBackend {
         const expiresAt = Date.parse(message.receivedAt) + 300_000;
         const fresh = notify && duplicateOf === null && expiresAt > now;
         const recipients = fresh ? this.users.recipients() : [];
-        const location = source?.get("location") as string | null | undefined;
-        const spinEventId = source?.get("spinEventId");
-        const spinMatchStatus = source?.get("spinMatchStatus");
         transaction.create(messageRef, {
           ...message,
           duplicateOf,
           updatedAt: FieldValue.serverTimestamp(),
-          ...(location !== undefined ? { location } : {}),
-          ...(typeof spinEventId === "string" ? { spinEventId } : {}),
-          ...(spinMatchStatus === "provisional" ||
-          spinMatchStatus === "confirmed"
-            ? { spinMatchStatus }
-            : {}),
+          ...(source ? { deleted: true } : {}),
         });
         if (
           notify &&

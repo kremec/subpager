@@ -123,6 +123,16 @@ export class LocationExtraction {
         (job.state === "pending" && this.pausedUntil > now)
       )
         return null;
+      const message = await tx.get(
+        this.db.collection("messages").doc(job.messageId),
+      );
+      if (
+        message.get("deleted") === true ||
+        message.get("duplicateOf") != null
+      ) {
+        tx.delete(ref);
+        return null;
+      }
       if (job.state === "pending" && job.leaseUntil > 0) {
         const retry = locationRetry(job.failures);
         tx.update(ref, {
@@ -194,16 +204,16 @@ export class LocationExtraction {
       )
         return;
       const messageRef = this.db.collection("messages").doc(job.messageId);
-      const [message, repeats] = await Promise.all([
-        tx.get(messageRef),
-        tx.get(
-          this.db
-            .collection("messages")
-            .where("duplicateOf", "==", job.messageId),
-        ),
-      ]);
+      const message = await tx.get(messageRef);
       if (!message.exists)
         throw new Error("Location destination message is missing");
+      if (
+        message.get("deleted") === true ||
+        message.get("duplicateOf") != null
+      ) {
+        tx.delete(jobRef);
+        return;
+      }
       const spinRef = this.db.collection("spinJobs").doc(job.messageId);
       const spin = await tx.get(spinRef);
       parseLocation(JSON.stringify({ location: current.result }), job.content);
@@ -212,7 +222,6 @@ export class LocationExtraction {
         updatedAt: FieldValue.serverTimestamp(),
       };
       tx.update(messageRef, patch);
-      for (const repeated of repeats.docs) tx.update(repeated.ref, patch);
       if (current.result && spin.get("active") && spin.get("state") !== "ready")
         tx.update(spinRef, {
           state: "pending",

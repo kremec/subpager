@@ -13,7 +13,6 @@ const message: PagerMessage = {
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
-  duplicateOf: null,
   spinEventId: null,
   spinMatchStatus: null,
 };
@@ -105,7 +104,7 @@ test.each([
         message.function,
         message.type,
         message.content,
-        message.duplicateOf,
+        "original-message-id",
         null,
       );
     existing.close();
@@ -161,7 +160,7 @@ test("the old JSON cache migrates into columns without losing offline history", 
     .query("INSERT INTO history VALUES (1, ?, ?, ?)")
     .run(
       "legacy-device",
-      JSON.stringify([message]),
+      JSON.stringify([{ ...message, duplicateOf: "original-message-id" }]),
       JSON.stringify([{ ric: 123, unitName: "Golo" }]),
     );
   legacy.close();
@@ -203,7 +202,6 @@ test("snapshot replacement removes deleted rows and reads messages newest first"
     ...message,
     id: "newer-message",
     receivedAt: "2026-10-08T11:00:00Z",
-    duplicateOf: message.id,
     location: "Golo",
   };
   cacheMessages("approved-device", [message, newer]);

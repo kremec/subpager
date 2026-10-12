@@ -158,7 +158,6 @@ const message: PagerMessage = {
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
-  duplicateOf: null,
 };
 
 beforeEach(() => {

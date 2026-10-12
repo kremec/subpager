@@ -9,7 +9,6 @@ export interface PagerMessage {
   function: number;
   type: "alpha" | "numeric" | "tone";
   content: string;
-  duplicateOf: string | null;
   location?: string | null;
   spinEventId?: string | null;
   spinMatchStatus?: "provisional" | "confirmed" | null;

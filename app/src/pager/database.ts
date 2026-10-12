@@ -25,7 +25,6 @@ function getDatabase() {
             function INTEGER NOT NULL,
             type TEXT NOT NULL,
             content TEXT NOT NULL,
-            duplicateOf TEXT,
             location TEXT,
             spinEventId TEXT,
             spinMatchStatus TEXT
@@ -76,12 +75,12 @@ function getDatabase() {
           opened.execSync(`
             INSERT INTO approval (uid) SELECT uid FROM history;
             INSERT INTO messages
-              (id, receivedAt, ric, function, type, content, duplicateOf, location)
+              (id, receivedAt, ric, function, type, content, location)
             SELECT
               json_extract(value, '$.id'), json_extract(value, '$.receivedAt'),
               json_extract(value, '$.ric'), json_extract(value, '$.function'),
               json_extract(value, '$.type'), json_extract(value, '$.content'),
-              json_extract(value, '$.duplicateOf'), json_extract(value, '$.location')
+              json_extract(value, '$.location')
             FROM history, json_each(history.messages);
             INSERT INTO ric_units (ric, unitName)
             SELECT json_extract(value, '$.ric'), json_extract(value, '$.unitName')
@@ -184,7 +183,7 @@ export function cachedHistory(uid: string) {
   const database = getDatabase();
   return {
     messages: database.getAllSync<PagerMessage>(
-      "SELECT * FROM messages ORDER BY receivedAt DESC, id DESC",
+      "SELECT id, receivedAt, ric, function, type, content, location, spinEventId, spinMatchStatus FROM messages ORDER BY receivedAt DESC, id DESC",
     ),
     units: database.getAllSync<RicUnit>("SELECT * FROM ric_units ORDER BY ric"),
   };
@@ -222,14 +221,14 @@ export function cacheMessages(
     for (const message of messages) {
       database.runSync(
         `INSERT INTO messages
-          (id, receivedAt, ric, function, type, content, duplicateOf, location, spinEventId, spinMatchStatus)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, receivedAt, ric, function, type, content, location, spinEventId, spinMatchStatus)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           ${
             changes
               ? `ON CONFLICT(id) DO UPDATE SET
             receivedAt = excluded.receivedAt, ric = excluded.ric,
             function = excluded.function, type = excluded.type,
-            content = excluded.content, duplicateOf = excluded.duplicateOf,
+            content = excluded.content,
             location = excluded.location, spinEventId = excluded.spinEventId,
             spinMatchStatus = excluded.spinMatchStatus`
               : ""
@@ -240,7 +239,6 @@ export function cacheMessages(
         message.function,
         message.type,
         message.content,
-        message.duplicateOf,
         message.location ?? null,
         message.spinEventId ?? null,
         message.spinMatchStatus ?? null,

@@ -10,7 +10,6 @@ const message: PagerMessage = {
   function: 0,
   type: "alpha",
   content: "VAJA!!! GORI V ŠOLI GOLO, POGREŠA SE 1 OSEBA.",
-  duplicateOf: null,
 };
 
 test("only a verbatim extracted location becomes a Maps link", () => {

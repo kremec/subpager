@@ -12,7 +12,7 @@ import {
 
 export const SPIN_MATCHING_HORIZON = 3 * 86_400_000;
 
-// An admin correction applies to the original pager and its repeated receptions.
+// Selecting an archived repeat corrects its original pager.
 export async function unlinkSpinEvent(db: Firestore, messageId: string) {
   return db.runTransaction(async (tx) => {
     const selected = await tx.get(db.collection("messages").doc(messageId));
@@ -20,30 +20,27 @@ export async function unlinkSpinEvent(db: Firestore, messageId: string) {
     const rootId = selected.get("duplicateOf") ?? messageId;
     const rootRef = db.collection("messages").doc(rootId);
     const root = rootId === messageId ? selected : await tx.get(rootRef);
+    if (root.get("deleted") === true) return false;
     const eventId = root.get("spinEventId");
     if (typeof eventId !== "string") return false;
-    const [repeats, links] = await Promise.all([
-      tx.get(db.collection("messages").where("duplicateOf", "==", rootId)),
-      tx.get(db.collection("messages").where("spinEventId", "==", eventId)),
-    ]);
-    const family = [
-      root,
-      ...repeats.docs.filter((doc) => doc.get("spinEventId") === eventId),
-    ];
-    for (const message of family) {
-      const rejected = message.get("spinRejectedEventIds");
-      tx.update(message.ref, {
-        spinEventId: FieldValue.delete(),
-        spinMatchStatus: FieldValue.delete(),
-        spinRejectedEventIds: [
-          ...new Set([...(Array.isArray(rejected) ? rejected : []), eventId]),
-        ],
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-    }
+    const links = await tx.get(
+      db.collection("messages").where("spinEventId", "==", eventId),
+    );
+    const rejected = root.get("spinRejectedEventIds");
+    tx.update(rootRef, {
+      spinEventId: FieldValue.delete(),
+      spinMatchStatus: FieldValue.delete(),
+      spinRejectedEventIds: [
+        ...new Set([...(Array.isArray(rejected) ? rejected : []), eventId]),
+      ],
+      updatedAt: FieldValue.serverTimestamp(),
+    });
     if (
-      links.docs.every((link) =>
-        family.some((message) => message.id === link.id),
+      !links.docs.some(
+        (link) =>
+          link.id !== rootId &&
+          link.get("deleted") !== true &&
+          link.get("duplicateOf") == null,
       )
     )
       tx.delete(db.collection("spinEvents").doc(eventId));
@@ -140,6 +137,7 @@ export class SpinMatching {
     for (const message of messages.docs) {
       const data = message.data();
       if (
+        data.deleted === true ||
         data.duplicateOf != null ||
         (data.spinEventId && data.spinMatchStatus !== "provisional") ||
         data.type === "tone" ||
@@ -157,6 +155,7 @@ export class SpinMatching {
           job.exists ||
           !data ||
           (data.spinEventId && data.spinMatchStatus !== "provisional") ||
+          data.deleted === true ||
           data.duplicateOf != null ||
           data.type === "tone" ||
           !data.content ||
@@ -185,6 +184,7 @@ export class SpinMatching {
     for (const message of messages.docs) {
       const data = message.data();
       if (
+        data.deleted === true ||
         data.duplicateOf != null ||
         Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON <= Date.now()
       )
@@ -195,7 +195,12 @@ export class SpinMatching {
           tx.get(ref),
           tx.get(message.ref),
         ]);
-        if (current.get("spinEventId") !== eventId) return;
+        if (
+          current.get("spinEventId") !== eventId ||
+          current.get("deleted") === true ||
+          current.get("duplicateOf") != null
+        )
+          return;
         tx.set(ref, {
           active: true,
           state: "waiting",
@@ -245,6 +250,7 @@ export class SpinMatching {
         !data ||
         (data.spinEventId && data.spinEventId !== job.reviewEventId) ||
         (job.reviewEventId && data.spinEventId !== job.reviewEventId) ||
+        data.deleted === true ||
         data.duplicateOf != null ||
         data.type === "tone" ||
         typeof data.content !== "string" ||
@@ -349,14 +355,11 @@ export class SpinMatching {
       )
         throw new Error("Missing SPIN match report");
       const messageRef = this.db.collection("messages").doc(job.id);
-      const [message, repeats] = await Promise.all([
-        tx.get(messageRef),
-        tx.get(
-          this.db.collection("messages").where("duplicateOf", "==", job.id),
-        ),
-      ]);
+      const message = await tx.get(messageRef);
       if (
         !message.exists ||
+        message.get("deleted") === true ||
+        message.get("duplicateOf") != null ||
         (message.get("spinEventId") ?? undefined) !== job.currentLinkId
       ) {
         tx.delete(ref);
@@ -374,14 +377,6 @@ export class SpinMatching {
               this.db.collection("messages").where("spinEventId", "==", oldId),
             )
           : undefined;
-      const family = [
-        message,
-        ...repeats.docs.filter(
-          (repeated) =>
-            (repeated.get("spinEventId") ?? undefined) === oldId ||
-            !repeated.get("spinEventId"),
-        ),
-      ];
       if (
         current.expiresAt > Date.now() &&
         current.checkedRevision !== undefined &&
@@ -418,28 +413,29 @@ export class SpinMatching {
         current.result && !hasSpinReport(current.result)
           ? "provisional"
           : "confirmed";
-      for (const target of family) {
-        const rejected = target.get("spinRejectedEventIds");
-        tx.update(target.ref, {
-          spinEventId: current.result?.id ?? FieldValue.delete(),
-          spinMatchStatus: current.result ? status : FieldValue.delete(),
-          ...(oldId && changed
-            ? {
-                spinRejectedEventIds: [
-                  ...new Set([
-                    ...(Array.isArray(rejected) ? rejected : []),
-                    oldId,
-                  ]),
-                ],
-              }
-            : {}),
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-      }
+      const rejected = message.get("spinRejectedEventIds");
+      tx.update(messageRef, {
+        spinEventId: current.result?.id ?? FieldValue.delete(),
+        spinMatchStatus: current.result ? status : FieldValue.delete(),
+        ...(oldId && changed
+          ? {
+              spinRejectedEventIds: [
+                ...new Set([
+                  ...(Array.isArray(rejected) ? rejected : []),
+                  oldId,
+                ]),
+              ],
+            }
+          : {}),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
       if (
         otherLinks &&
         !otherLinks.docs.some(
-          (link) => !family.some((target) => target.id === link.id),
+          (link) =>
+            link.id !== job.id &&
+            link.get("deleted") !== true &&
+            link.get("duplicateOf") == null,
         )
       )
         tx.delete(this.db.collection("spinEvents").doc(oldId!));

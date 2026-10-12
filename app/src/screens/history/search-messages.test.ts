@@ -14,7 +14,6 @@ const messages: PagerMessage[] = [
     function: 0,
     type: "alpha",
     content: "Požar v Šiški. Žiga preveri zadnji vhod.",
-    duplicateOf: null,
   },
   {
     id: "message-2",
@@ -23,7 +22,6 @@ const messages: PagerMessage[] = [
     function: 0,
     type: "alpha",
     content: "Preveri vhod na severni strani.",
-    duplicateOf: null,
   },
   {
     id: "message-1",
@@ -32,7 +30,6 @@ const messages: PagerMessage[] = [
     function: 0,
     type: "tone",
     content: "",
-    duplicateOf: null,
   },
 ];
 

@@ -290,7 +290,7 @@ test("message, push, location and SPIN jobs commit together, and persisted IDs p
   expect([...documents.entries()]).toEqual(committed);
 });
 
-test("dedupe stays anchored to the canonical page and copies resolved location and SPIN references", async () => {
+test("repeats are soft-deleted without enrichment or jobs, and dedupe stays anchored to the first reception", async () => {
   const { backend, documents } = database();
   const first = page();
   const second = page(25_000);
@@ -303,18 +303,31 @@ test("dedupe stays anchored to the canonical page and copies resolved location a
   expect(documents.get(`messages/${second.sourceId}`)?.duplicateOf).toBe(
     first.sourceId,
   );
-  expect(documents.get(`messages/${second.sourceId}`)?.location).toBe(
-    "ŠOLA GOLO",
-  );
-  expect(documents.get(`messages/${second.sourceId}`)?.spinEventId).toBe(
-    "472470",
-  );
-  expect(documents.get(`messages/${second.sourceId}`)?.spinMatchStatus).toBe(
-    "provisional",
-  );
+  const repeat = documents.get(`messages/${second.sourceId}`)!;
+  expect(repeat).toMatchObject({
+    deleted: true,
+    receivedAt: second.receivedAt,
+    content: "ŠOLA GOLO",
+    ric: second.ric,
+    function: second.function,
+    type: second.type,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  expect(repeat).not.toHaveProperty("location");
+  expect(repeat).not.toHaveProperty("spinEventId");
+  expect(repeat).not.toHaveProperty("spinMatchStatus");
   expect(documents.has(`locationJobs/${second.sourceId}`)).toBe(false);
   expect(documents.has(`spinJobs/${second.sourceId}`)).toBe(false);
+  expect(
+    [...documents.values()].filter((doc) => doc.messageId === second.sourceId),
+  ).toHaveLength(0);
+  const beforeRetry = [...documents.entries()];
+  await backend.ingest([second], true, Date.parse(second.receivedAt));
+  expect([...documents.entries()]).toEqual(beforeRetry);
   expect(documents.get(`messages/${third.sourceId}`)?.duplicateOf).toBeNull();
+  expect(documents.get(`messages/${third.sourceId}`)).not.toHaveProperty(
+    "deleted",
+  );
   expect(documents.has(`locationJobs/${third.sourceId}`)).toBe(true);
   expect(documents.has(`spinJobs/${third.sourceId}`)).toBe(true);
   expect(

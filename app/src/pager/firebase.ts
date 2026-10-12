@@ -84,12 +84,15 @@ export function watchMessages(
             .map((change) => change.doc);
       const deletedIds: string[] = [];
       const messages = documents.flatMap((item) => {
-        const { updatedAt, deleted, ...message } = item.data() as Omit<
-          PagerMessage,
-          "id"
-        > & {
+        const {
+          updatedAt,
+          deleted,
+          duplicateOf: _duplicateOf,
+          ...message
+        } = item.data() as Omit<PagerMessage, "id"> & {
           updatedAt?: SyncTimestamp;
           deleted?: boolean;
+          duplicateOf?: string | null;
         };
         if (
           updatedAt &&
