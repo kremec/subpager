@@ -19,6 +19,10 @@ async function main() {
       spinRssUrl:
         process.env.SPIN_RSS_URL ?? "https://spin3.sos112.si/javno/ODApi/184",
       spinCachePath: join(dirname(config.outbox), "spin-candidates.json"),
+      spinGroupId:
+        process.env.SPIN_GROUP_ID === "0"
+          ? undefined
+          : Number(process.env.SPIN_GROUP_ID ?? 10015),
       expoAccessToken: process.env.EXPO_ACCESS_TOKEN,
     },
     client.users,

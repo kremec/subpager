@@ -5,6 +5,7 @@ import { createErrorReporter, logInfo } from "./log";
 import { FirestoreUsers } from "./users";
 import { SpinMatching, type SpinJob } from "./spin";
 import { SpinSync } from "./spin-sync";
+import { SpinLive } from "./spin-live";
 
 export interface ProcessorOptions {
   openaiApiKey?: string;
@@ -12,6 +13,7 @@ export interface ProcessorOptions {
   model?: string;
   spinRssUrl?: string;
   spinCachePath?: string;
+  spinGroupId?: number;
 }
 
 interface ScheduledJob {
@@ -176,6 +178,7 @@ class JobQueue {
 export class FirestoreJobsProcessor {
   private queues: JobQueue[];
   private spin?: SpinSync;
+  private spinLive?: SpinLive;
   private seed?: Promise<void>;
   private seedTimer?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -227,6 +230,12 @@ export class FirestoreJobsProcessor {
       );
       this.queues.push(queue);
       this.seedSpin = () => matching.seed();
+      if (options.spinGroupId !== undefined)
+        this.spinLive = new SpinLive(
+          options.spinGroupId,
+          (id) => this.spin!.notify(id),
+          () => this.spin!.recover(),
+        );
     }
   }
 
@@ -234,6 +243,7 @@ export class FirestoreJobsProcessor {
     void this.users.ready().catch(() => {});
     for (const queue of this.queues) queue.start();
     this.spin?.start();
+    this.spinLive?.start();
     this.seedRecentMessages();
   }
   private seedRecentMessages() {
@@ -247,6 +257,7 @@ export class FirestoreJobsProcessor {
   async stop() {
     this.stopped = true;
     clearTimeout(this.seedTimer);
+    this.spinLive?.stop();
     this.users.stop();
     await Promise.all([
       ...this.queues.map((queue) => queue.stop()),

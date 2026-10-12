@@ -12,6 +12,7 @@ function candidate(
     attributes: {
       Nbrhd: name,
       City: number,
+      Subregion: town,
       Status: "M",
       Addr_type: "Locality",
     },
@@ -77,6 +78,72 @@ test("rejects similar names and wrong numbers before resolving suggestions", asy
     [],
   );
   expect(mock.calls).toHaveLength(1);
+});
+
+test("accepts only an exact official town prefix without guessing street suffixes", async () => {
+  const name = "Cesta 2. grupe odredov";
+  const town = "Ivančna Gorica";
+  const mock = geocoder(
+    [
+      { text: `${name}, 29, ${town}, 1295 ${town}`, magicKey: "iv" },
+      { text: `${name}, 29, Ljubljana`, magicKey: "wrong-town" },
+      {
+        text: "Cesta 2. grupe, 29, Ivančna Gorica",
+        magicKey: "wrong-street",
+      },
+      { text: `${name}, 29a, ${town}`, magicKey: "wrong-number" },
+    ],
+    { iv: [candidate(name, "29", town)] },
+  );
+  expect(
+    await geocodeSpinAddress(
+      "Ivancna Gorica Cesta 2. grupe odredov 29",
+      mock.request,
+    ),
+  ).toEqual([
+    {
+      address: `${name}, 29, ${town}`,
+      latitude: 46.0708,
+      longitude: 14.4854,
+    },
+  ]);
+  expect(
+    mock.calls
+      .filter((url) => url.pathname.endsWith("/findAddressCandidates"))
+      .map((url) => url.searchParams.get("magicKey")),
+  ).toEqual(["iv"]);
+});
+
+test("rejects incorrect town and street fields returned for a prefixed suggestion", async () => {
+  const mock = geocoder(
+    [{ text: "Pavšičeva ulica, 18, Ljubljana", magicKey: "lj" }],
+    {
+      lj: [
+        candidate(undefined, undefined, "Logatec"),
+        candidate("Pavšičeva cesta"),
+      ],
+    },
+  );
+  expect(
+    await geocodeSpinAddress("Ljubljana Pavsiceva ulica 18", mock.request),
+  ).toEqual([]);
+});
+
+test("rejects unverified prefixes and reordered address words", async () => {
+  const mock = geocoder(
+    [{ text: "Pavšičeva ulica, 18, Ljubljana", magicKey: "lj" }],
+    { lj: [candidate()] },
+  );
+  for (const location of [
+    "Logatec Pavsiceva ulica 18",
+    "something Ljubljana Pavsiceva ulica 18",
+    "Ljubljana ulica Pavsiceva 18",
+  ]) {
+    expect(await geocodeSpinAddress(location, mock.request)).toEqual([]);
+  }
+  expect(
+    mock.calls.filter((url) => url.pathname.endsWith("/findAddressCandidates")),
+  ).toHaveLength(0);
 });
 
 test("rechecks resolved address fields and coordinates instead of trusting the suggestion score", async () => {

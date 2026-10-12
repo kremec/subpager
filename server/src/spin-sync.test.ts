@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { SPIN_MATCHING_HORIZON } from "./spin";
 import { SpinSync } from "./spin-sync";
+import { hasSpinReport } from "./spin-feed";
 
 const hour = 3_600_000;
 const now = Date.parse("2026-10-10T14:00:00Z");
@@ -692,6 +693,408 @@ test("failed feed polls expire old candidates and wake waiting jobs without gran
     expect(changes).toBe(3);
     expect(await cached()).toEqual([]);
   } finally {
+    await sync.stop();
+    clock.mockRestore();
+  }
+});
+
+function liveNetwork() {
+  const state = {
+    xml: "<rss><channel /></rss>",
+    detail: {
+      statusCode: 200,
+      value: {
+        obcinaNaziv: "Grosuplje",
+        prijavaCas: "2026-10-10T15:00:00",
+        wgsLatApprox: 45.956,
+        wgsLonApprox: 14.658,
+      },
+    } as Record<string, any>,
+  };
+  const net = network(state);
+  return { state, ...net };
+}
+
+function noticeTimers() {
+  let id = 0;
+  const callbacks = new Map<number, { run: () => void; delay: number }>();
+  const timeout = spyOn(globalThis, "setTimeout").mockImplementation(((
+    run: () => void,
+    delay: number,
+  ) => {
+    callbacks.set(++id, { run, delay });
+    return id;
+  }) as typeof setTimeout);
+  const clear = spyOn(globalThis, "clearTimeout").mockImplementation(
+    (value) => {
+      callbacks.delete(Number(value));
+    },
+  );
+  return {
+    callbacks,
+    fire() {
+      const [key, callback] = callbacks.entries().next().value!;
+      callbacks.delete(key);
+      callback.run();
+    },
+    restore() {
+      timeout.mockRestore();
+      clear.mockRestore();
+    },
+  };
+}
+
+async function waitFor(check: () => boolean) {
+  const deadline = performance.now() + 1000;
+  while (!check() && performance.now() < deadline) await Bun.sleep(2);
+  expect(check()).toBe(true);
+}
+
+test("notices arriving during a slow read remain one coalesced pending batch", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const timers = noticeTimers();
+  const db = database();
+  const net = liveNetwork();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reads = 0;
+  const request = (async (input, init) => {
+    if (String(input).includes("/lokacija/")) {
+      reads++;
+      if (reads === 1) await blocked;
+    }
+    return net.request(input, init);
+  }) as typeof fetch;
+  const sync = new SpinSync(db.db, feedUrl, () => {}, cachePath, request);
+  try {
+    sync.notify("472569");
+    sync.notify("472569");
+    expect(timers.callbacks.size).toBe(1);
+    timers.fire();
+    await waitFor(() => reads === 1);
+    for (let index = 0; index < 20; index++) sync.notify("472569");
+    expect(timers.callbacks.size).toBe(0);
+    release();
+    await waitFor(() => timers.callbacks.size === 1);
+    timers.fire();
+    await waitFor(() => reads === 2 && timers.callbacks.size === 0);
+    await sync.stop();
+    expect(db.reads()).toBe(1);
+  } finally {
+    release();
+    await sync.stop();
+    timers.restore();
+    clock.mockRestore();
+  }
+});
+
+test("failed live reads survive restart and back off while public unavailability is bounded", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const timers = noticeTimers();
+  const db = database();
+  const net = liveNetwork();
+  const request = (async (input, init) => {
+    if (String(input).includes("/lokacija/")) throw new Error("offline");
+    return net.request(input, init);
+  }) as typeof fetch;
+  const sync = new SpinSync(db.db, feedUrl, () => {}, cachePath, request);
+  let restarted: SpinSync | undefined;
+  try {
+    sync.notify("472569");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      timers.fire();
+      await waitFor(() => timers.callbacks.size === 1);
+    }
+    expect([...timers.callbacks.values()][0]?.delay).toBe(300_000);
+    expect(JSON.parse(await readFile(`${cachePath}.pending`, "utf8"))).toEqual([
+      { id: "472569", expiresAt: now + SPIN_MATCHING_HORIZON },
+    ]);
+    await sync.stop();
+    restarted = new SpinSync(db.db, feedUrl, () => {}, cachePath, net.request);
+    await restarted.run();
+    expect(timers.callbacks.size).toBe(1);
+    timers.fire();
+    await waitFor(() => restarted!.events.length === 1);
+    await waitFor(() => timers.callbacks.size === 0);
+    expect(JSON.parse(await readFile(`${cachePath}.pending`, "utf8"))).toEqual(
+      [],
+    );
+    net.state.detail = { statusCode: 200 };
+    restarted.notify("472569");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      timers.fire();
+      await waitFor(() => attempt === 2 || timers.callbacks.size === 1);
+    }
+    await restarted.stop();
+    expect(timers.callbacks.size).toBe(0);
+    expect(restarted.events).toHaveLength(1);
+  } finally {
+    await sync.stop();
+    await restarted?.stop();
+    timers.restore();
+    clock.mockRestore();
+  }
+});
+
+test("a startup catalogue outage preserves both existing and newly noticed IDs", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const timers = noticeTimers();
+  const db = database();
+  await writeFile(
+    `${cachePath}.pending`,
+    JSON.stringify([{ id: "472568", expiresAt: now + hour }]),
+  );
+  const request = (async (_input: string | URL | Request) => {
+    throw new Error("catalogue offline");
+  }) as unknown as typeof fetch;
+  const sync = new SpinSync(db.db, feedUrl, () => {}, cachePath, request);
+  try {
+    await expect(sync.refresh(["472569"])).rejects.toThrow("catalogue offline");
+    expect(JSON.parse(await readFile(`${cachePath}.pending`, "utf8"))).toEqual([
+      { id: "472568", expiresAt: now + hour },
+      { id: "472569", expiresAt: now + SPIN_MATCHING_HORIZON },
+    ]);
+    expect(timers.callbacks.size).toBe(1);
+  } finally {
+    await sync.stop();
+    timers.restore();
+    clock.mockRestore();
+  }
+});
+
+test("hourly detail reads keep a changed municipality-only report partial", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const db = database();
+  const net = liveNetwork();
+  const sync = new SpinSync(db.db, feedUrl, () => {}, cachePath, net.request);
+  try {
+    await sync.refresh(["472569"]);
+    net.state.detail.value.obcinaNaziv = "Cerknica";
+    clock.mockReturnValue(now + hour);
+    await sync.run();
+    expect(sync.events[0]?.description).toBe("Cerknica");
+    expect(hasSpinReport(sync.events[0]!)).toBe(false);
+  } finally {
+    await sync.stop();
+    clock.mockRestore();
+  }
+});
+
+test("a live incident missed by RSS is durable, deduplicated and refreshed after a region change", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const db = database();
+  const net = liveNetwork();
+  let changes = 0;
+  const sync = new SpinSync(
+    db.db,
+    feedUrl,
+    () => changes++,
+    cachePath,
+    net.request,
+  );
+  try {
+    await sync.refresh(["472569", "472569", "../private", "0"]);
+    expect(sync.events[0]).toMatchObject({
+      id: "472569",
+      eventAt: "2026-10-10T13:00:00.000Z",
+      municipality: "Grosuplje",
+    });
+    expect(db.documents.size).toBe(0);
+    expect(net.calls.filter((url) => url.includes("/lokacija/"))).toHaveLength(
+      1,
+    );
+    const revision = sync.revision;
+    await sync.refresh(["472569"]);
+    expect(changes).toBe(1);
+    expect(db.reads()).toBe(1);
+    expect(sync.revision).toBe(revision);
+    net.state.detail.value.obcinaNaziv = "Cerknica";
+    await sync.refresh(["472569"]);
+    expect(sync.events[0]?.description).toBe("Cerknica");
+    expect(hasSpinReport(sync.events[0]!)).toBe(false);
+    await sync.stop();
+
+    net.state.detail.value.obcinaNaziv = "Cerknica";
+    net.state.detail.value.besedilo =
+      "Gasilci so pomagali poškodovanemu motoristu.";
+    clock.mockReturnValue(now + hour);
+    const restarted = new SpinSync(
+      db.db,
+      feedUrl,
+      () => {},
+      cachePath,
+      net.request,
+    );
+    try {
+      await restarted.run();
+      expect(restarted.events[0]).toMatchObject({
+        municipality: "Cerknica",
+        description: net.state.detail.value.besedilo,
+      });
+      expect((await cached())[0]?.municipality).toBe("Cerknica");
+      expect(db.documents.size).toBe(0);
+    } finally {
+      await restarted.stop();
+    }
+  } finally {
+    await sync.stop();
+    clock.mockRestore();
+  }
+});
+
+test("public-detail unavailability preserves captured evidence and ignores old or invalid incidents", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const db = database();
+  const net = liveNetwork();
+  const sync = new SpinSync(db.db, feedUrl, () => {}, cachePath, net.request);
+  try {
+    await sync.refresh(["472569"]);
+    const snapshot = await cached();
+    const revision = sync.revision;
+    net.state.detail = { statusCode: 200 };
+    expect(await sync.refresh(["472569"])).toEqual(["472569"]);
+    expect(await cached()).toEqual(snapshot);
+    expect(sync.revision).toBe(revision);
+    net.state.detail = {
+      statusCode: 200,
+      value: { obcinaNaziv: "Grosuplje", prijavaCas: "2026-10-01T15:00:00" },
+    };
+    const old = new SpinSync(
+      db.db,
+      feedUrl,
+      () => {},
+      cachePath + ".old",
+      net.request,
+    );
+    try {
+      await old.refresh(["472569"]);
+      expect(old.events).toEqual([]);
+      expect(db.documents.size).toBe(0);
+    } finally {
+      await old.stop();
+    }
+    net.state.detail = { statusCode: 403, value: {} };
+    await expect(sync.refresh(["472569"])).rejects.toThrow(
+      "SPIN detail request failed",
+    );
+    expect(sync.revision).toBe(revision);
+  } finally {
+    await sync.stop();
+    clock.mockRestore();
+  }
+});
+
+test("a live report update queues review and retries failed cloud publication without losing the new candidate", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const db = database();
+  const net = liveNetwork();
+  let reviews = 0;
+  const sync = new SpinSync(
+    db.db,
+    feedUrl,
+    () => {},
+    cachePath,
+    net.request,
+    async () => {
+      reviews++;
+    },
+  );
+  try {
+    await sync.refresh(["472569"]);
+    const partial = sync.events[0]!;
+    db.documents.set(partial.id, { ...partial });
+    net.state.detail.value.besedilo =
+      "Gasilci so pomagali poškodovanemu motoristu.";
+    db.failUpdates(true);
+    await expect(sync.refresh([partial.id])).rejects.toThrow(
+      "Cloud update failed",
+    );
+    expect(sync.events[0]?.description).toBe("Grosuplje");
+    expect((await cached())[0]?.description).toBe(
+      net.state.detail.value.besedilo,
+    );
+    expect(reviews).toBe(1);
+    db.failUpdates(false);
+    await sync.refresh([partial.id]);
+    expect(reviews).toBe(2);
+    expect(sync.events[0]?.description).toBe(net.state.detail.value.besedilo);
+    expect(db.writes()).toBe(1);
+    expect(db.documents.get(partial.id)?.description).toBe(
+      net.state.detail.value.besedilo,
+    );
+    await sync.refresh([partial.id]);
+    expect(db.writes()).toBe(1);
+    expect(reviews).toBe(2);
+  } finally {
+    await sync.stop();
+    clock.mockRestore();
+  }
+});
+
+test("reconnect recovery refreshes known full reports before their normal daily check", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const db = database();
+  const net = liveNetwork();
+  net.state.detail.value.besedilo = "A full public report.";
+  let publish = () => {};
+  const sync = new SpinSync(
+    db.db,
+    feedUrl,
+    () => publish(),
+    cachePath,
+    net.request,
+  );
+  try {
+    await sync.refresh(["472569"]);
+    net.state.detail.value.besedilo = "A revised full public report.";
+    const updated = new Promise<void>((resolve) => {
+      publish = resolve;
+    });
+    sync.recover();
+    await updated;
+    expect(sync.events[0]?.description).toBe("A revised full public report.");
+    expect(net.calls.filter((url) => url.includes("/lokacija/"))).toHaveLength(
+      2,
+    );
+  } finally {
+    await sync.stop();
+    clock.mockRestore();
+  }
+});
+
+test("hourly reconciliation and live updates cannot overwrite each other's cache writes", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const db = database();
+  const net = liveNetwork();
+  let release = () => {};
+  let entered = () => {};
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const loading = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const request = (async (input: string | URL | Request) => {
+    if (String(input) === feedUrl) {
+      entered();
+      await blocked;
+    }
+    return net.request(input);
+  }) as typeof fetch;
+  const sync = new SpinSync(db.db, feedUrl, () => {}, cachePath, request);
+  try {
+    const hourly = sync.run();
+    await loading;
+    const live = sync.refresh(["472569"]);
+    expect(net.calls.some((url) => url.includes("/lokacija/"))).toBe(false);
+    release();
+    await Promise.all([hourly, live]);
+    expect((await cached()).map((event) => event.id)).toEqual(["472569"]);
+    expect(sync.events[0]?.id).toBe("472569");
+  } finally {
+    release();
     await sync.stop();
     clock.mockRestore();
   }

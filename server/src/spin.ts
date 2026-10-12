@@ -382,6 +382,22 @@ export class SpinMatching {
             !repeated.get("spinEventId"),
         ),
       ];
+      if (
+        current.expiresAt > Date.now() &&
+        current.checkedRevision !== undefined &&
+        this.catalog.ready &&
+        this.catalog.revision &&
+        current.checkedRevision !== this.catalog.revision
+      ) {
+        tx.update(ref, {
+          state: "waiting",
+          result: FieldValue.delete(),
+          reviewStatus: FieldValue.delete(),
+          leaseUntil: 0,
+          nextAttempt: Date.now(),
+        });
+        return;
+      }
       if (eventRef && current.result && !event?.exists)
         tx.create(eventRef, {
           ...publicSpinEvent(current.result),

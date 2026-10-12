@@ -70,11 +70,15 @@ export async function geocodeSpinAddress(
           typeof suggestion.magicKey !== "string"
         )
           continue;
-        const [name, number] = suggestion.text.split(",");
+        const [name, number, town] = suggestion.text.split(",");
+        const matchesTownPrefix =
+          !!name &&
+          !!town &&
+          component.name === `${normalized(town)} ${normalized(name)}`;
         if (
           !name ||
           !number ||
-          normalized(name) !== component.name ||
+          (normalized(name) !== component.name && !matchesTownPrefix) ||
           normalized(number).replace(/\s/g, "") !== component.number
         )
           continue;
@@ -102,9 +106,12 @@ export async function geocodeSpinAddress(
             !isObject(point) ||
             typeof attributes.Nbrhd !== "string" ||
             typeof attributes.City !== "string" ||
-            normalized(attributes.Nbrhd) !== component.name ||
+            normalized(attributes.Nbrhd) !== normalized(name) ||
             normalized(attributes.City).replace(/\s/g, "") !==
               component.number ||
+            (matchesTownPrefix &&
+              (typeof attributes.Subregion !== "string" ||
+                normalized(attributes.Subregion) !== normalized(town!))) ||
             attributes.Status !== "M" ||
             candidate.score !== 100 ||
             typeof candidate.address !== "string" ||

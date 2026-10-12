@@ -1,5 +1,28 @@
 import { expect, test } from "bun:test";
-import { hasSpinReport, parseSpinDetail, parseSpinFeed } from "./spin-feed";
+import {
+  hasSpinReport,
+  parseSpinDetail,
+  parseSpinFeed,
+  spinReportedAtUtc,
+} from "./spin-feed";
+
+test.each([
+  ["2026-10-11T12:40:50.853", "2026-10-11T10:40:50.853Z"],
+  ["2026-01-11T00:10:00", "2026-01-10T23:10:00.000Z"],
+  ["2026-03-29T01:30:00", "2026-03-29T00:30:00.000Z"],
+  ["2026-03-29T03:30:00", "2026-03-29T01:30:00.000Z"],
+  ["2026-10-25T01:30:00", "2026-10-24T23:30:00.000Z"],
+  ["2026-10-25T03:30:00", "2026-10-25T02:30:00.000Z"],
+])(
+  "converts public detail time %s from Ljubljana without using the host timezone",
+  (local, utc) => {
+    expect(spinReportedAtUtc(local)).toBe(utc);
+  },
+);
+
+test("rejects a nonexistent local time at the spring clock change", () => {
+  expect(() => spinReportedAtUtc("2026-03-29T02:30:00")).toThrow();
+});
 
 function item(
   id = "472557",

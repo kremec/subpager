@@ -151,3 +151,26 @@ export function hasSpinReport(
     !municipalities?.has(description)
   );
 }
+
+// Public detail times have no offset; RSS times already include one.
+export function spinReportedAtUtc(local: string): string {
+  const nominal = Date.parse(`${local}Z`);
+  const formatter = new Intl.DateTimeFormat("en", {
+    timeZone: "Europe/Ljubljana",
+    timeZoneName: "longOffset",
+  });
+  const offset = (timestamp: number) => {
+    const zone = formatter
+      .formatToParts(timestamp)
+      .find((part) => part.type === "timeZoneName")!.value;
+    const match = /^GMT\+0([12]):00$/.exec(zone);
+    if (!match) throw new Error("Invalid SPIN timezone offset");
+    return Number(match[1]) * 3_600_000;
+  };
+  let timestamp = nominal;
+  for (let attempt = 0; attempt < 3; attempt++)
+    timestamp = nominal - offset(timestamp);
+  if (timestamp + offset(timestamp) !== nominal)
+    throw new Error("Invalid SPIN local report time");
+  return new Date(timestamp).toISOString();
+}
