@@ -6,7 +6,7 @@ import type { PagerMessage } from "@/pager/types";
 const message: PagerMessage = {
   id: "message-1",
   receivedAt: "2026-10-08T10:00:00Z",
-  ric: 123,
+  rics: [123],
   function: 0,
   type: "alpha",
   content: "VAJA!!! GORI V ŠOLI GOLO, POGREŠA SE 1 OSEBA.",

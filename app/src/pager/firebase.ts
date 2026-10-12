@@ -84,16 +84,13 @@ export function watchMessages(
             .map((change) => change.doc);
       const deletedIds: string[] = [];
       const messages = documents.flatMap((item) => {
-        const {
-          updatedAt,
-          deleted,
-          duplicateOf: _duplicateOf,
-          ...message
-        } = item.data() as Omit<PagerMessage, "id"> & {
+        const data = item.data() as Omit<PagerMessage, "id" | "rics"> & {
+          rics?: number[];
+          ric: number;
           updatedAt?: SyncTimestamp;
           deleted?: boolean;
-          duplicateOf?: string | null;
         };
+        const { updatedAt, deleted } = data;
         if (
           updatedAt &&
           (updatedAt.seconds > cursor.seconds ||
@@ -108,7 +105,23 @@ export function watchMessages(
           deletedIds.push(item.id);
           return [];
         }
-        return [{ ...message, id: item.id }];
+        return [
+          {
+            id: item.id,
+            receivedAt: data.receivedAt,
+            rics: data.rics ?? [data.ric],
+            function: data.function,
+            type: data.type,
+            content: data.content,
+            ...(data.location !== undefined && { location: data.location }),
+            ...(data.spinEventId !== undefined && {
+              spinEventId: data.spinEventId,
+            }),
+            ...(data.spinMatchStatus !== undefined && {
+              spinMatchStatus: data.spinMatchStatus,
+            }),
+          },
+        ];
       });
       const presentIds = first
         ? new Set(documents.map((item) => item.id))

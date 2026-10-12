@@ -12,14 +12,17 @@ import {
 
 export const SPIN_MATCHING_HORIZON = 3 * 86_400_000;
 
-// Selecting an archived repeat corrects its original pager.
+// A reception ID identifies its canonical pager, including grouped receptions.
 export async function unlinkSpinEvent(db: Firestore, messageId: string) {
   return db.runTransaction(async (tx) => {
-    const selected = await tx.get(db.collection("messages").doc(messageId));
-    if (!selected.exists) throw new Error("Pager message not found");
-    const rootId = selected.get("duplicateOf") ?? messageId;
-    const rootRef = db.collection("messages").doc(rootId);
-    const root = rootId === messageId ? selected : await tx.get(rootRef);
+    const seen = await tx.get(
+      db.collection("messages").where("sourceIds", "array-contains", messageId),
+    );
+    const root =
+      seen.docs[0] ?? (await tx.get(db.collection("messages").doc(messageId)));
+    if (!root.exists) throw new Error("Pager message not found");
+    const rootId = root.id;
+    const rootRef = root.ref;
     if (root.get("deleted") === true) return false;
     const eventId = root.get("spinEventId");
     if (typeof eventId !== "string") return false;
@@ -37,10 +40,7 @@ export async function unlinkSpinEvent(db: Firestore, messageId: string) {
     });
     if (
       !links.docs.some(
-        (link) =>
-          link.id !== rootId &&
-          link.get("deleted") !== true &&
-          link.get("duplicateOf") == null,
+        (link) => link.id !== rootId && link.get("deleted") !== true,
       )
     )
       tx.delete(db.collection("spinEvents").doc(eventId));
@@ -83,7 +83,7 @@ interface ClaimedSpin extends SpinJob {
   location?: string;
   currentLinkId?: string;
   rejectedEventIds: string[];
-  ric?: number;
+  rics: number[];
 }
 interface Catalog {
   ready: boolean;
@@ -138,7 +138,6 @@ export class SpinMatching {
       const data = message.data();
       if (
         data.deleted === true ||
-        data.duplicateOf != null ||
         (data.spinEventId && data.spinMatchStatus !== "provisional") ||
         data.type === "tone" ||
         !data.content
@@ -156,7 +155,6 @@ export class SpinMatching {
           !data ||
           (data.spinEventId && data.spinMatchStatus !== "provisional") ||
           data.deleted === true ||
-          data.duplicateOf != null ||
           data.type === "tone" ||
           !data.content ||
           Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON <= Date.now()
@@ -185,7 +183,6 @@ export class SpinMatching {
       const data = message.data();
       if (
         data.deleted === true ||
-        data.duplicateOf != null ||
         Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON <= Date.now()
       )
         continue;
@@ -197,8 +194,7 @@ export class SpinMatching {
         ]);
         if (
           current.get("spinEventId") !== eventId ||
-          current.get("deleted") === true ||
-          current.get("duplicateOf") != null
+          current.get("deleted") === true
         )
           return;
         tx.set(ref, {
@@ -251,7 +247,6 @@ export class SpinMatching {
         (data.spinEventId && data.spinEventId !== job.reviewEventId) ||
         (job.reviewEventId && data.spinEventId !== job.reviewEventId) ||
         data.deleted === true ||
-        data.duplicateOf != null ||
         data.type === "tone" ||
         typeof data.content !== "string" ||
         !data.content ||
@@ -280,7 +275,7 @@ export class SpinMatching {
               (id): id is string => typeof id === "string",
             )
           : [],
-        ...(typeof data.ric === "number" ? { ric: data.ric } : {}),
+        rics: (data.rics ?? []) as number[],
         attempts: job.attempts + 1,
         leaseUntil: now + 60_000,
         ...(typeof data.location === "string"
@@ -359,7 +354,6 @@ export class SpinMatching {
       if (
         !message.exists ||
         message.get("deleted") === true ||
-        message.get("duplicateOf") != null ||
         (message.get("spinEventId") ?? undefined) !== job.currentLinkId
       ) {
         tx.delete(ref);
@@ -432,10 +426,7 @@ export class SpinMatching {
       if (
         otherLinks &&
         !otherLinks.docs.some(
-          (link) =>
-            link.id !== job.id &&
-            link.get("deleted") !== true &&
-            link.get("duplicateOf") == null,
+          (link) => link.id !== job.id && link.get("deleted") !== true,
         )
       )
         tx.delete(this.db.collection("spinEvents").doc(oldId!));
@@ -489,15 +480,19 @@ export class SpinMatching {
           this.addresses.set(job.location, addresses);
         }
       }
-      let unitName: string | undefined;
-      if (job.ric !== undefined) {
-        const unit = await this.db
-          .collection("ricUnits")
-          .doc(String(job.ric))
-          .get();
-        const name = unit.get("unitName");
-        if (typeof name === "string") unitName = name;
-      }
+      const units = await Promise.all(
+        job.rics.map((ric) =>
+          this.db.collection("ricUnits").doc(String(ric)).get(),
+        ),
+      );
+      const unitName = [
+        ...new Set(
+          units.flatMap((unit) => {
+            const name = unit.get("unitName");
+            return typeof name === "string" ? [name] : [];
+          }),
+        ),
+      ].join(", ");
       decision = await requestSpinMatch(
         { ...job, ...(unitName ? { unitName } : {}) },
         events,

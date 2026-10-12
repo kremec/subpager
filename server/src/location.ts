@@ -126,10 +126,7 @@ export class LocationExtraction {
       const message = await tx.get(
         this.db.collection("messages").doc(job.messageId),
       );
-      if (
-        message.get("deleted") === true ||
-        message.get("duplicateOf") != null
-      ) {
+      if (message.get("deleted") === true) {
         tx.delete(ref);
         return null;
       }
@@ -207,10 +204,7 @@ export class LocationExtraction {
       const message = await tx.get(messageRef);
       if (!message.exists)
         throw new Error("Location destination message is missing");
-      if (
-        message.get("deleted") === true ||
-        message.get("duplicateOf") != null
-      ) {
+      if (message.get("deleted") === true) {
         tx.delete(jobRef);
         return;
       }

@@ -58,6 +58,8 @@ class Collection {
           path.startsWith(`${this.path}/`) &&
           this.filters.every((filter) => {
             const value = fields[filter.key] as string | boolean;
+            if (filter.operation === "array-contains")
+              return Array.isArray(value) && value.includes(filter.value);
             if (filter.operation === "==") return value === filter.value;
             return filter.operation === ">="
               ? value >= filter.value
@@ -137,6 +139,13 @@ function database() {
             throw new Error("Existing document");
           writes.push(() => documents.set(reference.path, fields));
         },
+        update: (reference: Reference, fields: Fields) =>
+          writes.push(() =>
+            documents.set(reference.path, {
+              ...documents.get(reference.path),
+              ...fields,
+            }),
+          ),
         set: (reference: Reference, fields: Fields) =>
           writes.push(() => documents.set(reference.path, fields)),
         delete: (reference: Reference) =>
@@ -207,7 +216,11 @@ test("deletions retain a readable marker, remove pending jobs atomically and sup
     function: reception.function,
     type: reception.type,
     content: "ŠOLA GOLO",
-    duplicateOf: null,
+    rics: [reception.ric],
+    sourceIds: [reception.sourceId],
+    location: "Old location",
+    spinEventId: "472470",
+    spinMatchStatus: "confirmed",
     deleted: true,
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -290,49 +303,57 @@ test("message, push, location and SPIN jobs commit together, and persisted IDs p
   expect([...documents.entries()]).toEqual(committed);
 });
 
-test("repeats are soft-deleted without enrichment or jobs, and dedupe stays anchored to the first reception", async () => {
+test("matching recipients update one canonical message and retain retry identity without extra jobs", async () => {
   const { backend, documents } = database();
   const first = page();
-  const second = page(25_000);
-  const third = page(40_000);
+  const second = { ...page(25_000), ric: 456 };
+  const third = page(190_000);
   await backend.ingest([first], true, Date.parse(first.receivedAt));
   documents.get(`messages/${first.sourceId}`)!.location = "ŠOLA GOLO";
   documents.get(`messages/${first.sourceId}`)!.spinEventId = "472470";
-  documents.get(`messages/${first.sourceId}`)!.spinMatchStatus = "provisional";
   await backend.ingest([second, third], true, Date.parse(first.receivedAt));
-  expect(documents.get(`messages/${second.sourceId}`)?.duplicateOf).toBe(
-    first.sourceId,
-  );
-  const repeat = documents.get(`messages/${second.sourceId}`)!;
-  expect(repeat).toMatchObject({
-    deleted: true,
-    receivedAt: second.receivedAt,
-    content: "ŠOLA GOLO",
-    ric: second.ric,
-    function: second.function,
-    type: second.type,
-    updatedAt: FieldValue.serverTimestamp(),
+  expect(documents.has(`messages/${second.sourceId}`)).toBe(false);
+  expect(documents.get(`messages/${first.sourceId}`)).toMatchObject({
+    receivedAt: first.receivedAt,
+    rics: [123, 456],
+    sourceIds: [first.sourceId, second.sourceId],
+    location: "ŠOLA GOLO",
+    spinEventId: "472470",
   });
-  expect(repeat).not.toHaveProperty("location");
-  expect(repeat).not.toHaveProperty("spinEventId");
-  expect(repeat).not.toHaveProperty("spinMatchStatus");
   expect(documents.has(`locationJobs/${second.sourceId}`)).toBe(false);
   expect(documents.has(`spinJobs/${second.sourceId}`)).toBe(false);
   expect(
     [...documents.values()].filter((doc) => doc.messageId === second.sourceId),
   ).toHaveLength(0);
   const beforeRetry = [...documents.entries()];
-  await backend.ingest([second], true, Date.parse(second.receivedAt));
-  expect([...documents.entries()]).toEqual(beforeRetry);
-  expect(documents.get(`messages/${third.sourceId}`)?.duplicateOf).toBeNull();
-  expect(documents.get(`messages/${third.sourceId}`)).not.toHaveProperty(
-    "deleted",
+  const restarted = new FirebaseBackend(backend.db);
+  await restarted.ingest(
+    [second],
+    true,
+    Date.parse(second.receivedAt) + 86_400_000,
   );
+  expect([...documents.entries()]).toEqual(beforeRetry);
+  expect(documents.get(`messages/${third.sourceId}`)?.sourceIds).toEqual([
+    third.sourceId,
+  ]);
   expect(documents.has(`locationJobs/${third.sourceId}`)).toBe(true);
   expect(documents.has(`spinJobs/${third.sourceId}`)).toBe(true);
+  await restarted.deleteMessage(second.sourceId);
+  expect(documents.get(`messages/${first.sourceId}`)?.deleted).toBe(true);
+  const afterDelete = [...documents.entries()];
+  await restarted.ingest([first, second], false);
+  expect([...documents.entries()]).toEqual(afterDelete);
+});
+
+test("the time window remains anchored and late outbox uploads can find newer canonicals", async () => {
+  const { backend, documents } = database();
+  const newer = page(120_000);
+  const older = { ...page(), ric: 456 };
+  await backend.ingest([newer, older, page(240_000), page(310_000)], false);
+  expect(documents.get(`messages/${newer.sourceId}`)?.rics).toEqual([123, 456]);
   expect(
-    documents.get(`messages/${third.sourceId}`)?.spinEventId,
-  ).toBeUndefined();
+    [...documents.keys()].filter((path) => path.startsWith("messages/")),
+  ).toHaveLength(2);
 });
 
 test("imports suppress all jobs, expiry suppresses push, and tone/empty pages skip inference", async () => {

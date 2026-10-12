@@ -9,6 +9,11 @@ import type { Config } from "./config";
 import { isReceptionId, type Outbox, type Reception } from "./outbox";
 import { isObject, isRic, type Page } from "./radio/decoder";
 import { SPIN_MATCHING_HORIZON } from "./spin";
+import {
+  canGroupPages,
+  GROUPING_WINDOW_MS,
+  normalizeContent,
+} from "./pager-group";
 
 export interface RicUnit {
   ric: number;
@@ -21,19 +26,11 @@ export interface CloudDevice {
   expoPushToken?: string | null;
 }
 export interface FirebaseMessage extends Page {
-  duplicateOf: string | null;
+  rics: number[];
+  sourceIds: string[];
   location?: string | null;
   spinEventId?: string;
   spinMatchStatus?: "provisional" | "confirmed";
-}
-
-function normalizeContent(content: string) {
-  return (
-    content
-      .replace(/<CR><LF>|<(?:CR|LF)>|\r\n?|\n/g, " ")
-      // oxlint-disable-next-line no-control-regex
-      .replace(/(?:<(?:EOT|NUL)>|[\x00\x04])+$/, "")
-  );
 }
 
 const receivedAtFormatter = new Intl.DateTimeFormat("en-GB", {
@@ -88,9 +85,17 @@ export class FirebaseBackend {
       if (notify) await this.users.ready();
       await this.db.runTransaction(async (transaction) => {
         const messageRef = this.db.collection("messages").doc(messageId);
-        const existing = await transaction.get(messageRef);
-        if (existing.exists) {
+        const seen = await transaction.get(
+          this.db
+            .collection("messages")
+            .where("sourceIds", "array-contains", messageId)
+            .limit(1),
+        );
+        const existing = seen.docs[0];
+        if (existing) {
           if (existing.get("deleted") === true) return;
+          // Source IDs are immutable. Only the anchor retains the original payload.
+          if (existing.id !== messageId) return;
           const stored = existing.data() as FirebaseMessage;
           if (
             stored.receivedAt !== message.receivedAt ||
@@ -110,38 +115,45 @@ export class FirebaseBackend {
             .where(
               "receivedAt",
               ">=",
-              new Date(Date.parse(message.receivedAt) - 30_000).toISOString(),
+              new Date(
+                Date.parse(message.receivedAt) - GROUPING_WINDOW_MS,
+              ).toISOString(),
             )
-            .where("receivedAt", "<=", message.receivedAt)
-            .orderBy("receivedAt", "desc"),
+            .where(
+              "receivedAt",
+              "<=",
+              new Date(
+                Date.parse(message.receivedAt) + GROUPING_WINDOW_MS,
+              ).toISOString(),
+            )
+            .orderBy("receivedAt", "asc"),
         );
         const source = candidates.docs.find((document) => {
           const candidate = document.data() as FirebaseMessage;
           return (
             document.get("deleted") !== true &&
-            candidate.duplicateOf === null &&
-            candidate.ric === message.ric &&
-            candidate.function === message.function &&
-            candidate.type === message.type &&
-            normalizeContent(candidate.content) === message.content
+            canGroupPages(candidate, message)
           );
         });
-        const duplicateOf = source?.id ?? null;
+        if (source) {
+          const stored = source.data() as FirebaseMessage;
+          transaction.update(source.ref, {
+            rics: [...new Set([...stored.rics, message.ric])],
+            sourceIds: [...stored.sourceIds, messageId],
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          return;
+        }
         const expiresAt = Date.parse(message.receivedAt) + 300_000;
-        const fresh = notify && duplicateOf === null && expiresAt > now;
+        const fresh = notify && expiresAt > now;
         const recipients = fresh ? this.users.recipients() : [];
         transaction.create(messageRef, {
           ...message,
-          duplicateOf,
+          rics: [message.ric],
+          sourceIds: [messageId],
           updatedAt: FieldValue.serverTimestamp(),
-          ...(source ? { deleted: true } : {}),
         });
-        if (
-          notify &&
-          duplicateOf === null &&
-          message.type !== "tone" &&
-          message.content.trim()
-        ) {
+        if (notify && message.type !== "tone" && message.content.trim()) {
           transaction.create(
             this.db.collection("locationJobs").doc(messageId),
             {
@@ -194,32 +206,34 @@ export class FirebaseBackend {
     if (!/^[A-Za-z0-9_-]+$/.test(messageId))
       throw new FirebaseInputError("Invalid message ID");
     await this.db.runTransaction(async (transaction) => {
-      const messageRef = this.db.collection("messages").doc(messageId);
-      const [message, pushes] = await Promise.all([
-        transaction.get(messageRef),
+      const [seen, pushes] = await Promise.all([
+        transaction.get(
+          this.db
+            .collection("messages")
+            .where("sourceIds", "array-contains", messageId),
+        ),
         transaction.get(
           this.db.collection("pushJobs").where("active", "==", true),
         ),
       ]);
+      const message =
+        seen.docs[0] ??
+        (await transaction.get(this.db.collection("messages").doc(messageId)));
+      const messageRef = message.ref;
+      const canonicalId = message.id;
       if (!message.exists) throw new FirebaseInputError("Message is missing");
       if (message.get("deleted") !== true) {
         // Keep the original payload readable by older app bundles during rollout.
         // Retain the marker so phones returning from offline can remove their copy.
-        transaction.set(messageRef, {
-          receivedAt: message.get("receivedAt"),
-          ric: message.get("ric"),
-          function: message.get("function"),
-          type: message.get("type"),
-          content: message.get("content"),
-          duplicateOf: message.get("duplicateOf") ?? null,
+        transaction.update(messageRef, {
           deleted: true,
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
-      transaction.delete(this.db.collection("locationJobs").doc(messageId));
-      transaction.delete(this.db.collection("spinJobs").doc(messageId));
+      transaction.delete(this.db.collection("locationJobs").doc(canonicalId));
+      transaction.delete(this.db.collection("spinJobs").doc(canonicalId));
       for (const push of pushes.docs)
-        if (push.get("messageId") === messageId) transaction.delete(push.ref);
+        if (push.get("messageId") === canonicalId) transaction.delete(push.ref);
     });
   }
 

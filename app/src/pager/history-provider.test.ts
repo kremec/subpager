@@ -154,7 +154,7 @@ function render() {
 const message: PagerMessage = {
   id: "native-message-id",
   receivedAt: "2026-10-08T10:00:00Z",
-  ric: 123,
+  rics: [123],
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",

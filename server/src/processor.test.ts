@@ -44,6 +44,7 @@ interface Query {
   collection: string;
   field: string;
   value: unknown;
+  operator: string;
 }
 interface Listener {
   name: string;
@@ -109,6 +110,7 @@ class TestFirestore {
         collection: name,
         field,
         value,
+        operator,
         onSnapshot,
         get: async () => ({
           docs: [...this.docs.entries()]
@@ -117,7 +119,9 @@ class TestFirestore {
                 path.startsWith(`${name}/`) &&
                 (operator === ">="
                   ? String(data[field]) >= String(value)
-                  : data[field] === value),
+                  : operator === "array-contains"
+                    ? Array.isArray(data[field]) && data[field].includes(value)
+                    : data[field] === value),
             )
             .map(([path]) => this.snapshot({ path, id: path.split("/")[1]! })),
         }),
@@ -168,11 +172,15 @@ class TestFirestore {
         this.reads++;
         if ("path" in target) return this.snapshot(target);
         const docs = [...this.docs.entries()]
-          .filter(
-            ([path, data]) =>
+          .filter(([path, data]) => {
+            const field = data[target.field];
+            return (
               path.startsWith(`${target.collection}/`) &&
-              data[target.field] === target.value,
-          )
+              (target.operator === "array-contains"
+                ? Array.isArray(field) && field.includes(target.value)
+                : field === target.value)
+            );
+          })
           .map(([path]) => this.snapshot({ path, id: path.split("/")[1]! }));
         return { docs };
       },
@@ -1602,9 +1610,10 @@ describe("durable SPIN matching", () => {
     spinFixture(store);
     store.put("messages/spin", {
       ...store.docs.get("messages/spin"),
-      ric: 790241,
+      rics: [790241, 790242],
     });
     store.put("ricUnits/790241", { unitName: "Gasilska brigada Ljubljana" });
+    store.put("ricUnits/790242", { unitName: "PGD Golo" });
     store.put("messages/repeat", { duplicateOf: "spin" });
     const partial = {
       ...spinEvent,
@@ -1623,7 +1632,9 @@ describe("durable SPIN matching", () => {
         const input = JSON.parse(
           JSON.parse(options.body as string).input[1].content,
         );
-        expect(input.pager.unitName).toBe("Gasilska brigada Ljubljana");
+        expect(input.pager.unitName).toBe(
+          "Gasilska brigada Ljubljana, PGD Golo",
+        );
         requests++;
         return requests === 1
           ? spinResponse(partial.id, 0)
@@ -1753,6 +1764,7 @@ describe("durable SPIN matching", () => {
       ...store.docs.get("messages/spin"),
       spinEventId: spinEvent.id,
       spinMatchStatus: "confirmed",
+      sourceIds: ["spin", "repeat"],
     });
     store.put("messages/repeat", {
       duplicateOf: "spin",

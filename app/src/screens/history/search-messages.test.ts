@@ -10,7 +10,7 @@ const messages: PagerMessage[] = [
   {
     id: "message-3",
     receivedAt: "2026-10-08T10:00:00Z",
-    ric: 123,
+    rics: [123],
     function: 0,
     type: "alpha",
     content: "Požar v Šiški. Žiga preveri zadnji vhod.",
@@ -18,7 +18,7 @@ const messages: PagerMessage[] = [
   {
     id: "message-2",
     receivedAt: "2026-10-08T09:00:00Z",
-    ric: 456,
+    rics: [456],
     function: 0,
     type: "alpha",
     content: "Preveri vhod na severni strani.",
@@ -26,7 +26,7 @@ const messages: PagerMessage[] = [
   {
     id: "message-1",
     receivedAt: "2026-10-08T08:00:00Z",
-    ric: 123,
+    rics: [123],
     function: 0,
     type: "tone",
     content: "",
@@ -123,4 +123,11 @@ test("search includes the linked public SPIN report and follows its revisions", 
       "fasado",
     ),
   ).toEqual([]);
+});
+
+test("search includes every stored RIC and mapped unit in one row", () => {
+  const message = { ...messages[0]!, rics: [123, 789] };
+  const index = indexMessages([message], new Map([[789, "PGD Golo"]]));
+  expect(searchMessages(index, "0000789 golo")).toEqual([message]);
+  expect(searchMessages(index, "0000123")).toEqual([message]);
 });

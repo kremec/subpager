@@ -72,7 +72,7 @@ export const MessageList: FC<MessageListProps> = (props) => {
       renderItem={({ item }) => (
         <MessageRow
           message={item}
-          unitName={unitNames.get(item.ric)}
+          unitNames={unitNames}
           spinEvent={
             item.spinEventId ? spinEvents.get(item.spinEventId) : undefined
           }

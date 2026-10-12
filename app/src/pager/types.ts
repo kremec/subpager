@@ -5,7 +5,7 @@ export interface Connection {
 export interface PagerMessage {
   id: string;
   receivedAt: string;
-  ric: number;
+  rics: number[];
   function: number;
   type: "alpha" | "numeric" | "tone";
   content: string;

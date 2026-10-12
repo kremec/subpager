@@ -9,7 +9,7 @@ import type { PagerMessage } from "@/pager/types";
 const message: PagerMessage = {
   id: "native-message-id",
   receivedAt: "2026-10-08T10:00:00Z",
-  ric: 123,
+  rics: [123],
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
@@ -77,6 +77,7 @@ test.each([
     version: 2,
   },
   { name: "repaired cache on a later launch", spinColumns: true, version: 3 },
+  { name: "grouped cache on a later launch", spinColumns: true, version: 4 },
 ])(
   "$name preserves history and refreshes links only when needed",
   (fixture) => {
@@ -85,7 +86,7 @@ test.each([
     CREATE TABLE approval (uid TEXT PRIMARY KEY NOT NULL);
     CREATE TABLE messages (
       id TEXT PRIMARY KEY NOT NULL, receivedAt TEXT NOT NULL,
-      ric INTEGER NOT NULL, function INTEGER NOT NULL, type TEXT NOT NULL,
+      ${fixture.version === 4 ? "rics TEXT NOT NULL" : "ric INTEGER NOT NULL"}, function INTEGER NOT NULL, type TEXT NOT NULL,
       content TEXT NOT NULL, duplicateOf TEXT, location TEXT
       ${fixture.spinColumns ? ", spinEventId TEXT, spinMatchStatus TEXT" : ""}
     );
@@ -100,18 +101,25 @@ test.each([
   `);
     existing
       .query(
-        "INSERT INTO messages (id, receivedAt, ric, function, type, content, duplicateOf, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO messages (id, receivedAt, ${fixture.version === 4 ? "rics" : "ric"}, function, type, content, duplicateOf, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         message.id,
         message.receivedAt,
-        message.ric,
+        fixture.version === 4 ? JSON.stringify(message.rics) : message.rics[0]!,
         message.function,
         message.type,
         message.content,
         "original-message-id",
         null,
       );
+    if (fixture.spinColumns) {
+      existing
+        .query(
+          "UPDATE messages SET spinEventId = ?, spinMatchStatus = ? WHERE id = ?",
+        )
+        .run("472470", "confirmed", message.id);
+    }
     // The rolled-back bundle cached these deletion markers as ordinary rows.
     const staleMessages: PagerMessage[] =
       fixture.version === 2
@@ -130,7 +138,7 @@ test.each([
         .run(
           stale.id,
           stale.receivedAt,
-          stale.ric,
+          stale.rics[0]!,
           stale.function,
           stale.type,
           stale.content,
@@ -144,20 +152,24 @@ test.each([
         .map((row) => ({
           ...row,
           location: null,
-          spinEventId: null,
-          spinMatchStatus: null,
+          spinEventId:
+            fixture.spinColumns && row.id === message.id ? "472470" : null,
+          spinMatchStatus:
+            fixture.spinColumns && row.id === message.id
+              ? ("confirmed" as const)
+              : null,
         }))
         .sort((a, b) => b.id.localeCompare(a.id)),
     );
     expect(cachedSync("existing-device")).toEqual({
-      initialized: fixture.version === 3,
+      initialized: fixture.version === 4,
       cursor:
-        fixture.version === 3
+        fixture.version === 4
           ? { seconds: 123, nanoseconds: 456 }
           : { seconds: 0, nanoseconds: 0 },
     });
     expect(sqlite!.query("PRAGMA user_version").get()).toEqual({
-      user_version: 3,
+      user_version: 4,
     });
     const linked = {
       ...message,
@@ -195,13 +207,18 @@ test("the old JSON cache migrates into columns without losing offline history", 
     messages TEXT NOT NULL,
     units TEXT NOT NULL
   )`);
-  legacy
-    .query("INSERT INTO history VALUES (1, ?, ?, ?)")
-    .run(
-      "legacy-device",
-      JSON.stringify([{ ...message, duplicateOf: "original-message-id" }]),
-      JSON.stringify([{ ric: 123, unitName: "Golo" }]),
-    );
+  legacy.query("INSERT INTO history VALUES (1, ?, ?, ?)").run(
+    "legacy-device",
+    JSON.stringify([
+      {
+        ...message,
+        rics: undefined,
+        ric: message.rics[0],
+        duplicateOf: "original-message-id",
+      },
+    ]),
+    JSON.stringify([{ ric: 123, unitName: "Golo" }]),
+  );
   legacy.close();
 
   initializeDatabase();
@@ -210,9 +227,9 @@ test("the old JSON cache migrates into columns without losing offline history", 
     messages: [{ ...message, location: null }],
     units: [{ ric: 123, unitName: "Golo" }],
   });
-  expect(sqlite!.query("SELECT content, ric FROM messages").get()).toEqual({
+  expect(sqlite!.query("SELECT content, rics FROM messages").get()).toEqual({
     content: message.content,
-    ric: 123,
+    rics: "[123]",
   });
   expect(
     sqlite!
@@ -241,6 +258,7 @@ test("snapshot replacement removes deleted rows and reads messages newest first"
     ...message,
     id: "newer-message",
     receivedAt: "2026-10-08T11:00:00Z",
+    rics: [123, 456],
     location: "Golo",
   };
   cacheMessages("approved-device", [message, newer]);
@@ -312,7 +330,7 @@ test("a failed message batch rolls back both records and cursor", () => {
   const changes = {
     messages: [
       { ...message, location: "Uncommitted" },
-      { ...message, id: "invalid", ric: Number.NaN },
+      { ...message, id: "invalid", function: Number.NaN },
     ],
     removedIds: ["newer"],
     cursor: { seconds: 999, nanoseconds: 999 },

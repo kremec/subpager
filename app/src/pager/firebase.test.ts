@@ -9,7 +9,9 @@ import type {
   SyncTimestamp,
 } from "@/pager/types";
 
-type MessageDocument = PagerMessage & {
+type MessageDocument = Omit<PagerMessage, "rics"> & {
+  rics?: number[];
+  ric?: number;
   updatedAt?: SyncTimestamp;
   deleted?: boolean;
   duplicateOf?: string | null;
@@ -42,7 +44,7 @@ const initial: CachedSync = {
 const fixture: PagerMessage = {
   id: "native-message-id",
   receivedAt: "2026-10-08T10:00:00Z",
-  ric: 123,
+  rics: [123],
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
@@ -148,7 +150,7 @@ test("bootstrap includes legacy messages and server metadata confirmation persis
   watchMessages(initial, accept, () => {});
   snapshot([fixture], true);
   expect(received).toEqual([]);
-  snapshot([fixture], false, []);
+  snapshot([{ ...fixture, rics: undefined, ric: 123 }], false, []);
   expect(received).toEqual([
     {
       messages: [fixture],
@@ -386,8 +388,8 @@ test("message snapshots carry provisional links and later confirmation", () => {
     spinEventId: "472584",
     spinMatchStatus: "provisional",
   };
-  snapshot([linked]);
-  expect(received[0]?.messages[0]).toEqual(linked);
+  snapshot([{ ...linked, rics: [123, 456], ric: 123 }]);
+  expect(received[0]?.messages[0]).toEqual({ ...linked, rics: [123, 456] });
   const confirmed: PagerMessage = {
     ...linked,
     spinMatchStatus: "confirmed",

@@ -8,7 +8,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
           message: {
             id: "00gnyMBvwVctkPYnd5qR",
             receivedAt: "2026-10-10T11:22:14.403Z",
-            ric: 790273,
+            rics: [790273],
             function: 3,
             type: "alpha",
             content:
@@ -32,7 +32,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
           message: {
             id: "kJH7lBOZEGJPdRl5I0yk",
             receivedAt: "2026-10-09T12:29:29.316Z",
-            ric: 790793,
+            rics: [790793],
             function: 3,
             type: "alpha",
             content: "GORI OGRAJA PRED HIŠO - GOLO 40",
@@ -55,7 +55,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
           message: {
             id: "tgc3eoHUeZ5RBD4h8uTl",
             receivedAt: "2026-10-09T12:29:28.930Z",
-            ric: 791833,
+            rics: [791833],
             function: 3,
             type: "alpha",
             content: "GORI OGRAJA PRED HIŠO - GOLO 40",
@@ -78,7 +78,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
           message: {
             id: "14",
             receivedAt: "2026-10-08T10:50:58.826Z",
-            ric: 790321,
+            rics: [790321],
             function: 3,
             type: "alpha",
             content:
@@ -102,7 +102,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
           message: {
             id: "11",
             receivedAt: "2026-10-08T09:12:06.775Z",
-            ric: 790505,
+            rics: [790505],
             function: 3,
             type: "alpha",
             content: "DIMNIŠKI POŽAR - LUKOVICA, ZGORNJE PRAPREČE 5",
@@ -125,7 +125,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
           message: {
             id: "3",
             receivedAt: "2026-10-07T17:50:26.328Z",
-            ric: 790521,
+            rics: [790521],
             function: 3,
             type: "alpha",
             content:
@@ -149,7 +149,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
           message: {
             id: "1",
             receivedAt: "2026-10-07T15:42:44.612Z",
-            ric: 790241,
+            rics: [790241],
             function: 3,
             type: "alpha",
             content: "IGNIS-GBL: POZAR NAPE  Vodnikovo naselje 34",
