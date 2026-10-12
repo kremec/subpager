@@ -178,20 +178,37 @@ function page(offset = 0, source = offset + 1): Reception {
   };
 }
 
-test("monthly generic tests skip storage and jobs, while other test messages remain", async () => {
+test("monthly generic tests retain hidden reception history without jobs, while other tests remain visible", async () => {
   const { backend, documents } = database();
   documents.set("users/approved", {
     expoPushToken: "ExponentPushToken[test]",
     approved: true,
   });
-  const ignored = [
+  const monthly = [
     "TEST - MESEČNI- prejem javi poveljniku",
-    " test - mesecni - PREJEM   JAVI POVELJNIKU ",
+    " test - mesecni- PREJEM   JAVI POVELJNIKU ",
     "TEST - MESEČNI- prejem<CR><LF>javi poveljniku<EOT><NUL>",
   ].map((content, index) => ({ ...page(index), content }));
-  await backend.ingest(ignored, true, Date.parse(page().receivedAt));
-  await backend.ingest(ignored, false);
-  expect([...documents.keys()]).toEqual(["users/approved"]);
+  await backend.ingest(monthly, true, Date.parse(page().receivedAt));
+  await backend.ingest(monthly, false);
+  const path = `messages/${monthly[0]!.sourceId}`;
+  expect([...documents.keys()]).toEqual(["users/approved", path]);
+  expect(documents.get(path)?.deleted).toBe(true);
+  expect(documents.get(path)?.receptions).toEqual(
+    monthly.map((item) => ({ ric: item.ric, time: item.receivedAt })),
+  );
+  const later = { ...page(86_400_000, 20), content: monthly[0]!.content };
+  const restarted = new FirebaseBackend(backend.db);
+  await restarted.ingest([later], true, Date.parse(later.receivedAt));
+  await restarted.ingest([later], true, Date.parse(later.receivedAt));
+  expect([...documents.keys()]).toEqual(["users/approved", path]);
+  expect(documents.get(path)?.deleted).toBe(true);
+  expect(documents.get(path)?.receptions).toEqual(
+    [...monthly, later].map((item) => ({
+      ric: item.ric,
+      time: item.receivedAt,
+    })),
+  );
   const retained = [
     "IPKOM TEST PAGING",
     "test za it100",
@@ -202,6 +219,11 @@ test("monthly generic tests skip storage and jobs, while other test messages rem
   expect(
     retained.map((item) => documents.get(`messages/${item.sourceId}`)?.content),
   ).toEqual(retained.map((item) => item.content));
+  expect(
+    retained.every(
+      (item) => documents.get(`messages/${item.sourceId}`)?.deleted !== true,
+    ),
+  ).toBe(true);
   expect([...documents.keys()].some((path) => path.includes("Jobs/"))).toBe(
     false,
   );

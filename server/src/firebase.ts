@@ -94,13 +94,11 @@ export class FirebaseBackend {
         content: normalizeContent(raw.content),
         receptions: [reception],
       };
-      if (
+      const monthlyTest =
         /^\s*TEST\s*-\s*MESE[ČC]NI\s*-\s*prejem\s+javi\s+poveljniku\s*$/i.test(
           message.content,
-        )
-      )
-        continue;
-      if (notify) await this.users.ready();
+        );
+      if (notify && !monthlyTest) await this.users.ready();
       await this.db.runTransaction(async (transaction) => {
         const messageRef = this.db.collection("messages").doc(messageId);
         const existing = await transaction.get(messageRef);
@@ -134,7 +132,7 @@ export class FirebaseBackend {
         )
           return;
         const source = matched
-          .filter((doc) => doc.get("deleted") !== true)
+          .filter((doc) => monthlyTest || doc.get("deleted") !== true)
           .sort((a, b) => {
             const first = (a.get("receptions") as PagerReception[])[0]!.time;
             const second = (b.get("receptions") as PagerReception[])[0]!.time;
@@ -145,10 +143,11 @@ export class FirebaseBackend {
         const expiresAt = Date.parse(reception.time) + 300_000;
         const newBatch =
           !stored || startsNotificationBatch(stored.receptions, reception.time);
-        const fresh = notify && newBatch && expiresAt > now;
+        const fresh = notify && !monthlyTest && newBatch && expiresAt > now;
         const recipients = fresh ? this.users.recipients() : [];
         const infer =
           notify &&
+          !monthlyTest &&
           newBatch &&
           message.type !== "tone" &&
           message.content.trim();
@@ -160,11 +159,13 @@ export class FirebaseBackend {
             receptions: [...stored!.receptions, reception].sort((a, b) =>
               a.time.localeCompare(b.time),
             ),
+            ...(monthlyTest && { deleted: true }),
             updatedAt: FieldValue.serverTimestamp(),
           });
         } else
           transaction.create(messageRef, {
             ...message,
+            ...(monthlyTest && { deleted: true }),
             updatedAt: FieldValue.serverTimestamp(),
           });
         if (infer) {
