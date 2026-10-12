@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,16 @@ import { FirebaseBackend } from "./firebase";
 import type { Reception } from "./outbox";
 
 const idGenerator = new Firestore({ projectId: "subpager-test" });
+const unions = new WeakMap<FieldValue, unknown[]>();
+const arrayUnion = FieldValue.arrayUnion;
+const unionSpy = spyOn(FieldValue, "arrayUnion").mockImplementation(
+  (...values) => {
+    const transform = arrayUnion(...values);
+    unions.set(transform, values);
+    return transform;
+  },
+);
+afterAll(() => unionSpy.mockRestore());
 
 type Fields = Record<string, unknown>;
 interface Reference {
@@ -140,12 +150,17 @@ function database() {
           writes.push(() => documents.set(reference.path, fields));
         },
         update: (reference: Reference, fields: Fields) =>
-          writes.push(() =>
-            documents.set(reference.path, {
-              ...documents.get(reference.path),
-              ...fields,
-            }),
-          ),
+          writes.push(() => {
+            const updated = { ...documents.get(reference.path) };
+            for (const [key, value] of Object.entries(fields)) {
+              const values =
+                value instanceof FieldValue ? unions.get(value) : undefined;
+              updated[key] = values
+                ? [...new Set([...(updated[key] as unknown[]), ...values])]
+                : value;
+            }
+            documents.set(reference.path, updated);
+          }),
         set: (reference: Reference, fields: Fields) =>
           writes.push(() => documents.set(reference.path, fields)),
         delete: (reference: Reference) =>

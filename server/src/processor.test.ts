@@ -1231,6 +1231,7 @@ function spinFixture(store: TestFirestore, overrides: Partial<SpinJob> = {}) {
   store.put("spinJobs/spin", { ...job });
   store.put("messages/spin", {
     content: "GORI OGRAJA PRED HIŠO - GOLO 40",
+    sourceIds: ["spin"],
     receivedAt: new Date(now).toISOString(),
     type: "alpha",
     duplicateOf: null,

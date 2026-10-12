@@ -136,10 +136,9 @@ export class FirebaseBackend {
           );
         });
         if (source) {
-          const stored = source.data() as FirebaseMessage;
           transaction.update(source.ref, {
-            rics: [...new Set([...stored.rics, message.ric])],
-            sourceIds: [...stored.sourceIds, messageId],
+            rics: FieldValue.arrayUnion(message.ric),
+            sourceIds: FieldValue.arrayUnion(messageId),
             updatedAt: FieldValue.serverTimestamp(),
           });
           return;
@@ -216,12 +215,10 @@ export class FirebaseBackend {
           this.db.collection("pushJobs").where("active", "==", true),
         ),
       ]);
-      const message =
-        seen.docs[0] ??
-        (await transaction.get(this.db.collection("messages").doc(messageId)));
+      const message = seen.docs[0];
+      if (!message) throw new FirebaseInputError("Message is missing");
       const messageRef = message.ref;
       const canonicalId = message.id;
-      if (!message.exists) throw new FirebaseInputError("Message is missing");
       if (message.get("deleted") !== true) {
         // Keep the original payload readable by older app bundles during rollout.
         // Retain the marker so phones returning from offline can remove their copy.

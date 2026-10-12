@@ -18,9 +18,8 @@ export async function unlinkSpinEvent(db: Firestore, messageId: string) {
     const seen = await tx.get(
       db.collection("messages").where("sourceIds", "array-contains", messageId),
     );
-    const root =
-      seen.docs[0] ?? (await tx.get(db.collection("messages").doc(messageId)));
-    if (!root.exists) throw new Error("Pager message not found");
+    const root = seen.docs[0];
+    if (!root) throw new Error("Pager message not found");
     const rootId = root.id;
     const rootRef = root.ref;
     if (root.get("deleted") === true) return false;
