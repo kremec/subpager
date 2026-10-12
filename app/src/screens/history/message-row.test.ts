@@ -32,6 +32,8 @@ test("reception history keeps repeated RICs in chronological order above one mes
     type: "alpha",
     content: "One stored message",
   };
+  // Hermes does not implement Array.prototype.toSorted.
+  Object.defineProperty(message.receptions, "toSorted", { value: undefined });
   // oxlint-disable-next-line react-hooks/rules-of-hooks -- Exercise the component with its theme mocked.
   const row = MessageRow({
     message,

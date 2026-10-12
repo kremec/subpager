@@ -26,8 +26,8 @@ export const MessageRow: FC<MessageRowProps> = (props) => {
       }}
     >
       <View style={{ gap: theme.spacing.xs }}>
-        {message.receptions
-          .toSorted((a, b) => a.time.localeCompare(b.time))
+        {[...message.receptions]
+          .sort((a, b) => a.time.localeCompare(b.time))
           .map((reception, index) => (
             <View
               key={`${reception.ric}:${reception.time}:${index}`}
