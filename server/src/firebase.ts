@@ -94,6 +94,12 @@ export class FirebaseBackend {
         content: normalizeContent(raw.content),
         receptions: [reception],
       };
+      if (
+        /^\s*TEST\s*-\s*MESE[ČC]NI\s*-\s*prejem\s+javi\s+poveljniku\s*$/i.test(
+          message.content,
+        )
+      )
+        continue;
       if (notify) await this.users.ready();
       await this.db.runTransaction(async (transaction) => {
         const messageRef = this.db.collection("messages").doc(messageId);

@@ -178,6 +178,35 @@ function page(offset = 0, source = offset + 1): Reception {
   };
 }
 
+test("monthly generic tests skip storage and jobs, while other test messages remain", async () => {
+  const { backend, documents } = database();
+  documents.set("users/approved", {
+    expoPushToken: "ExponentPushToken[test]",
+    approved: true,
+  });
+  const ignored = [
+    "TEST - MESEČNI- prejem javi poveljniku",
+    " test - mesecni - PREJEM   JAVI POVELJNIKU ",
+    "TEST - MESEČNI- prejem<CR><LF>javi poveljniku<EOT><NUL>",
+  ].map((content, index) => ({ ...page(index), content }));
+  await backend.ingest(ignored, true, Date.parse(page().receivedAt));
+  await backend.ingest(ignored, false);
+  expect([...documents.keys()]).toEqual(["users/approved"]);
+  const retained = [
+    "IPKOM TEST PAGING",
+    "test za it100",
+    "TEST - DNEVNI- prejem javi poveljniku",
+    "TEST - MESEČNI- prejem javi poveljniku NUJNO",
+  ].map((content, index) => ({ ...page(index + 10), content }));
+  await backend.ingest(retained, false);
+  expect(
+    retained.map((item) => documents.get(`messages/${item.sourceId}`)?.content),
+  ).toEqual(retained.map((item) => item.content));
+  expect([...documents.keys()].some((path) => path.includes("Jobs/"))).toBe(
+    false,
+  );
+});
+
 test("deletions retain a readable marker, remove pending jobs atomically and suppress reception retries", async () => {
   const { backend, documents, fail } = database();
   const reception = page();
