@@ -82,12 +82,14 @@ export function watchMessages(
         : changes
             .filter((change) => change.type !== "removed")
             .map((change) => change.doc);
-      const messages = documents.map((item) => {
-        const { updatedAt, ...message } = item.data() as Omit<
+      const deletedIds: string[] = [];
+      const messages = documents.flatMap((item) => {
+        const { updatedAt, deleted, ...message } = item.data() as Omit<
           PagerMessage,
           "id"
         > & {
           updatedAt?: SyncTimestamp;
+          deleted?: boolean;
         };
         if (
           updatedAt &&
@@ -99,16 +101,25 @@ export function watchMessages(
             seconds: updatedAt.seconds,
             nanoseconds: updatedAt.nanoseconds,
           };
-        return { ...message, id: item.id };
+        if (deleted === true) {
+          deletedIds.push(item.id);
+          return [];
+        }
+        return [{ ...message, id: item.id }];
       });
       const presentIds = first
         ? new Set(documents.map((item) => item.id))
         : null;
-      const removedIds = presentIds
-        ? [...confirmedIds].filter((id) => !presentIds.has(id))
-        : changes
-            .filter((change) => change.type === "removed")
-            .map((change) => change.doc.id);
+      const removedIds = [
+        ...new Set([
+          ...deletedIds,
+          ...(presentIds
+            ? [...confirmedIds].filter((id) => !presentIds.has(id))
+            : changes
+                .filter((change) => change.type === "removed")
+                .map((change) => change.doc.id)),
+        ]),
+      ];
       if (first || messages.length || removedIds.length) {
         if (
           !success({

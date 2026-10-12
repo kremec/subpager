@@ -68,14 +68,22 @@ test("optional storage opens lazily and can retry after an opening failure", () 
   failOpen = false;
 });
 
-test("adding SPIN references preserves existing messages and the sync cursor", () => {
-  const existing = new Database(databasePath);
-  existing.exec(`
+test.each([
+  { name: "pre-SPIN cache", spinColumns: false, version: 0 },
+  { name: "already upgraded SPIN cache", spinColumns: true, version: 0 },
+  { name: "cache from the first repair", spinColumns: true, version: 1 },
+  { name: "repaired cache on a later launch", spinColumns: true, version: 2 },
+])(
+  "$name preserves history and refreshes links only when needed",
+  (fixture) => {
+    const existing = new Database(databasePath);
+    existing.exec(`
     CREATE TABLE approval (uid TEXT PRIMARY KEY NOT NULL);
     CREATE TABLE messages (
       id TEXT PRIMARY KEY NOT NULL, receivedAt TEXT NOT NULL,
       ric INTEGER NOT NULL, function INTEGER NOT NULL, type TEXT NOT NULL,
       content TEXT NOT NULL, duplicateOf TEXT, location TEXT
+      ${fixture.spinColumns ? ", spinEventId TEXT, spinMatchStatus TEXT" : ""}
     );
     CREATE TABLE sync_state (
       slot INTEGER PRIMARY KEY CHECK (slot = 1), initialized INTEGER NOT NULL DEFAULT 0,
@@ -84,33 +92,62 @@ test("adding SPIN references preserves existing messages and the sync cursor", (
     );
     INSERT INTO approval VALUES ('existing-device');
     INSERT INTO sync_state VALUES (1, 1, 123, 456, 'r1');
+    PRAGMA user_version = ${fixture.version};
   `);
-  existing
-    .query("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(
-      message.id,
-      message.receivedAt,
-      message.ric,
-      message.function,
-      message.type,
-      message.content,
-      message.duplicateOf,
-      null,
+    existing
+      .query(
+        "INSERT INTO messages (id, receivedAt, ric, function, type, content, duplicateOf, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        message.id,
+        message.receivedAt,
+        message.ric,
+        message.function,
+        message.type,
+        message.content,
+        message.duplicateOf,
+        null,
+      );
+    existing.close();
+
+    initializeDatabase();
+    expect(cachedHistory("existing-device")?.messages).toEqual([
+      { ...message, location: null },
+    ]);
+    expect(cachedSync("existing-device")).toEqual({
+      initialized: fixture.version === 2,
+      cursor:
+        fixture.version === 2
+          ? { seconds: 123, nanoseconds: 456 }
+          : { seconds: 0, nanoseconds: 0 },
+    });
+    expect(sqlite!.query("PRAGMA user_version").get()).toEqual({
+      user_version: 2,
+    });
+    const linked = {
+      ...message,
+      spinEventId: "472470",
+      spinMatchStatus: "confirmed" as const,
+    };
+    const cursor = { seconds: 500, nanoseconds: 1 };
+    cacheMessages("existing-device", [linked], {
+      messages: [linked],
+      removedIds: [],
+      cursor,
+      reset: fixture.version < 2,
+    });
+    expect(cachedHistory("existing-device")?.messages[0]?.spinEventId).toBe(
+      linked.spinEventId,
     );
-  existing.close();
+    expect(cachedSync("existing-device")).toEqual({
+      initialized: true,
+      cursor,
+    });
 
-  initializeDatabase();
-  expect(cachedHistory("existing-device")?.messages).toEqual([
-    { ...message, location: null },
-  ]);
-  expect(cachedSync("existing-device")).toEqual({
-    initialized: true,
-    cursor: { seconds: 123, nanoseconds: 456 },
-  });
-
-  sqlite!.exec("PRAGMA query_only = ON");
-  cacheApproval("existing-device", false);
-});
+    sqlite!.exec("PRAGMA query_only = ON");
+    cacheApproval("existing-device", false);
+  },
+);
 
 test("the old JSON cache migrates into columns without losing offline history", () => {
   const legacy = new Database(databasePath);
@@ -240,7 +277,7 @@ test("a failed message batch rolls back both records and cursor", () => {
       { ...message, location: "Uncommitted" },
       { ...message, id: "invalid", ric: Number.NaN },
     ],
-    removedIds: [],
+    removedIds: ["newer"],
     cursor: { seconds: 999, nanoseconds: 999 },
     reset: false,
   };
@@ -249,6 +286,30 @@ test("a failed message batch rolls back both records and cursor", () => {
   ).toThrow();
   expect(cachedHistory("approved-device")).toEqual(history);
   expect(cachedSync("approved-device")).toEqual(sync);
+});
+
+test("a deletion-only batch removes cached rows and commits its cursor without clearing other history", () => {
+  const cursor = { seconds: 124, nanoseconds: 0 };
+  cacheMessages("approved-device", [], {
+    messages: [],
+    removedIds: ["newer"],
+    cursor,
+    reset: false,
+  });
+  const reopened = new Database(databasePath, { readonly: true });
+  try {
+    expect(reopened.query("SELECT id FROM messages").all()).toEqual([
+      { id: message.id },
+    ]);
+    expect(
+      reopened
+        .query("SELECT seconds, nanoseconds FROM sync_state WHERE slot = 1")
+        .get(),
+    ).toEqual(cursor);
+  } finally {
+    reopened.close();
+  }
+  expect(cachedApproval("approved-device")).toBe(true);
 });
 
 test("late provisional SPIN references are committed with the cursor and survive reopening", () => {

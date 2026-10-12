@@ -90,6 +90,7 @@ export class FirebaseBackend {
         const messageRef = this.db.collection("messages").doc(messageId);
         const existing = await transaction.get(messageRef);
         if (existing.exists) {
+          if (existing.get("deleted") === true) return;
           const stored = existing.data() as FirebaseMessage;
           if (
             stored.receivedAt !== message.receivedAt ||
@@ -117,6 +118,7 @@ export class FirebaseBackend {
         const source = candidates.docs.find((document) => {
           const candidate = document.data() as FirebaseMessage;
           return (
+            document.get("deleted") !== true &&
             candidate.duplicateOf === null &&
             candidate.ric === message.ric &&
             candidate.function === message.function &&
@@ -194,6 +196,39 @@ export class FirebaseBackend {
         }
       });
     }
+  }
+
+  async deleteMessage(messageId: string) {
+    if (!/^[A-Za-z0-9_-]+$/.test(messageId))
+      throw new FirebaseInputError("Invalid message ID");
+    await this.db.runTransaction(async (transaction) => {
+      const messageRef = this.db.collection("messages").doc(messageId);
+      const [message, pushes] = await Promise.all([
+        transaction.get(messageRef),
+        transaction.get(
+          this.db.collection("pushJobs").where("active", "==", true),
+        ),
+      ]);
+      if (!message.exists) throw new FirebaseInputError("Message is missing");
+      if (message.get("deleted") !== true) {
+        // Keep the original payload readable by older app bundles during rollout.
+        // Retain the marker so phones returning from offline can remove their copy.
+        transaction.set(messageRef, {
+          receivedAt: message.get("receivedAt"),
+          ric: message.get("ric"),
+          function: message.get("function"),
+          type: message.get("type"),
+          content: message.get("content"),
+          duplicateOf: message.get("duplicateOf") ?? null,
+          deleted: true,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      transaction.delete(this.db.collection("locationJobs").doc(messageId));
+      transaction.delete(this.db.collection("spinJobs").doc(messageId));
+      for (const push of pushes.docs)
+        if (push.get("messageId") === messageId) transaction.delete(push.ref);
+    });
   }
 
   async syncRicUnits(units: RicUnit[]) {

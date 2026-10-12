@@ -89,6 +89,14 @@ function getDatabase() {
             DROP TABLE history;
           `);
         }
+        if (
+          opened.getFirstSync<{ user_version: number }>("PRAGMA user_version")!
+            .user_version < 2
+        ) {
+          // Replay once for caches that dropped SPIN links or saved deletion markers
+          // as ordinary messages before their app bundle supported removals.
+          opened.execSync("DELETE FROM sync_state; PRAGMA user_version = 2;");
+        }
       });
     } catch (error) {
       opened.closeSync();

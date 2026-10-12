@@ -18,6 +18,7 @@
     "member:list": "bun -e 'import { listMembers } from \"./scripts/tools\"; await listMembers()'",
     "ric:sync": "bun -e 'import { syncRicUnits } from \"./scripts/tools\"; await syncRicUnits(Bun.argv[1])'",
     "spin:unlink": "bun -e 'import { unlinkSpin } from \"./scripts/tools\"; await unlinkSpin(Bun.argv[1])'",
+    "message:delete": "bun -e 'import { deleteMessage } from \"./scripts/tools\"; await deleteMessage(Bun.argv[1])'",
     "check": "tsc --noEmit",
     "test": "bun test",
     "lint": "oxlint src scripts",

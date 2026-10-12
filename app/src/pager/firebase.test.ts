@@ -9,9 +9,13 @@ import type {
   SyncTimestamp,
 } from "@/pager/types";
 
+type MessageDocument = PagerMessage & {
+  updatedAt?: SyncTimestamp;
+  deleted?: boolean;
+};
 interface Document {
   id: string;
-  data: () => (PagerMessage & { updatedAt?: SyncTimestamp }) | RicUnit;
+  data: () => MessageDocument | RicUnit;
 }
 interface Change {
   type: "added" | "modified" | "removed";
@@ -112,7 +116,7 @@ mock.module("firebase/firestore", () => ({
 const { registerDevice, watchMessages, watchRicUnits, watchSpinEvent } =
   await import("@/pager/firebase");
 function snapshot(
-  messages: (PagerMessage & { updatedAt?: SyncTimestamp })[],
+  messages: MessageDocument[],
   fromCache = false,
   changes?: Change[],
 ) {
@@ -186,6 +190,58 @@ test("resume uses an inclusive exact cursor and delivers incremental late locati
   });
   snapshot([modified, other], false, []);
   expect(received).toHaveLength(2);
+});
+
+test("an offline deletion removes an older cached pager and persists the deletion cursor", () => {
+  const cursor = { seconds: 123, nanoseconds: 456 };
+  watchMessages({ ...initial, initialized: true, cursor }, accept, () => {});
+  const marker = {
+    ...fixture,
+    content: "",
+    deleted: true,
+    updatedAt: { seconds: 200, nanoseconds: 1 },
+  };
+  snapshot([marker], true);
+  expect(received).toEqual([]);
+  snapshot([marker], false, []);
+  expect(received).toEqual([
+    {
+      messages: [],
+      removedIds: [fixture.id],
+      cursor: marker.updatedAt,
+      reset: false,
+    },
+  ]);
+});
+
+test("live deletion and failed cache writes replay removals without showing markers", () => {
+  let saved = true;
+  watchMessages(
+    initial,
+    (changes) => {
+      received.push(changes);
+      return saved;
+    },
+    () => {},
+  );
+  snapshot([fixture]);
+  const marker = {
+    ...fixture,
+    content: "",
+    deleted: true,
+    updatedAt: { seconds: 200, nanoseconds: 1 },
+  };
+  saved = false;
+  snapshot([marker], false, [
+    { type: "modified", doc: { id: marker.id, data: () => marker } },
+  ]);
+  expect(received.at(-1)?.removedIds).toEqual([fixture.id]);
+  expect(received.at(-1)?.messages).toEqual([]);
+  saved = true;
+  snapshot([marker], false, []);
+  expect(received.at(-1)?.removedIds).toEqual([fixture.id]);
+  expect(received.at(-1)?.cursor).toEqual(marker.updatedAt);
+  expect(received.at(-1)?.messages).toEqual([]);
 });
 
 test("cache failure replays the query snapshot before accepting a durable cursor", () => {

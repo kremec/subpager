@@ -65,7 +65,10 @@ bun run member:approve DEVICE_UID "Name"
 bun run member:revoke DEVICE_UID
 bun run member:list
 bun run ric:sync /path/ric-units.json            # replace cloud RIC unit mappings
+bun run message:delete MESSAGE_ID              # remove a pager from synced history
 ```
+
+Use `message:delete` instead of hard-deleting a Firestore message. It preserves the original message payload and envelope with `deleted: true` and a fresh `updatedAt`, clears location/SPIN annotations, and deletes location, SPIN and active push jobs in one transaction. Apps supporting deletion markers remove the cached row when they receive it, including after being offline; older app bundles still display the original message. Retain deletion markers so long-offline phones can catch up. Already sent notifications cannot be recalled.
 
 Arguments are positional: `record [output] [seconds]`, `calibrate [seconds] [report]`, `replay FILE` and `ric:sync FILE`. Record defaults to `./data/manual.wav` for 60 seconds; calibrate defaults to 120 seconds per gain and `./data/gain-survey.json`. In PowerShell, select config with `$env:SUBPAGER_CONFIG = "C:/path/config.json"`, then run the same package script. Record and calibrate need exclusive USB access. Replay uses the installed native decoder without USB and prints raw decoded pages. It does not queue or upload pages and sends no alerts. WAV input must be PCM16 mono at 22050 Hz. Manual captures refuse to overwrite existing paths and need manual cleanup. Gain surveys cannot rank gains from silence or unequal traffic. Automated tests create their own temporary inputs.
 

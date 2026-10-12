@@ -302,6 +302,17 @@ export async function unlinkSpin(messageId?: string) {
   }
 }
 
+export async function deleteMessage(messageId?: string) {
+  if (!messageId) throw new Error("Usage: bun run message:delete MESSAGE_ID");
+  const { client } = await cloudClient();
+  try {
+    await client.deleteMessage(messageId);
+    console.log("Pager deleted; its deletion will sync to cached phones.");
+  } finally {
+    await client.db.terminate();
+  }
+}
+
 function duration(value: string | undefined, fallback: number) {
   const seconds = value === undefined ? fallback : Number(value);
   if (!Number.isFinite(seconds) || seconds < 1 || seconds > 3600)

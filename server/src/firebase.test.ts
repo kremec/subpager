@@ -19,7 +19,7 @@ interface Reference {
   id: string;
 }
 class Collection {
-  filters: { key: string; operation: string; value: string }[] = [];
+  filters: { key: string; operation: string; value: string | boolean }[] = [];
   descending = false;
   maximum = Infinity;
   constructor(
@@ -39,7 +39,7 @@ class Collection {
       },
     };
   }
-  where(key: string, operation: string, value: string) {
+  where(key: string, operation: string, value: string | boolean) {
     this.filters.push({ key, operation, value });
     return this;
   }
@@ -57,7 +57,7 @@ class Collection {
         ([path, fields]) =>
           path.startsWith(`${this.path}/`) &&
           this.filters.every((filter) => {
-            const value = fields[filter.key] as string;
+            const value = fields[filter.key] as string | boolean;
             if (filter.operation === "==") return value === filter.value;
             return filter.operation === ">="
               ? value >= filter.value
@@ -169,6 +169,64 @@ function page(offset = 0, source = offset + 1): Reception {
     content: "ŠOLA<LF>GOLO<EOT><NUL>",
   };
 }
+
+test("deletions retain a readable marker, remove pending jobs atomically and suppress reception retries", async () => {
+  const { backend, documents, fail } = database();
+  const reception = page();
+  const path = `messages/${reception.sourceId}`;
+  await backend.ingest([reception], false);
+  documents.set(path, {
+    ...documents.get(path),
+    location: "Old location",
+    spinEventId: "472470",
+    spinMatchStatus: "confirmed",
+  });
+  documents.set(`locationJobs/${reception.sourceId}`, { active: true });
+  documents.set(`spinJobs/${reception.sourceId}`, { active: true });
+  documents.set("pushJobs/matching", {
+    active: true,
+    messageId: reception.sourceId,
+  });
+  documents.set("pushJobs/other", { active: true, messageId: "other" });
+  documents.set("pushJobs/completed", {
+    active: false,
+    messageId: reception.sourceId,
+  });
+  fail(true);
+  await expect(backend.deleteMessage(reception.sourceId)).rejects.toThrow(
+    "Commit not acknowledged",
+  );
+  expect(documents.get(path)?.content).toBe("ŠOLA GOLO");
+  expect(documents.has(`spinJobs/${reception.sourceId}`)).toBe(true);
+  expect(documents.has("pushJobs/matching")).toBe(true);
+  fail(false);
+  await backend.deleteMessage(reception.sourceId);
+  expect(documents.get(path)).toEqual({
+    receivedAt: reception.receivedAt,
+    ric: reception.ric,
+    function: reception.function,
+    type: reception.type,
+    content: "ŠOLA GOLO",
+    duplicateOf: null,
+    deleted: true,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  expect(documents.has(`locationJobs/${reception.sourceId}`)).toBe(false);
+  expect(documents.has(`spinJobs/${reception.sourceId}`)).toBe(false);
+  expect(documents.has("pushJobs/matching")).toBe(false);
+  expect(documents.has("pushJobs/other")).toBe(true);
+  expect(documents.has("pushJobs/completed")).toBe(true);
+  const deleted = [...documents.entries()];
+  await backend.ingest([reception], false);
+  await backend.deleteMessage(reception.sourceId);
+  expect([...documents.entries()]).toEqual(deleted);
+  await expect(backend.deleteMessage("missing")).rejects.toThrow(
+    "Message is missing",
+  );
+  await expect(backend.deleteMessage("../invalid")).rejects.toThrow(
+    "Invalid message ID",
+  );
+});
 
 test("message, push, location and SPIN jobs commit together, and persisted IDs prevent duplicate retries", async () => {
   const { backend, documents, fail } = database();
