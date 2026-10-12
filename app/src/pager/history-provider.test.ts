@@ -153,8 +153,7 @@ function render() {
 }
 const message: PagerMessage = {
   id: "native-message-id",
-  receivedAt: "2026-10-08T10:00:00Z",
-  rics: [123],
+  receptions: [{ ric: 123, time: "2026-10-08T10:00:00Z" }],
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
@@ -199,6 +198,23 @@ test("live query updates replace messages and include later locations", () => {
   expect(history.unitNames.get(123)).toBe("Golo");
   expect(history.loading).toBe(false);
   expect(savedMessages.at(-1)?.[0]?.location).toBe("ŠOLI GOLO");
+});
+
+test("a later reception moves an old event above newer events", () => {
+  const newer: PagerMessage = {
+    ...message,
+    id: "newer-event",
+    receptions: [{ ric: 456, time: "2026-10-08T11:00:00Z" }],
+  };
+  const updated: PagerMessage = {
+    ...message,
+    receptions: [
+      ...message.receptions,
+      { ric: 123, time: "2026-10-09T12:00:00Z" },
+    ],
+  };
+  onMessages?.([updated, newer]);
+  expect(render().messages).toEqual([updated, newer]);
 });
 
 test("saved history remains visible until confirmed cloud data arrives", () => {

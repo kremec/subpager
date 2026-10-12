@@ -20,8 +20,7 @@ function getDatabase() {
           CREATE TABLE IF NOT EXISTS approval (uid TEXT PRIMARY KEY NOT NULL);
           CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY NOT NULL,
-            receivedAt TEXT NOT NULL,
-            rics TEXT NOT NULL,
+            receptions TEXT NOT NULL,
             function INTEGER NOT NULL,
             type TEXT NOT NULL,
             content TEXT NOT NULL,
@@ -67,15 +66,18 @@ function getDatabase() {
             "ALTER TABLE messages ADD COLUMN spinMatchStatus TEXT",
           );
         }
-        if (
-          opened
-            .getAllSync<{ name: string }>("PRAGMA table_info(messages)")
-            .some((column) => column.name === "ric")
-        ) {
+        const columns = opened.getAllSync<{ name: string }>(
+          "PRAGMA table_info(messages)",
+        );
+        if (columns.some((column) => column.name === "receivedAt")) {
+          const ric = columns.some((column) => column.name === "ric")
+            ? "ric"
+            : "json_extract(rics, '$[0]')";
           opened.execSync(`
-            ALTER TABLE messages ADD COLUMN rics TEXT NOT NULL DEFAULT '[]';
-            UPDATE messages SET rics = json_array(ric);
-            ALTER TABLE messages DROP COLUMN ric;
+            ALTER TABLE messages ADD COLUMN receptions TEXT NOT NULL DEFAULT '[]';
+            UPDATE messages SET receptions = json_array(json_object('ric', ${ric}, 'time', receivedAt));
+            ALTER TABLE messages DROP COLUMN receivedAt;
+            ALTER TABLE messages DROP COLUMN ${ric === "ric" ? "ric" : "rics"};
           `);
         }
         if (
@@ -86,10 +88,10 @@ function getDatabase() {
           opened.execSync(`
             INSERT INTO approval (uid) SELECT uid FROM history;
             INSERT INTO messages
-              (id, receivedAt, rics, function, type, content, location)
+              (id, receptions, function, type, content, location)
             SELECT
-              json_extract(value, '$.id'), json_extract(value, '$.receivedAt'),
-              COALESCE(json_extract(value, '$.rics'), json_array(json_extract(value, '$.ric'))),
+              json_extract(value, '$.id'),
+              json_array(json_object('ric', json_extract(value, '$.ric'), 'time', json_extract(value, '$.receivedAt'))),
               json_extract(value, '$.function'),
               json_extract(value, '$.type'), json_extract(value, '$.content'),
               json_extract(value, '$.location')
@@ -102,10 +104,10 @@ function getDatabase() {
         }
         if (
           opened.getFirstSync<{ user_version: number }>("PRAGMA user_version")!
-            .user_version < 4
+            .user_version < 5
         ) {
-          // Reload canonical groups once while retaining cached history offline.
-          opened.execSync("DELETE FROM sync_state; PRAGMA user_version = 4;");
+          // Reload reception history once while retaining cached rows offline.
+          opened.execSync("DELETE FROM sync_state; PRAGMA user_version = 5;");
         }
       });
     } catch (error) {
@@ -194,12 +196,14 @@ export function cachedHistory(uid: string) {
   const database = getDatabase();
   return {
     messages: database
-      .getAllSync<Omit<PagerMessage, "rics"> & { rics: string }>(
-        "SELECT id, receivedAt, rics, function, type, content, location, spinEventId, spinMatchStatus FROM messages ORDER BY receivedAt DESC, id DESC",
+      .getAllSync<Omit<PagerMessage, "receptions"> & { receptions: string }>(
+        "SELECT id, receptions, function, type, content, location, spinEventId, spinMatchStatus FROM messages ORDER BY json_extract(receptions, '$[#-1].time') DESC, id DESC",
       )
       .map((message) => ({
         ...message,
-        rics: JSON.parse(message.rics) as number[],
+        receptions: JSON.parse(
+          message.receptions,
+        ) as PagerMessage["receptions"],
       })),
     units: database.getAllSync<RicUnit>("SELECT * FROM ric_units ORDER BY ric"),
   };
@@ -237,12 +241,12 @@ export function cacheMessages(
     for (const message of messages) {
       database.runSync(
         `INSERT INTO messages
-          (id, receivedAt, rics, function, type, content, location, spinEventId, spinMatchStatus)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, receptions, function, type, content, location, spinEventId, spinMatchStatus)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ${
             changes
               ? `ON CONFLICT(id) DO UPDATE SET
-            receivedAt = excluded.receivedAt, rics = excluded.rics,
+            receptions = excluded.receptions,
             function = excluded.function, type = excluded.type,
             content = excluded.content,
             location = excluded.location, spinEventId = excluded.spinEventId,
@@ -250,8 +254,7 @@ export function cacheMessages(
               : ""
           }`,
         message.id,
-        message.receivedAt,
-        JSON.stringify(message.rics),
+        JSON.stringify(message.receptions),
         message.function,
         message.type,
         message.content,

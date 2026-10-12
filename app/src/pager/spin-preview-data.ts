@@ -7,8 +7,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
         {
           message: {
             id: "00gnyMBvwVctkPYnd5qR",
-            receivedAt: "2026-10-10T11:22:14.403Z",
-            rics: [790273],
+            receptions: [{ ric: 790273, time: "2026-10-10T11:22:14.403Z" }],
             function: 3,
             type: "alpha",
             content:
@@ -31,8 +30,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
         {
           message: {
             id: "kJH7lBOZEGJPdRl5I0yk",
-            receivedAt: "2026-10-09T12:29:29.316Z",
-            rics: [790793],
+            receptions: [{ ric: 790793, time: "2026-10-09T12:29:29.316Z" }],
             function: 3,
             type: "alpha",
             content: "GORI OGRAJA PRED HIŠO - GOLO 40",
@@ -54,8 +52,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
         {
           message: {
             id: "tgc3eoHUeZ5RBD4h8uTl",
-            receivedAt: "2026-10-09T12:29:28.930Z",
-            rics: [791833],
+            receptions: [{ ric: 791833, time: "2026-10-09T12:29:28.930Z" }],
             function: 3,
             type: "alpha",
             content: "GORI OGRAJA PRED HIŠO - GOLO 40",
@@ -77,8 +74,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
         {
           message: {
             id: "14",
-            receivedAt: "2026-10-08T10:50:58.826Z",
-            rics: [790321],
+            receptions: [{ ric: 790321, time: "2026-10-08T10:50:58.826Z" }],
             function: 3,
             type: "alpha",
             content:
@@ -101,8 +97,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
         {
           message: {
             id: "11",
-            receivedAt: "2026-10-08T09:12:06.775Z",
-            rics: [790505],
+            receptions: [{ ric: 790505, time: "2026-10-08T09:12:06.775Z" }],
             function: 3,
             type: "alpha",
             content: "DIMNIŠKI POŽAR - LUKOVICA, ZGORNJE PRAPREČE 5",
@@ -124,8 +119,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
         {
           message: {
             id: "3",
-            receivedAt: "2026-10-07T17:50:26.328Z",
-            rics: [790521],
+            receptions: [{ ric: 790521, time: "2026-10-07T17:50:26.328Z" }],
             function: 3,
             type: "alpha",
             content:
@@ -148,8 +142,7 @@ export const spinPreviews: { message: PagerMessage; event: SpinEvent }[] =
         {
           message: {
             id: "1",
-            receivedAt: "2026-10-07T15:42:44.612Z",
-            rics: [790241],
+            receptions: [{ ric: 790241, time: "2026-10-07T15:42:44.612Z" }],
             function: 3,
             type: "alpha",
             content: "IGNIS-GBL: POZAR NAPE  Vodnikovo naselje 34",
@@ -175,7 +168,7 @@ export function previewSpinEvent(message: PagerMessage) {
   return spinPreviews.find(
     (preview) =>
       preview.message.id === message.id &&
-      preview.message.receivedAt === message.receivedAt &&
+      preview.message.receptions[0]!.time === message.receptions[0]!.time &&
       preview.message.content === message.content,
   )?.event;
 }

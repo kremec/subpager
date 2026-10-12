@@ -68,7 +68,7 @@ export function watchMessages(
           ),
           orderBy("updatedAt"),
         )
-      : query(collection(database, "messages"), orderBy("receivedAt", "desc")),
+      : collection(database, "messages"),
     { includeMetadataChanges: true },
     (snapshot) => {
       if (snapshot.metadata.fromCache) {
@@ -84,9 +84,10 @@ export function watchMessages(
             .map((change) => change.doc);
       const deletedIds: string[] = [];
       const messages = documents.flatMap((item) => {
-        const data = item.data() as Omit<PagerMessage, "id" | "rics"> & {
-          rics?: number[];
+        const data = item.data() as Omit<PagerMessage, "id" | "receptions"> & {
+          receptions?: PagerMessage["receptions"];
           ric: number;
+          receivedAt: string;
           updatedAt?: SyncTimestamp;
           deleted?: boolean;
         };
@@ -108,8 +109,9 @@ export function watchMessages(
         return [
           {
             id: item.id,
-            receivedAt: data.receivedAt,
-            rics: data.rics ?? [data.ric],
+            receptions: data.receptions ?? [
+              { ric: data.ric, time: data.receivedAt },
+            ],
             function: data.function,
             type: data.type,
             content: data.content,

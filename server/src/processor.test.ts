@@ -118,7 +118,10 @@ class TestFirestore {
               ([path, data]) =>
                 path.startsWith(`${name}/`) &&
                 (operator === ">="
-                  ? String(data[field]) >= String(value)
+                  ? data[field] instanceof Timestamp &&
+                    value instanceof Timestamp
+                    ? data[field].toMillis() >= value.toMillis()
+                    : String(data[field]) >= String(value)
                   : operator === "array-contains"
                     ? Array.isArray(data[field]) && data[field].includes(value)
                     : data[field] === value),
@@ -1231,8 +1234,8 @@ function spinFixture(store: TestFirestore, overrides: Partial<SpinJob> = {}) {
   store.put("spinJobs/spin", { ...job });
   store.put("messages/spin", {
     content: "GORI OGRAJA PRED HIŠO - GOLO 40",
-    sourceIds: ["spin"],
-    receivedAt: new Date(now).toISOString(),
+    receptions: [{ ric: 790241, time: new Date(now).toISOString() }],
+    updatedAt: Timestamp.fromMillis(now),
     type: "alpha",
     duplicateOf: null,
     location: "GOLO 40",
@@ -1279,12 +1282,17 @@ describe("durable SPIN matching", () => {
     ] as const) {
       store.put(`messages/${id}`, {
         ...message,
-        receivedAt: new Date(now - age).toISOString(),
+        receptions: [
+          { ric: 790242, time: new Date(now - 30 * 86_400_000).toISOString() },
+          { ric: 790241, time: new Date(now - age).toISOString() },
+        ],
+        updatedAt: Timestamp.fromMillis(now),
       });
     }
     store.put("messages/deleted", {
       ...message,
-      receivedAt: new Date(now).toISOString(),
+      receptions: [{ ric: 790241, time: new Date(now).toISOString() }],
+      updatedAt: Timestamp.fromMillis(now),
       deleted: true,
     });
     const worker = new SpinMatching(store.db, {
@@ -1511,6 +1519,137 @@ describe("durable SPIN matching", () => {
     });
   });
 
+  test.each([true, false])(
+    "a new paging batch publishes its paid result before reviewing the latest reception: matched=%s",
+    async (matched) => {
+      const latest = now + 4 * 60_000;
+      setSystemTime(latest);
+      const store = new TestFirestore();
+      spinFixture(store, {
+        state: "ready",
+        ...(matched
+          ? { result: spinEvent }
+          : { reviewEventId: spinEvent.id, reviewStatus: "invalid" }),
+        checkedRevision: "r1",
+        expiresAt: latest + SPIN_MATCHING_HORIZON,
+        reviewAfterPublish: true,
+      });
+      store.put("messages/spin", {
+        ...store.docs.get("messages/spin"),
+        ...(!matched ? { spinEventId: spinEvent.id } : {}),
+        receptions: [
+          { ric: 790241, time: new Date(now).toISOString() },
+          { ric: 790242, time: new Date(latest).toISOString() },
+        ],
+      });
+      if (!matched) store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
+      const latestEvent = {
+        ...spinEvent,
+        id: "472471",
+        eventAt: new Date(latest - 120_000).toISOString(),
+      };
+      let requests = 0;
+      const worker = new SpinMatching(
+        store.db,
+        { ready: true, revision: "r1", events: [spinEvent, latestEvent] },
+        "test-key",
+        undefined,
+        async (_url, options) => {
+          const input = JSON.parse(
+            JSON.parse(options.body as string).input[1].content,
+          );
+          expect(input.pager.receivedAt).toBe(new Date(latest).toISOString());
+          expect(input.currentLinkId).toBe(matched ? spinEvent.id : null);
+          requests++;
+          return spinResponse(
+            latestEvent.id,
+            null,
+            matched ? "invalid" : "absent",
+          );
+        },
+      );
+      await worker.run(["spin"]);
+      expect(requests).toBe(0);
+      expect(store.docs.get("messages/spin")?.spinEventId).toBe(
+        matched ? spinEvent.id : undefined,
+      );
+      expect(store.docs.has(`spinEvents/${spinEvent.id}`)).toBe(matched);
+      expect(store.docs.get("spinJobs/spin")).toMatchObject({
+        state: "pending",
+        expiresAt: latest + SPIN_MATCHING_HORIZON,
+        leaseUntil: 0,
+        nextAttempt: latest,
+      });
+      expect(store.docs.get("spinJobs/spin")?.reviewEventId).toBe(
+        matched ? spinEvent.id : undefined,
+      );
+      for (const field of [
+        "result",
+        "reviewStatus",
+        "checkedRevision",
+        "reviewAfterPublish",
+      ])
+        expect(store.docs.get("spinJobs/spin")).not.toHaveProperty(field);
+      await worker.run(["spin"]);
+      expect(requests).toBe(1);
+      await worker.run(["spin"]);
+      expect(requests).toBe(1);
+      expect(store.docs.get("messages/spin")?.spinEventId).toBe(latestEvent.id);
+      expect(store.docs.has("spinJobs/spin")).toBe(false);
+    },
+  );
+
+  test("retrying a paid result with a lost acknowledgement retains a newer paging review", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      { ready: true, revision: "r1", events: [spinEvent] },
+      "test-key",
+      undefined,
+      async () => {
+        requests++;
+        store.loseAcknowledgement = true;
+        return spinResponse(spinEvent.id);
+      },
+    );
+    await expect(worker.run(["spin"])).rejects.toThrow("acknowledgement lost");
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "ready",
+      result: spinEvent,
+    });
+    store.loseAcknowledgement = false;
+    const latest = now + 4 * 60_000;
+    setSystemTime(latest);
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      receptions: [
+        { ric: 790241, time: new Date(now).toISOString() },
+        { ric: 790242, time: new Date(latest).toISOString() },
+      ],
+    });
+    store.put("spinJobs/spin", {
+      ...store.docs.get("spinJobs/spin"),
+      expiresAt: latest + SPIN_MATCHING_HORIZON,
+      reviewAfterPublish: true,
+    });
+    await worker.run(["spin"]);
+    expect(requests).toBe(1);
+    expect(store.docs.get("messages/spin")?.spinEventId).toBe(spinEvent.id);
+    expect(store.docs.get("spinJobs/spin")).toMatchObject({
+      state: "pending",
+      reviewEventId: spinEvent.id,
+      expiresAt: latest + SPIN_MATCHING_HORIZON,
+      leaseUntil: 0,
+    });
+    expect(store.docs.get("spinJobs/spin")).not.toHaveProperty(
+      "reviewAfterPublish",
+    );
+    expect(store.docs.get("spinJobs/spin")).not.toHaveProperty("result");
+  });
+
   test("a positive decision retains its public report and creates it only when publishing a pager link", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
@@ -1611,7 +1750,11 @@ describe("durable SPIN matching", () => {
     spinFixture(store);
     store.put("messages/spin", {
       ...store.docs.get("messages/spin"),
-      rics: [790241, 790242],
+      receptions: [
+        { ric: 790241, time: new Date(now - 30 * 86_400_000).toISOString() },
+        { ric: 790242, time: new Date(now - 60_000).toISOString() },
+        { ric: 790241, time: new Date(now).toISOString() },
+      ],
     });
     store.put("ricUnits/790241", { unitName: "Gasilska brigada Ljubljana" });
     store.put("ricUnits/790242", { unitName: "PGD Golo" });
@@ -1636,6 +1779,7 @@ describe("durable SPIN matching", () => {
         expect(input.pager.unitName).toBe(
           "Gasilska brigada Ljubljana, PGD Golo",
         );
+        expect(input.pager.receivedAt).toBe(new Date(now).toISOString());
         requests++;
         return requests === 1
           ? spinResponse(partial.id, 0)
@@ -1647,6 +1791,10 @@ describe("durable SPIN matching", () => {
     );
     await worker.run(["spin"]);
     expect(store.docs.has(`spinEvents/${partial.id}`)).toBe(false);
+    store.put("spinJobs/spin", {
+      ...store.docs.get("spinJobs/spin"),
+      reviewAfterPublish: true,
+    });
     catalog.revision = "r2";
     catalog.events = [{ ...partial, description: spinEvent.description }];
     await worker.run(["spin"]);
@@ -1664,6 +1812,9 @@ describe("durable SPIN matching", () => {
       worker.canRun(store.docs.get("spinJobs/spin") as unknown as SpinJob),
     ).toBe(true);
     await worker.run(["spin"]);
+    expect(store.docs.get("spinJobs/spin")).not.toHaveProperty(
+      "reviewAfterPublish",
+    );
     await worker.run(["spin"]);
     expect(requests).toBe(2);
     expect(store.docs.get("messages/spin")?.spinMatchStatus).toBe("confirmed");
@@ -1757,7 +1908,7 @@ describe("durable SPIN matching", () => {
     });
   });
 
-  test("manual unlinking a repeat rejects its original pair, preserves other units and excludes the rejected incident from rematching", async () => {
+  test("manual unlinking an event rejects its original pair, preserves other units and excludes the rejected incident from rematching", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
     spinFixture(store, { state: "ready", result: spinEvent });
@@ -1765,7 +1916,6 @@ describe("durable SPIN matching", () => {
       ...store.docs.get("messages/spin"),
       spinEventId: spinEvent.id,
       spinMatchStatus: "confirmed",
-      sourceIds: ["spin", "repeat"],
     });
     store.put("messages/repeat", {
       duplicateOf: "spin",
@@ -1774,7 +1924,8 @@ describe("durable SPIN matching", () => {
     });
     store.put("messages/another-unit", { spinEventId: spinEvent.id });
     store.put(`spinEvents/${spinEvent.id}`, { ...spinEvent });
-    expect(await unlinkSpinEvent(store.db, "repeat")).toBe(true);
+    expect(await unlinkSpinEvent(store.db, "repeat")).toBe(false);
+    expect(await unlinkSpinEvent(store.db, "spin")).toBe(true);
     expect(store.docs.get("messages/spin")?.spinEventId).toBeUndefined();
     expect(store.docs.get("messages/spin")?.spinMatchStatus).toBeUndefined();
     expect(store.docs.get("messages/spin")?.spinRejectedEventIds).toEqual([

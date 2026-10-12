@@ -9,11 +9,7 @@ import type { Config } from "./config";
 import { isReceptionId, type Outbox, type Reception } from "./outbox";
 import { isObject, isRic, type Page } from "./radio/decoder";
 import { SPIN_MATCHING_HORIZON } from "./spin";
-import {
-  canGroupPages,
-  GROUPING_WINDOW_MS,
-  normalizeContent,
-} from "./pager-group";
+import { canGroupPages, normalizeContent } from "./pager-group";
 
 export interface RicUnit {
   ric: number;
@@ -25,12 +21,27 @@ export interface CloudDevice {
   label?: string;
   expoPushToken?: string | null;
 }
-export interface FirebaseMessage extends Page {
-  rics: number[];
-  sourceIds: string[];
+export interface PagerReception {
+  ric: number;
+  time: string;
+}
+export interface FirebaseMessage extends Omit<Page, "ric" | "receivedAt"> {
+  receptions: PagerReception[];
   location?: string | null;
   spinEventId?: string;
   spinMatchStatus?: "provisional" | "confirmed";
+}
+
+function startsNotificationBatch(receptions: PagerReception[], time: string) {
+  const receivedAt = Date.parse(time);
+  let start = -Infinity;
+  for (const reception of receptions) {
+    const at = Date.parse(reception.time);
+    if (at > receivedAt)
+      return at - receivedAt > 180_000 && receivedAt - start > 180_000;
+    if (at - start > 180_000) start = at;
+  }
+  return receivedAt - start > 180_000;
 }
 
 const receivedAtFormatter = new Intl.DateTimeFormat("en-GB", {
@@ -76,30 +87,24 @@ export class FirebaseBackend {
         typeof raw.content !== "string"
       )
         throw new FirebaseInputError("Invalid pager reception");
-      const { sourceId: messageId, ...page } = raw;
-      const message = {
-        ...page,
-        receivedAt: new Date(raw.receivedAt).toISOString(),
+      const { sourceId: messageId, ric, receivedAt, ...fields } = raw;
+      const reception = { ric, time: new Date(receivedAt).toISOString() };
+      const message: FirebaseMessage = {
+        ...fields,
         content: normalizeContent(raw.content),
+        receptions: [reception],
       };
       if (notify) await this.users.ready();
       await this.db.runTransaction(async (transaction) => {
         const messageRef = this.db.collection("messages").doc(messageId);
-        const seen = await transaction.get(
-          this.db
-            .collection("messages")
-            .where("sourceIds", "array-contains", messageId)
-            .limit(1),
-        );
-        const existing = seen.docs[0];
-        if (existing) {
+        const existing = await transaction.get(messageRef);
+        if (existing.exists) {
           if (existing.get("deleted") === true) return;
-          // Source IDs are immutable. Only the anchor retains the original payload.
-          if (existing.id !== messageId) return;
           const stored = existing.data() as FirebaseMessage;
           if (
-            stored.receivedAt !== message.receivedAt ||
-            stored.ric !== message.ric ||
+            !stored.receptions.some(
+              (item) => item.ric === ric && item.time === reception.time,
+            ) ||
             stored.function !== message.function ||
             stored.type !== message.type ||
             normalizeContent(stored.content) !== message.content
@@ -109,78 +114,94 @@ export class FirebaseBackend {
             );
           return;
         }
-        const candidates = await transaction.get(
-          this.db
-            .collection("messages")
-            .where(
-              "receivedAt",
-              ">=",
-              new Date(
-                Date.parse(message.receivedAt) - GROUPING_WINDOW_MS,
-              ).toISOString(),
-            )
-            .where(
-              "receivedAt",
-              "<=",
-              new Date(
-                Date.parse(message.receivedAt) + GROUPING_WINDOW_MS,
-              ).toISOString(),
-            )
-            .orderBy("receivedAt", "asc"),
+        // Content defines an event, so matching has no reception-time cutoff.
+        const events = await transaction.get(this.db.collection("messages"));
+        const matched = events.docs.filter((doc) =>
+          canGroupPages(doc.data() as FirebaseMessage, message),
         );
-        const source = candidates.docs.find((document) => {
-          const candidate = document.data() as FirebaseMessage;
-          return (
-            document.get("deleted") !== true &&
-            canGroupPages(candidate, message)
-          );
-        });
+        if (
+          matched.some((doc) =>
+            (doc.get("receptions") as PagerReception[]).some(
+              (item) => item.ric === ric && item.time === reception.time,
+            ),
+          )
+        )
+          return;
+        const source = matched
+          .filter((doc) => doc.get("deleted") !== true)
+          .sort((a, b) => {
+            const first = (a.get("receptions") as PagerReception[])[0]!.time;
+            const second = (b.get("receptions") as PagerReception[])[0]!.time;
+            return first.localeCompare(second) || a.id.localeCompare(b.id);
+          })[0];
+        const stored = source?.data() as FirebaseMessage | undefined;
+        const eventId = source?.id ?? messageId;
+        const expiresAt = Date.parse(reception.time) + 300_000;
+        const newBatch =
+          !stored || startsNotificationBatch(stored.receptions, reception.time);
+        const fresh = notify && newBatch && expiresAt > now;
+        const recipients = fresh ? this.users.recipients() : [];
+        const infer =
+          notify &&
+          newBatch &&
+          message.type !== "tone" &&
+          message.content.trim();
+        const spinRef = this.db.collection("spinJobs").doc(eventId);
+        const spinJob =
+          infer && source ? await transaction.get(spinRef) : undefined;
         if (source) {
           transaction.update(source.ref, {
-            rics: FieldValue.arrayUnion(message.ric),
-            sourceIds: FieldValue.arrayUnion(messageId),
+            receptions: [...stored!.receptions, reception].sort((a, b) =>
+              a.time.localeCompare(b.time),
+            ),
             updatedAt: FieldValue.serverTimestamp(),
           });
-          return;
-        }
-        const expiresAt = Date.parse(message.receivedAt) + 300_000;
-        const fresh = notify && expiresAt > now;
-        const recipients = fresh ? this.users.recipients() : [];
-        transaction.create(messageRef, {
-          ...message,
-          rics: [message.ric],
-          sourceIds: [messageId],
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-        if (notify && message.type !== "tone" && message.content.trim()) {
-          transaction.create(
-            this.db.collection("locationJobs").doc(messageId),
-            {
+        } else
+          transaction.create(messageRef, {
+            ...message,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        if (infer) {
+          if (!source)
+            transaction.create(
+              this.db.collection("locationJobs").doc(eventId),
+              {
+                active: true,
+                state: "pending",
+                messageId: eventId,
+                content: message.content,
+                nextAttempt: now,
+                attempts: 0,
+                failures: 0,
+                leaseUntil: 0,
+              },
+            );
+          // A later paging session can refresh its incident context; keep paid ready results.
+          if (spinJob?.get("state") === "ready")
+            transaction.update(spinRef, {
+              active: true,
+              expiresAt: Date.parse(reception.time) + SPIN_MATCHING_HORIZON,
+              reviewAfterPublish: true,
+            });
+          else
+            transaction.set(spinRef, {
               active: true,
               state: "pending",
-              messageId,
-              content: message.content,
+              expiresAt: Date.parse(reception.time) + SPIN_MATCHING_HORIZON,
               nextAttempt: now,
-              attempts: 0,
+              attempts: (spinJob?.get("attempts") ?? 0) + (source ? 1 : 0),
               failures: 0,
               leaseUntil: 0,
-            },
-          );
-          transaction.create(this.db.collection("spinJobs").doc(messageId), {
-            active: true,
-            state: "pending",
-            expiresAt: Date.parse(message.receivedAt) + SPIN_MATCHING_HORIZON,
-            nextAttempt: now,
-            attempts: 0,
-            failures: 0,
-            leaseUntil: 0,
-          });
+              ...(stored?.spinEventId
+                ? { reviewEventId: stored.spinEventId }
+                : {}),
+            });
         }
         for (let offset = 0; offset < recipients.length; offset += 100) {
           transaction.create(this.db.collection("pushJobs").doc(), {
             active: true,
             state: "pending",
-            messageId,
+            messageId: eventId,
             recipients: recipients
               .slice(offset, offset + 100)
               .map((recipient) => ({
@@ -189,7 +210,7 @@ export class FirebaseBackend {
                 nextAttempt: now,
                 attempts: 0,
               })),
-            title: `${String(message.ric).padStart(7, "0")} · ${receivedAtFormatter.format(new Date(message.receivedAt))}`,
+            title: `${String(ric).padStart(7, "0")} · ${receivedAtFormatter.format(new Date(reception.time))}`,
             body: message.content,
             expiresAt,
             nextAttempt: now,
@@ -205,23 +226,17 @@ export class FirebaseBackend {
     if (!/^[A-Za-z0-9_-]+$/.test(messageId))
       throw new FirebaseInputError("Invalid message ID");
     await this.db.runTransaction(async (transaction) => {
-      const [seen, pushes] = await Promise.all([
-        transaction.get(
-          this.db
-            .collection("messages")
-            .where("sourceIds", "array-contains", messageId),
-        ),
+      const [message, pushes] = await Promise.all([
+        transaction.get(this.db.collection("messages").doc(messageId)),
         transaction.get(
           this.db.collection("pushJobs").where("active", "==", true),
         ),
       ]);
-      const message = seen.docs[0];
-      if (!message) throw new FirebaseInputError("Message is missing");
+      if (!message.exists) throw new FirebaseInputError("Message is missing");
       const messageRef = message.ref;
       const canonicalId = message.id;
       if (message.get("deleted") !== true) {
-        // Keep the original payload readable by older app bundles during rollout.
-        // Retain the marker so phones returning from offline can remove their copy.
+        // Retain reception history so retries cannot recreate a deleted event.
         transaction.update(messageRef, {
           deleted: true,
           updatedAt: FieldValue.serverTimestamp(),

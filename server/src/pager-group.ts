@@ -1,7 +1,5 @@
 import type { Page } from "./radio/decoder";
 
-export const GROUPING_WINDOW_MS = 3 * 60_000;
-
 export function normalizeContent(content: string) {
   return (
     content
@@ -20,20 +18,14 @@ function comparisonText(content: string) {
     .trim();
 }
 
-export function canGroupPages(anchor: Page, page: Page) {
-  const elapsed = Math.abs(
-    Date.parse(anchor.receivedAt) - Date.parse(page.receivedAt),
-  );
-  if (
-    elapsed > GROUPING_WINDOW_MS ||
-    anchor.type !== page.type ||
-    anchor.function !== page.function
-  )
+export function canGroupPages(
+  anchor: Pick<Page, "type" | "function" | "content">,
+  page: Pick<Page, "type" | "function" | "content">,
+) {
+  if (anchor.type !== page.type || anchor.function !== page.function)
     return false;
   const a = comparisonText(anchor.content);
   const b = comparisonText(page.content);
-  if (anchor.type === "tone" || !a || !b)
-    return elapsed <= 30_000 && anchor.ric === page.ric && a === b;
   if (a === b) return true;
   // Changed numbers and short instructions are unsafe to match approximately.
   const budget = Math.min(3, Math.floor(Math.min(a.length, b.length) * 0.02));

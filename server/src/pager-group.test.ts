@@ -19,14 +19,13 @@ test("matches different RICs and small decoding errors without changing the save
     page.content.replace("ŽAGA", "ŽAAGA"),
     page.content.replace("ŽAGA", "ŽGA"),
   ]) {
-    expect(
-      canGroupPages(page, {
-        ...page,
-        ric: 791057,
-        receivedAt: "2026-10-10T15:03:00Z",
-        content,
-      }),
-    ).toBe(true);
+    const later = {
+      ...page,
+      ric: 791057,
+      receivedAt: "2026-10-12T15:03:00Z",
+      content,
+    };
+    expect(canGroupPages(page, later)).toBe(true);
   }
   expect(normalizeContent("ŠOLA<LF>GOLO<EOT><NUL>")).toBe("ŠOLA GOLO");
 });
@@ -49,16 +48,10 @@ test("keeps changed addresses, channel numbers, short instructions and unrelated
   expect(canGroupPages(page, { ...page, type: "numeric" })).toBe(false);
 });
 
-test("uses a fixed three-minute window and retains same-RIC tone repeat suppression", () => {
-  expect(
-    canGroupPages(page, { ...page, receivedAt: "2026-10-10T15:04:01Z" }),
-  ).toBe(false);
+test("matching content groups without a time or RIC cutoff, including tone calls", () => {
+  const later = { ...page, receivedAt: "2027-10-10T15:04:01Z", ric: 791057 };
+  expect(canGroupPages(page, later)).toBe(true);
   const tone = { ...page, type: "tone" as const, content: "" };
-  expect(canGroupPages(tone, { ...tone, ric: 791057 })).toBe(false);
-  expect(
-    canGroupPages(tone, { ...tone, receivedAt: "2026-10-10T15:01:25Z" }),
-  ).toBe(true);
-  expect(
-    canGroupPages(tone, { ...tone, receivedAt: "2026-10-10T15:01:40Z" }),
-  ).toBe(false);
+  const anotherTone = { ...tone, ric: 791057, receivedAt: later.receivedAt };
+  expect(canGroupPages(tone, anotherTone)).toBe(true);
 });

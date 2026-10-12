@@ -8,8 +8,7 @@ import type { PagerMessage } from "@/pager/types";
 
 const message: PagerMessage = {
   id: "native-message-id",
-  receivedAt: "2026-10-08T10:00:00Z",
-  rics: [123],
+  receptions: [{ ric: 123, time: "2026-10-08T10:00:00Z" }],
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
@@ -77,7 +76,8 @@ test.each([
     version: 2,
   },
   { name: "repaired cache on a later launch", spinColumns: true, version: 3 },
-  { name: "grouped cache on a later launch", spinColumns: true, version: 4 },
+  { name: "grouped cache", spinColumns: true, version: 4 },
+  { name: "reception cache on a later launch", spinColumns: true, version: 5 },
 ])(
   "$name preserves history and refreshes links only when needed",
   (fixture) => {
@@ -85,8 +85,12 @@ test.each([
     existing.exec(`
     CREATE TABLE approval (uid TEXT PRIMARY KEY NOT NULL);
     CREATE TABLE messages (
-      id TEXT PRIMARY KEY NOT NULL, receivedAt TEXT NOT NULL,
-      ${fixture.version === 4 ? "rics TEXT NOT NULL" : "ric INTEGER NOT NULL"}, function INTEGER NOT NULL, type TEXT NOT NULL,
+      id TEXT PRIMARY KEY NOT NULL,
+      ${
+        fixture.version === 5
+          ? "receptions TEXT NOT NULL"
+          : `receivedAt TEXT NOT NULL, ${fixture.version === 4 ? "rics TEXT NOT NULL" : "ric INTEGER NOT NULL"}`
+      }, function INTEGER NOT NULL, type TEXT NOT NULL,
       content TEXT NOT NULL, duplicateOf TEXT, location TEXT
       ${fixture.spinColumns ? ", spinEventId TEXT, spinMatchStatus TEXT" : ""}
     );
@@ -101,12 +105,22 @@ test.each([
   `);
     existing
       .query(
-        `INSERT INTO messages (id, receivedAt, ${fixture.version === 4 ? "rics" : "ric"}, function, type, content, duplicateOf, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, ${
+          fixture.version === 5
+            ? "receptions"
+            : `receivedAt, ${fixture.version === 4 ? "rics" : "ric"}`
+        }, function, type, content, duplicateOf, location) VALUES (?, ${fixture.version === 5 ? "?" : "?, ?"}, ?, ?, ?, ?, ?)`,
       )
       .run(
         message.id,
-        message.receivedAt,
-        fixture.version === 4 ? JSON.stringify(message.rics) : message.rics[0]!,
+        ...(fixture.version === 5
+          ? [JSON.stringify(message.receptions)]
+          : [
+              message.receptions[0]!.time,
+              fixture.version === 4
+                ? JSON.stringify([message.receptions[0]!.ric, 456])
+                : message.receptions[0]!.ric,
+            ]),
         message.function,
         message.type,
         message.content,
@@ -137,8 +151,8 @@ test.each([
         )
         .run(
           stale.id,
-          stale.receivedAt,
-          stale.rics[0]!,
+          stale.receptions[0]!.time,
+          stale.receptions[0]!.ric,
           stale.function,
           stale.type,
           stale.content,
@@ -162,15 +176,22 @@ test.each([
         .sort((a, b) => b.id.localeCompare(a.id)),
     );
     expect(cachedSync("existing-device")).toEqual({
-      initialized: fixture.version === 4,
+      initialized: fixture.version === 5,
       cursor:
-        fixture.version === 4
+        fixture.version === 5
           ? { seconds: 123, nanoseconds: 456 }
           : { seconds: 0, nanoseconds: 0 },
     });
     expect(sqlite!.query("PRAGMA user_version").get()).toEqual({
-      user_version: 4,
+      user_version: 5,
     });
+    const columns = sqlite!
+      .query<{ name: string }, []>("PRAGMA table_info(messages)")
+      .all()
+      .map((column) => column.name);
+    expect(columns).toContain("receptions");
+    for (const obsolete of ["ric", "rics", "receivedAt"])
+      expect(columns).not.toContain(obsolete);
     const linked = {
       ...message,
       spinEventId: "472470",
@@ -212,8 +233,9 @@ test("the old JSON cache migrates into columns without losing offline history", 
     JSON.stringify([
       {
         ...message,
-        rics: undefined,
-        ric: message.rics[0],
+        receptions: undefined,
+        receivedAt: message.receptions[0]!.time,
+        ric: message.receptions[0]!.ric,
         duplicateOf: "original-message-id",
       },
     ]),
@@ -227,9 +249,11 @@ test("the old JSON cache migrates into columns without losing offline history", 
     messages: [{ ...message, location: null }],
     units: [{ ric: 123, unitName: "Golo" }],
   });
-  expect(sqlite!.query("SELECT content, rics FROM messages").get()).toEqual({
+  expect(
+    sqlite!.query("SELECT content, receptions FROM messages").get(),
+  ).toEqual({
     content: message.content,
-    rics: "[123]",
+    receptions: JSON.stringify(message.receptions),
   });
   expect(
     sqlite!
@@ -253,22 +277,32 @@ test("offline snapshots require the same approved identity and retain location u
   });
 });
 
-test("snapshot replacement removes deleted rows and reads messages newest first", () => {
+test("snapshot replacement orders events by their latest reception and removes deleted rows", () => {
   const newer: PagerMessage = {
     ...message,
     id: "newer-message",
-    receivedAt: "2026-10-08T11:00:00Z",
-    rics: [123, 456],
+    receptions: [
+      { ric: 123, time: "2026-10-08T11:00:00Z" },
+      { ric: 456, time: "2026-10-08T11:00:02Z" },
+      { ric: 123, time: "2026-10-08T11:00:04Z" },
+    ],
     location: "Golo",
   };
-  cacheMessages("approved-device", [message, newer]);
+  const repeated: PagerMessage = {
+    ...message,
+    receptions: [
+      ...message.receptions,
+      { ric: 123, time: "2026-10-08T12:00:00Z" },
+    ],
+  };
+  cacheMessages("approved-device", [repeated, newer]);
   cacheRicUnits("approved-device", [
     { ric: 123, unitName: "Golo" },
     { ric: 456, unitName: "Other unit" },
   ]);
   expect(cachedHistory("approved-device")?.messages).toEqual([
+    { ...repeated, location: null },
     newer,
-    { ...message, location: null },
   ]);
   cacheMessages("approved-device", [newer]);
   cacheRicUnits("approved-device", []);
@@ -299,7 +333,11 @@ test("incremental sync preserves history and saves exact cursor together with la
     cursor,
     reset: true,
   });
-  const newer = { ...message, id: "newer", receivedAt: "2026-10-09T12:00:00Z" };
+  const newer = {
+    ...message,
+    id: "newer",
+    receptions: [{ ric: 123, time: "2026-10-09T12:00:00Z" }],
+  };
   cacheMessages("approved-device", [newer], {
     messages: [newer],
     removedIds: [],

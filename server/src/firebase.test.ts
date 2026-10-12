@@ -1,4 +1,4 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,17 +12,6 @@ import { FirebaseBackend } from "./firebase";
 import type { Reception } from "./outbox";
 
 const idGenerator = new Firestore({ projectId: "subpager-test" });
-const unions = new WeakMap<FieldValue, unknown[]>();
-const arrayUnion = FieldValue.arrayUnion;
-const unionSpy = spyOn(FieldValue, "arrayUnion").mockImplementation(
-  (...values) => {
-    const transform = arrayUnion(...values);
-    unions.set(transform, values);
-    return transform;
-  },
-);
-afterAll(() => unionSpy.mockRestore());
-
 type Fields = Record<string, unknown>;
 interface Reference {
   path: string;
@@ -150,17 +139,12 @@ function database() {
           writes.push(() => documents.set(reference.path, fields));
         },
         update: (reference: Reference, fields: Fields) =>
-          writes.push(() => {
-            const updated = { ...documents.get(reference.path) };
-            for (const [key, value] of Object.entries(fields)) {
-              const values =
-                value instanceof FieldValue ? unions.get(value) : undefined;
-              updated[key] = values
-                ? [...new Set([...(updated[key] as unknown[]), ...values])]
-                : value;
-            }
-            documents.set(reference.path, updated);
-          }),
+          writes.push(() =>
+            documents.set(reference.path, {
+              ...documents.get(reference.path),
+              ...fields,
+            }),
+          ),
         set: (reference: Reference, fields: Fields) =>
           writes.push(() => documents.set(reference.path, fields)),
         delete: (reference: Reference) =>
@@ -226,13 +210,10 @@ test("deletions retain a readable marker, remove pending jobs atomically and sup
   fail(false);
   await backend.deleteMessage(reception.sourceId);
   expect(documents.get(path)).toEqual({
-    receivedAt: reception.receivedAt,
-    ric: reception.ric,
+    receptions: [{ ric: reception.ric, time: reception.receivedAt }],
     function: reception.function,
     type: reception.type,
     content: "ŠOLA GOLO",
-    rics: [reception.ric],
-    sourceIds: [reception.sourceId],
     location: "Old location",
     spinEventId: "472470",
     spinMatchStatus: "confirmed",
@@ -318,57 +299,109 @@ test("message, push, location and SPIN jobs commit together, and persisted IDs p
   expect([...documents.entries()]).toEqual(committed);
 });
 
-test("matching recipients update one canonical message and retain retry identity without extra jobs", async () => {
+test("content defines one event with all RIC/time pairs, while later sessions still alert", async () => {
   const { backend, documents } = database();
+  documents.set("users/device", {
+    approved: true,
+    expoPushToken: "ExponentPushToken[test]",
+  });
   const first = page();
   const second = { ...page(25_000), ric: 456 };
-  const third = page(190_000);
+  const third = page(360_000);
   await backend.ingest([first], true, Date.parse(first.receivedAt));
   documents.get(`messages/${first.sourceId}`)!.location = "ŠOLA GOLO";
-  documents.get(`messages/${first.sourceId}`)!.spinEventId = "472470";
-  await backend.ingest([second, third], true, Date.parse(first.receivedAt));
-  expect(documents.has(`messages/${second.sourceId}`)).toBe(false);
-  expect(documents.get(`messages/${first.sourceId}`)).toMatchObject({
-    receivedAt: first.receivedAt,
-    rics: [123, 456],
-    sourceIds: [first.sourceId, second.sourceId],
-    location: "ŠOLA GOLO",
-    spinEventId: "472470",
-  });
-  expect(documents.has(`locationJobs/${second.sourceId}`)).toBe(false);
-  expect(documents.has(`spinJobs/${second.sourceId}`)).toBe(false);
+  await backend.ingest([second], true, Date.parse(second.receivedAt));
   expect(
-    [...documents.values()].filter((doc) => doc.messageId === second.sourceId),
-  ).toHaveLength(0);
-  const beforeRetry = [...documents.entries()];
+    [...documents.keys()].filter((path) => path.startsWith("pushJobs/")),
+  ).toHaveLength(1);
+  await backend.ingest([third], true, Date.parse(third.receivedAt));
+  expect(
+    [...documents.keys()].filter((path) => path.startsWith("messages/")),
+  ).toEqual([`messages/${first.sourceId}`]);
+  expect(documents.get(`messages/${first.sourceId}`)).toMatchObject({
+    receptions: [first, second, third].map((item) => ({
+      ric: item.ric,
+      time: item.receivedAt,
+    })),
+    location: "ŠOLA GOLO",
+  });
+  for (const key of ["ric", "rics", "receivedAt", "sourceIds"])
+    expect(documents.get(`messages/${first.sourceId}`)).not.toHaveProperty(key);
+  expect(
+    [...documents.keys()].filter((path) => path.startsWith("pushJobs/")),
+  ).toHaveLength(2);
+  const committed = [...documents.entries()];
   const restarted = new FirebaseBackend(backend.db);
   await restarted.ingest(
-    [second],
+    [second, third],
     true,
-    Date.parse(second.receivedAt) + 86_400_000,
+    Date.parse(third.receivedAt) + 86_400_000,
   );
-  expect([...documents.entries()]).toEqual(beforeRetry);
-  expect(documents.get(`messages/${third.sourceId}`)?.sourceIds).toEqual([
-    third.sourceId,
-  ]);
-  expect(documents.has(`locationJobs/${third.sourceId}`)).toBe(true);
-  expect(documents.has(`spinJobs/${third.sourceId}`)).toBe(true);
-  await restarted.deleteMessage(second.sourceId);
-  expect(documents.get(`messages/${first.sourceId}`)?.deleted).toBe(true);
+  expect([...documents.entries()]).toEqual(committed);
+  await restarted.deleteMessage(first.sourceId);
   const afterDelete = [...documents.entries()];
-  await restarted.ingest([first, second], false);
+  await restarted.ingest([first, second, third], false);
   expect([...documents.entries()]).toEqual(afterDelete);
 });
 
-test("the time window remains anchored and late outbox uploads can find newer canonicals", async () => {
+test("out-of-order uploads preserve chronological history, including repeated RICs", async () => {
   const { backend, documents } = database();
   const newer = page(120_000);
   const older = { ...page(), ric: 456 };
-  await backend.ingest([newer, older, page(240_000), page(310_000)], false);
-  expect(documents.get(`messages/${newer.sourceId}`)?.rics).toEqual([123, 456]);
+  const latest = page(86_400_000);
+  await backend.ingest([newer, older, latest], false);
+  expect(documents.get(`messages/${newer.sourceId}`)?.receptions).toEqual(
+    [older, newer, latest].map((item) => ({
+      ric: item.ric,
+      time: item.receivedAt,
+    })),
+  );
   expect(
     [...documents.keys()].filter((path) => path.startsWith("messages/")),
-  ).toHaveLength(2);
+  ).toHaveLength(1);
+});
+
+test("ready incident results survive a later paging session", async () => {
+  const { backend, documents } = database();
+  const first = page();
+  await backend.ingest([first], true, Date.parse(first.receivedAt));
+  const ref = `spinJobs/${first.sourceId}`;
+  documents.set(ref, {
+    ...documents.get(ref),
+    state: "ready",
+    result: { id: "paid-result" },
+  });
+  const paid = documents.get(ref);
+  const later = page(86_400_000);
+  await backend.ingest([later], true, Date.parse(later.receivedAt));
+  expect(documents.get(ref)?.state).toBe("ready");
+  expect(documents.get(ref)?.result).toEqual(paid?.result);
+  expect(documents.get(ref)?.attempts).toBe(paid?.attempts);
+  expect(documents.get(ref)?.reviewAfterPublish).toBe(true);
+});
+
+test("out-of-order receptions do not alert a paging session twice", async () => {
+  for (const offsets of [
+    [1_000, 0],
+    [0, 240_000, 181_000],
+  ]) {
+    const { backend, documents } = database();
+    documents.set("users/device", {
+      approved: true,
+      expoPushToken: "ExponentPushToken[test]",
+    });
+    for (const offset of offsets) {
+      const reception = page(offset);
+      await backend.ingest(
+        [reception],
+        true,
+        Date.parse(page(Math.max(...offsets)).receivedAt),
+      );
+    }
+    expect(
+      [...documents.keys()].filter((path) => path.startsWith("pushJobs/")),
+    ).toHaveLength(offsets.length - 1);
+  }
 });
 
 test("imports suppress all jobs, expiry suppresses push, and tone/empty pages skip inference", async () => {

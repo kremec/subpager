@@ -151,7 +151,9 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
           setMessages(
             [...currentMessages.values()].sort(
               (a, b) =>
-                b.receivedAt.localeCompare(a.receivedAt) ||
+                b.receptions
+                  .at(-1)!
+                  .time.localeCompare(a.receptions.at(-1)!.time) ||
                 b.id.localeCompare(a.id),
             ),
           );

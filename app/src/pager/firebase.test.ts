@@ -9,9 +9,11 @@ import type {
   SyncTimestamp,
 } from "@/pager/types";
 
-type MessageDocument = Omit<PagerMessage, "rics"> & {
+type MessageDocument = Omit<PagerMessage, "receptions"> & {
+  receptions?: PagerMessage["receptions"];
   rics?: number[];
   ric?: number;
+  receivedAt?: string;
   updatedAt?: SyncTimestamp;
   deleted?: boolean;
   duplicateOf?: string | null;
@@ -43,8 +45,7 @@ const initial: CachedSync = {
 };
 const fixture: PagerMessage = {
   id: "native-message-id",
-  receivedAt: "2026-10-08T10:00:00Z",
-  rics: [123],
+  receptions: [{ ric: 123, time: "2026-10-08T10:00:00Z" }],
   function: 0,
   type: "alpha",
   content: "GORI V ŠOLI GOLO",
@@ -150,7 +151,19 @@ test("bootstrap includes legacy messages and server metadata confirmation persis
   watchMessages(initial, accept, () => {});
   snapshot([fixture], true);
   expect(received).toEqual([]);
-  snapshot([{ ...fixture, rics: undefined, ric: 123 }], false, []);
+  snapshot(
+    [
+      {
+        ...fixture,
+        receptions: undefined,
+        rics: [123, 456],
+        ric: 123,
+        receivedAt: fixture.receptions[0]!.time,
+      },
+    ],
+    false,
+    [],
+  );
   expect(received).toEqual([
     {
       messages: [fixture],
@@ -159,7 +172,7 @@ test("bootstrap includes legacy messages and server metadata confirmation persis
       reset: true,
     },
   ]);
-  expect(orders).toEqual([["receivedAt", "desc"]]);
+  expect(orders).toEqual([]);
   watchMessages(initial, accept, () => {});
   snapshot([]);
   expect(received.at(-1)?.reset).toBe(true);
@@ -385,11 +398,16 @@ test("message snapshots carry provisional links and later confirmation", () => {
   watchMessages(initial, accept, () => {});
   const linked: PagerMessage = {
     ...fixture,
+    receptions: [
+      ...fixture.receptions,
+      { ric: 456, time: "2026-10-08T10:00:01Z" },
+      { ric: 123, time: "2026-10-09T10:00:00Z" },
+    ],
     spinEventId: "472584",
     spinMatchStatus: "provisional",
   };
-  snapshot([{ ...linked, rics: [123, 456], ric: 123 }]);
-  expect(received[0]?.messages[0]).toEqual({ ...linked, rics: [123, 456] });
+  snapshot([linked]);
+  expect(received[0]?.messages[0]).toEqual(linked);
   const confirmed: PagerMessage = {
     ...linked,
     spinMatchStatus: "confirmed",

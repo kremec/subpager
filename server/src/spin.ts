@@ -1,4 +1,9 @@
-import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import {
+  FieldValue,
+  Timestamp,
+  type Firestore,
+} from "firebase-admin/firestore";
+import type { PagerReception } from "./firebase";
 import { locationRetry } from "./location";
 import { createErrorReporter, logInfo } from "./log";
 import { hasSpinReport, publicSpinEvent, type SpinEvent } from "./spin-feed";
@@ -12,16 +17,11 @@ import {
 
 export const SPIN_MATCHING_HORIZON = 3 * 86_400_000;
 
-// A reception ID identifies its canonical pager, including grouped receptions.
 export async function unlinkSpinEvent(db: Firestore, messageId: string) {
   return db.runTransaction(async (tx) => {
-    const seen = await tx.get(
-      db.collection("messages").where("sourceIds", "array-contains", messageId),
-    );
-    const root = seen.docs[0];
-    if (!root) throw new Error("Pager message not found");
-    const rootId = root.id;
-    const rootRef = root.ref;
+    const rootRef = db.collection("messages").doc(messageId);
+    const root = await tx.get(rootRef);
+    if (!root.exists) throw new Error("Pager message not found");
     if (root.get("deleted") === true) return false;
     const eventId = root.get("spinEventId");
     if (typeof eventId !== "string") return false;
@@ -39,13 +39,13 @@ export async function unlinkSpinEvent(db: Firestore, messageId: string) {
     });
     if (
       !links.docs.some(
-        (link) => link.id !== rootId && link.get("deleted") !== true,
+        (link) => link.id !== messageId && link.get("deleted") !== true,
       )
     )
       tx.delete(db.collection("spinEvents").doc(eventId));
     const expiresAt =
-      Date.parse(root.get("receivedAt")) + SPIN_MATCHING_HORIZON;
-    const jobRef = db.collection("spinJobs").doc(rootId);
+      Date.parse(root.get("receptions")?.at(-1)?.time) + SPIN_MATCHING_HORIZON;
+    const jobRef = db.collection("spinJobs").doc(messageId);
     if (expiresAt > Date.now())
       tx.set(jobRef, {
         active: true,
@@ -73,6 +73,7 @@ export interface SpinJob {
   result?: SpinEvent;
   reviewEventId?: string;
   reviewStatus?: SpinDecision["currentLinkStatus"];
+  reviewAfterPublish?: boolean;
   lastError?: string;
 }
 interface ClaimedSpin extends SpinJob {
@@ -131,7 +132,7 @@ export class SpinMatching {
     const cutoff = Date.now() - SPIN_MATCHING_HORIZON;
     const messages = await this.db
       .collection("messages")
-      .where("receivedAt", ">=", new Date(cutoff).toISOString())
+      .where("updatedAt", ">=", Timestamp.fromMillis(cutoff))
       .get();
     for (const message of messages.docs) {
       const data = message.data();
@@ -139,7 +140,11 @@ export class SpinMatching {
         data.deleted === true ||
         (data.spinEventId && data.spinMatchStatus !== "provisional") ||
         data.type === "tone" ||
-        !data.content
+        !data.content ||
+        !(
+          Date.parse(data.receptions?.at(-1)?.time) + SPIN_MATCHING_HORIZON >
+          Date.now()
+        )
       )
         continue;
       const ref = this.db.collection("spinJobs").doc(message.id);
@@ -149,6 +154,8 @@ export class SpinMatching {
           tx.get(message.ref),
         ]);
         const data = current.data();
+        const expiresAt =
+          Date.parse(data?.receptions?.at(-1)?.time) + SPIN_MATCHING_HORIZON;
         if (
           job.exists ||
           !data ||
@@ -156,13 +163,13 @@ export class SpinMatching {
           data.deleted === true ||
           data.type === "tone" ||
           !data.content ||
-          Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON <= Date.now()
+          !(expiresAt > Date.now())
         )
           return;
         tx.create(ref, {
           active: true,
           state: "pending",
-          expiresAt: Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON,
+          expiresAt,
           nextAttempt: Date.now(),
           attempts: 0,
           failures: 0,
@@ -182,7 +189,10 @@ export class SpinMatching {
       const data = message.data();
       if (
         data.deleted === true ||
-        Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON <= Date.now()
+        !(
+          Date.parse(data.receptions?.at(-1)?.time) + SPIN_MATCHING_HORIZON >
+          Date.now()
+        )
       )
         continue;
       const ref = this.db.collection("spinJobs").doc(message.id);
@@ -191,9 +201,13 @@ export class SpinMatching {
           tx.get(ref),
           tx.get(message.ref),
         ]);
+        const expiresAt =
+          Date.parse(current.get("receptions")?.at(-1)?.time) +
+          SPIN_MATCHING_HORIZON;
         if (
           current.get("spinEventId") !== eventId ||
-          current.get("deleted") === true
+          current.get("deleted") === true ||
+          !(expiresAt > Date.now())
         )
           return;
         tx.set(ref, {
@@ -201,7 +215,7 @@ export class SpinMatching {
           state: "waiting",
           reviewEventId: eventId,
           checkedRevision: this.catalog.revision,
-          expiresAt: Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON,
+          expiresAt,
           nextAttempt: Date.now(),
           attempts: (job.get("attempts") ?? 0) + 1,
           failures: 0,
@@ -241,6 +255,15 @@ export class SpinMatching {
       }
       const message = await tx.get(this.db.collection("messages").doc(id));
       const data = message.data();
+      const receptions: PagerReception[] = Array.isArray(data?.receptions)
+        ? data.receptions.filter(
+            (reception: PagerReception) =>
+              Number.isSafeInteger(reception?.ric) &&
+              typeof reception.time === "string" &&
+              Number.isFinite(Date.parse(reception.time)),
+          )
+        : [];
+      const receivedAt = receptions.at(-1)?.time;
       if (
         !data ||
         (data.spinEventId && data.spinEventId !== job.reviewEventId) ||
@@ -249,14 +272,14 @@ export class SpinMatching {
         data.type === "tone" ||
         typeof data.content !== "string" ||
         !data.content ||
-        typeof data.receivedAt !== "string"
+        !receivedAt
       ) {
         tx.delete(ref);
         return null;
       }
       if (
         job.state !== "ready" &&
-        Date.parse(data.receivedAt) + SPIN_MATCHING_HORIZON <= now
+        Date.parse(receivedAt) + SPIN_MATCHING_HORIZON <= now
       ) {
         tx.delete(ref);
         return null;
@@ -265,7 +288,7 @@ export class SpinMatching {
         ...job,
         id,
         content: data.content,
-        receivedAt: data.receivedAt,
+        receivedAt,
         ...(typeof data.spinEventId === "string"
           ? { currentLinkId: data.spinEventId }
           : {}),
@@ -274,7 +297,7 @@ export class SpinMatching {
               (id): id is string => typeof id === "string",
             )
           : [],
-        rics: (data.rics ?? []) as number[],
+        rics: [...new Set(receptions.map((reception) => reception.ric))],
         attempts: job.attempts + 1,
         leaseUntil: now + 60_000,
         ...(typeof data.location === "string"
@@ -323,6 +346,10 @@ export class SpinMatching {
           result: cached.result ?? FieldValue.delete(),
           checkedRevision: cached.revision,
           reviewStatus: cached.decision.currentLinkStatus,
+          reviewAfterPublish:
+            current.state === "ready" && current.reviewAfterPublish
+              ? true
+              : FieldValue.delete(),
           failures: 0,
           leaseUntil: 0,
           nextAttempt: Date.now(),
@@ -429,7 +456,18 @@ export class SpinMatching {
         )
       )
         tx.delete(this.db.collection("spinEvents").doc(oldId!));
-      if (
+      if (current.reviewAfterPublish && current.expiresAt > Date.now())
+        tx.update(ref, {
+          state: "pending",
+          reviewEventId: current.result?.id ?? FieldValue.delete(),
+          result: FieldValue.delete(),
+          reviewStatus: FieldValue.delete(),
+          checkedRevision: FieldValue.delete(),
+          reviewAfterPublish: FieldValue.delete(),
+          leaseUntil: 0,
+          nextAttempt: Date.now(),
+        });
+      else if (
         current.result &&
         current.expiresAt > Date.now() &&
         (status === "provisional" ||

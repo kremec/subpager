@@ -17,7 +17,7 @@ export function indexMessages(
       return [
         message,
         normalize(
-          `${message.rics.map((ric) => `${formatRic(ric)} ${unitNames?.get(ric) ?? ""}`).join(" ")} ${formatMessageContent(message.content) || "Tone-only call"} ${event?.title ?? ""} ${event?.description ?? ""} ${event?.municipality ?? ""} ${event?.category ?? ""}`,
+          `${message.receptions.map((reception) => `${formatRic(reception.ric)} ${unitNames?.get(reception.ric) ?? ""}`).join(" ")} ${formatMessageContent(message.content) || "Tone-only call"} ${event?.title ?? ""} ${event?.description ?? ""} ${event?.municipality ?? ""} ${event?.category ?? ""}`,
         ),
       ];
     }),
