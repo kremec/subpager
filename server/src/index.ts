@@ -6,6 +6,8 @@ import { FirestoreJobsProcessor } from "./processor";
 import { createErrorReporter, logError, logInfo } from "./log";
 import { dirname, join } from "node:path";
 import { ReceptionMonitor } from "./downtime";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 async function main() {
   const config = await loadConfig();
@@ -74,6 +76,30 @@ async function main() {
   if (!noRadio) {
     receiver = new RadioReceiver({
       ...config.radio,
+      recoverUsb:
+        process.env.SUBPAGER_USB_RECOVERY === "1"
+          ? async () => {
+              const { stdout } = await promisify(execFile)(
+                "doas",
+                [
+                  "-n",
+                  "/usr/bin/timeout",
+                  "-s",
+                  "TERM",
+                  "-k",
+                  "2",
+                  "8",
+                  "/usr/local/bin/bun",
+                  "--cwd=/",
+                  "--no-env-file",
+                  "--config=/dev/null",
+                  "/usr/local/lib/subpager/recover-usb.ts",
+                ],
+                { cwd: "/", maxBuffer: 4096 },
+              );
+              if (stdout.trim()) logInfo(stdout.trim());
+            }
+          : undefined,
       clips: config.clips,
       onLog: (message) => {
         if (message.startsWith("Receiver PCM resumed")) {

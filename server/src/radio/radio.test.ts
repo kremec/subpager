@@ -805,6 +805,141 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+  "stop waits for USB preparation and a later start cannot revive the old launch",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subpager-usb-stop-"));
+    const executable = join(directory, "child");
+    const pids = join(directory, "pids");
+    await writeExecutable(
+      executable,
+      `import {appendFileSync} from "node:fs"; appendFileSync(${JSON.stringify(pids)}, String(process.pid)+String.fromCharCode(10)); console.error("ready"); setInterval(()=>{},1000);`,
+    );
+    const gate = Promise.withResolvers<void>();
+    let preparations = 0;
+    const logs: string[] = [];
+    const ready = Promise.withResolvers<void>();
+    let readyChildren = 0;
+    const receiver = new RadioReceiver({
+      ...defaultOptions,
+      rtlFmPath: executable,
+      multimonPath: executable,
+      onLog: (message) => {
+        if (message.endsWith(": ready")) {
+          if (++readyChildren === 2) ready.resolve();
+        } else logs.push(message);
+      },
+      recoverUsb: async () => {
+        if (++preparations === 1) await gate.promise;
+      },
+    });
+    try {
+      const initial = receiver.start();
+      const stopping = receiver.stop();
+      const next = receiver.start();
+      let stopped = false;
+      void stopping.then(() => {
+        stopped = true;
+      });
+      await delay(30);
+      expect(stopped).toBe(false);
+      expect(await Bun.file(pids).exists()).toBe(false);
+      gate.resolve();
+      await Promise.all([initial, stopping, next]);
+      await ready.promise;
+      expect(preparations).toBe(2);
+      expect(logs).toEqual([]);
+      expect((await readFile(pids, "utf8")).trim().split("\n")).toHaveLength(2);
+      expect(receiver.status().state).toBe("running");
+    } finally {
+      gate.resolve();
+      await receiver.stop();
+      await rm(directory, { recursive: true });
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "USB helper failure is logged and ordinary receiver startup continues",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subpager-usb-denied-"));
+    const executable = join(directory, "child");
+    await writeExecutable(executable, "setInterval(()=>{},1000);");
+    const logs: string[] = [];
+    const receiver = new RadioReceiver({
+      ...defaultOptions,
+      rtlFmPath: executable,
+      multimonPath: executable,
+      recoverUsb: async () => {
+        throw new Error("permission denied");
+      },
+      onLog: (message) => logs.push(message),
+    });
+    try {
+      await receiver.start();
+      expect(receiver.status().state).toBe("running");
+      expect(logs).toContain("USB recovery: Error: permission denied");
+    } finally {
+      await receiver.stop();
+      await rm(directory, { recursive: true });
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "USB recovery on retry waits until the old radio children exit",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subpager-usb-retry-"));
+    const rtl = join(directory, "rtl");
+    const decoder = join(directory, "decoder");
+    const pidPath = join(directory, "rtl.pid");
+    await writeExecutable(
+      rtl,
+      `process.on("SIGTERM",()=>{});await Bun.write(${JSON.stringify(pidPath)},String(process.pid)); console.error("ready");setInterval(()=>process.stdout.write(Buffer.alloc(2)),10);`,
+    );
+    await writeExecutable(decoder, "setTimeout(()=>process.exit(1),300);");
+    const ready = Promise.withResolvers<void>();
+    const recovering = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let preparations = 0;
+    let oldAlive = true;
+    const receiver = new RadioReceiver({
+      ...defaultOptions,
+      rtlFmPath: rtl,
+      multimonPath: decoder,
+      onLog: (message) => {
+        if (message === "rtl_fm: ready") ready.resolve();
+      },
+      recoverUsb: async () => {
+        if (++preparations !== 2) return;
+        try {
+          process.kill(Number(await readFile(pidPath, "utf8")), 0);
+        } catch {
+          oldAlive = false;
+        }
+        recovering.resolve();
+        await release.promise;
+      },
+    });
+    try {
+      await receiver.start();
+      await ready.promise;
+      await recovering.promise;
+      expect(oldAlive).toBe(false);
+      expect(preparations).toBe(2);
+      const stopping = receiver.stop();
+      release.resolve();
+      await stopping;
+      expect(receiver.status().state).toBe("stopped");
+    } finally {
+      release.resolve();
+      await receiver.stop();
+      await rm(directory, { recursive: true });
+    }
+  },
+  10_000,
+);
+
+test.skipIf(process.platform === "win32")(
   "a stalled partial decoded clip ends at its last PCM samples",
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "subpager-stalled-clip-"));

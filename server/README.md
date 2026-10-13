@@ -51,6 +51,35 @@ App source is not deployed. No build or Git push is required.
 SSH uses the `subpager-server` entry in `~/setup/dotfiles/ssh_config`.
 Press `q` for the shell, then use `logs -f` for live output.
 
+### Optional H616 USB recovery
+
+`SUBPAGER_USB_RECOVERY=1` enables a USB ownership retry before radio startup and each receiver restart. The radio children are stopped first; the main server and SPIN continue running during recovery. Helper failures are logged and normal radio retries continue.
+
+This is specific to the tested H616 PHY1 port, `5200000.usb`, with its OHCI companion, `5200400.usb`. Bus numbers are discovered from those controllers. It only acts on a 12 Mbps Nooelec receiver or the tested `05e3:0610` hub dedicated to that receiver. An empty matching hub is eligible because fallback can prevent the SDR from enumerating at all. A healthy 480 Mbps connection, other peripherals including storage, another board, or an explicit companion assignment is left alone. This retries the observed fallback; it does not establish a permanent fix for its initial cause.
+
+Install the standalone helper on the box as root-owned code, from the repository root:
+
+```sh
+doas install -d -o root -g root -m 755 /usr/local/lib/subpager
+doas install -o root -g root -m 644 server/scripts/recover-usb.ts /usr/local/lib/subpager/recover-usb.ts
+```
+
+The trusted `/usr/local/bin/bun` and `/usr/bin/timeout` must also be root-owned. The server invokes this exact command without a shell, from `/`, with project configuration and dotenv loading disabled:
+
+```sh
+doas -n /usr/bin/timeout -s TERM -k 2 8 /usr/local/bin/bun --cwd=/ --no-env-file --config=/dev/null /usr/local/lib/subpager/recover-usb.ts
+```
+
+For a restricted doas policy, allow only that invocation, without `keepenv` or extra arguments:
+
+```text
+permit nopass subpager-server as root cmd /usr/bin/timeout args -s TERM -k 2 8 /usr/local/bin/bun --cwd=/ --no-env-file --config=/dev/null /usr/local/lib/subpager/recover-usb.ts
+```
+
+The helper restores the original root-port power policy after the ownership request. It handles termination signals and has a five-second cancellation deadline; the root-owned timeout kills a stuck helper after eight seconds plus a two-second grace period. A forced kill cannot guarantee power-policy restoration. An error is logged, and receiver startup waits for the helper process to exit.
+
+Set `SUBPAGER_USB_RECOVERY=1` in the box's existing `.env` and deploy the server to activate it. Activation requires the normal service restart. Leave the SDR in the separately powered hub. The helper remains outside the writable checkout and must be updated explicitly when its implementation changes.
+
 ## Configuration and commands
 
 `bun run init` creates config without installing anything. Set `SUBPAGER_CONFIG` to select a config file; it defaults to `./config.json`. Paths are relative to the config file; executable names without a slash use PATH. `radio.frequencyHz` defaults to `173250000`, `gain` to `"auto"`, and `ppm` to `0`. There is no squelch or de-emphasis. The frequency offset printed by rtl_fm is its internal center-spike avoidance, not a reason to change the configured channel.

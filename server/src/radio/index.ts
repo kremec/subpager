@@ -52,6 +52,7 @@ export interface RadioState {
 }
 
 export interface ReceiverOptions extends RadioConfig {
+  recoverUsb?: () => Promise<void>;
   audioTimeoutMs?: number;
   clips?: ClipConfig;
   onCall?: (call: Page) => void;
@@ -114,6 +115,7 @@ export class RadioReceiver {
   private queuedClips = 0;
   private cleanup: Promise<void> = Promise.resolve();
   private stopping: Promise<void> | undefined;
+  private recovering: Promise<void> = Promise.resolve();
   private state: RadioState = {
     state: "stopped",
     error: null,
@@ -160,6 +162,12 @@ export class RadioReceiver {
   }
 
   private async launch(): Promise<void> {
+    this.recovering =
+      this.options.recoverUsb?.().catch((error) => {
+        this.options.onLog?.(`USB recovery: ${String(error)}`);
+      }) ?? Promise.resolve();
+    await this.recovering;
+    if (!this.desired) return;
     this.update({ state: "starting", error: null, lastAudioAt: null });
     this.ring = new PcmRing(
       this.options.clips?.enabled
@@ -496,6 +504,7 @@ export class RadioReceiver {
     this.stopping = (async () => {
       await Promise.all([terminate(rtl), terminate(decoder)]);
       await this.cleanup;
+      await this.recovering;
       // The archive callback can await stop; wait only for WAV and metadata writes.
       await finalizing?.catch(() => {});
       this.flushClips();
