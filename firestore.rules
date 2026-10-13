@@ -13,8 +13,10 @@ service cloud.firestore {
     match /users/{uid} {
       allow get: if owner(uid);
       allow update: if owner(uid) && approved()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['expoPushToken'])
-        && (request.resource.data.expoPushToken == null
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['expoPushToken', 'showTestMessages', 'showVajaMessages'])
+        && (!('showTestMessages' in request.resource.data) || request.resource.data.showTestMessages is bool)
+        && (!('showVajaMessages' in request.resource.data) || request.resource.data.showVajaMessages is bool)
+        && (!('expoPushToken' in request.resource.data) || request.resource.data.expoPushToken == null
           || (request.resource.data.expoPushToken is string
             && request.resource.data.expoPushToken.size() <= 256
             && request.resource.data.expoPushToken.matches('(Expo|Exponent)PushToken\\[.+\\]')));

@@ -145,7 +145,9 @@ export class FirebaseBackend {
         const newBatch =
           !stored || startsNotificationBatch(stored.receptions, reception.time);
         const fresh = notify && !hidden && newBatch && expiresAt > now;
-        const recipients = fresh ? this.users.recipients() : [];
+        const recipients = fresh
+          ? this.users.recipients(undefined, message.content)
+          : [];
         const infer = notify && !hidden && newBatch && message.content.trim();
         const spinRef = this.db.collection("spinJobs").doc(eventId);
         const spinJob =

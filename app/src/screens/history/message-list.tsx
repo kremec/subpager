@@ -78,9 +78,7 @@ export const MessageList: FC<MessageListProps> = (props) => {
           }
         />
       )}
-      maintainVisibleContentPosition={
-        searching ? false : { data: true, size: false }
-      }
+      maintainVisibleContentPosition={!searching}
       onScrollBeginDrag={onScrollBeginDrag}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"

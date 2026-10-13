@@ -32,6 +32,8 @@ let cleanup: (() => void) | undefined;
 let foreground: ((state: string) => void) | undefined;
 let allowed = true;
 let uid = "test-device";
+let showTestMessages = true;
+let showVajaMessages = true;
 let saved: { messages: PagerMessage[]; units: RicUnit[] } | null = null;
 let cacheFailure = false;
 const savedMessages: PagerMessage[][] = [];
@@ -82,6 +84,8 @@ mock.module("@/pager/connection-provider", () => ({
   useConnection: () => ({
     connection: allowed ? { uid } : null,
     hasAccess: (value: string) => allowed && value === uid,
+    showTestMessages,
+    showVajaMessages,
   }),
 }));
 mock.module("@/pager/database", () => ({
@@ -162,6 +166,8 @@ const message: PagerMessage = {
 beforeEach(() => {
   states.length = 0;
   allowed = true;
+  showTestMessages = true;
+  showVajaMessages = true;
   uid = "test-device";
   saved = null;
   cacheFailure = false;
@@ -198,6 +204,35 @@ test("live query updates replace messages and include later locations", () => {
   expect(history.unitNames.get(123)).toBe("Golo");
   expect(history.loading).toBe(false);
   expect(savedMessages.at(-1)?.[0]?.location).toBe("ŠOLI GOLO");
+});
+
+test("preferences hide case-insensitive substrings independently and restore events without changing the cache", () => {
+  const messages = [
+    message,
+    { ...message, id: "test", content: "PreTeSting pager" },
+    { ...message, id: "vaja", content: "PredVAJAmi pager" },
+    { ...message, id: "both", content: "TeSt VAjA" },
+  ];
+  onMessages?.(messages);
+  expect(render().messages).toHaveLength(4);
+  showTestMessages = false;
+  expect(render().messages.map((item) => item.id)).toEqual([
+    "vaja",
+    message.id,
+  ]);
+  showTestMessages = true;
+  showVajaMessages = false;
+  expect(render().messages.map((item) => item.id)).toEqual([
+    "test",
+    message.id,
+  ]);
+  showTestMessages = false;
+  expect(render().messages).toEqual([message]);
+  showTestMessages = true;
+  showVajaMessages = true;
+  expect(render().messages).toHaveLength(4);
+  expect(savedMessages).toEqual([messages]);
+  expect(messagesAttached).toBe(1);
 });
 
 test("a later reception moves an old event above newer events", () => {

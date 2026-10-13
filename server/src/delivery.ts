@@ -256,12 +256,13 @@ export class PushDelivery {
         // A disconnected roster must pause delivery, never authorize old data.
         try {
           recipients = recipients.filter((recipient) => {
-            if (this.users.authorized(recipient, job.kind)) return true;
+            if (this.users.authorized(recipient, job.kind, job.body))
+              return true;
             recipient.state = "failed";
             recipient.lastError =
               job.kind === "downtime"
                 ? "Device approval, token or downtime preference changed"
-                : "Device approval or token changed";
+                : "Device approval, token or message preference changed";
             return false;
           });
         } catch (error) {

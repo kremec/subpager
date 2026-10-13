@@ -3,6 +3,7 @@ import { beforeEach, expect, mock, test } from "bun:test";
 import type {
   CachedSync,
   MessageChanges,
+  MessagePreferences,
   PagerMessage,
   RicUnit,
   SpinEvent,
@@ -37,7 +38,10 @@ let snapshotListener: ((snapshot: Snapshot) => void) | undefined;
 const received: MessageChanges[] = [];
 const orders: [string, string | undefined][] = [];
 const filters: [string, string, SyncTimestamp | number][] = [];
-const writes: { path: string; token: string | null }[] = [];
+const writes: {
+  path: string;
+  data: { expoPushToken?: string | null } & Partial<MessagePreferences>;
+}[] = [];
 const paths: string[] = [];
 const initial: CachedSync = {
   initialized: false,
@@ -108,16 +112,20 @@ mock.module("firebase/firestore", () => ({
   doc: (_db: object, collection: string, uid: string) => `${collection}/${uid}`,
   setDoc: async (
     path: string,
-    data: { expoPushToken: string | null },
+    data: { expoPushToken?: string | null } & Partial<MessagePreferences>,
     options: { merge: boolean },
   ) => {
-    expect(Object.keys(data)).toEqual(["expoPushToken"]);
     expect(options).toEqual({ merge: true });
-    writes.push({ path, token: data.expoPushToken });
+    writes.push({ path, data });
   },
 }));
-const { registerDevice, watchMessages, watchRicUnits, watchSpinEvent } =
-  await import("@/pager/firebase");
+const {
+  registerDevice,
+  saveMessagePreference,
+  watchMessages,
+  watchRicUnits,
+  watchSpinEvent,
+} = await import("@/pager/firebase");
 function snapshot(
   messages: MessageDocument[],
   fromCache = false,
@@ -464,8 +472,20 @@ test("user tokens are scoped to Firebase UID, preserve approval fields and can b
   await registerDevice("firebase-device", "ExpoPushToken[test]");
   await registerDevice("firebase-device", null);
   expect(writes).toEqual([
-    { path: "users/firebase-device", token: "ExpoPushToken[test]" },
-    { path: "users/firebase-device", token: null },
+    {
+      path: "users/firebase-device",
+      data: { expoPushToken: "ExpoPushToken[test]" },
+    },
+    { path: "users/firebase-device", data: { expoPushToken: null } },
+  ]);
+});
+
+test("each message preference merges only its own field into the user's document", async () => {
+  await saveMessagePreference("firebase-device", "showTestMessages", false);
+  await saveMessagePreference("firebase-device", "showVajaMessages", true);
+  expect(writes).toEqual([
+    { path: "users/firebase-device", data: { showTestMessages: false } },
+    { path: "users/firebase-device", data: { showVajaMessages: true } },
   ]);
 });
 

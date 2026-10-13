@@ -1,0 +1,46 @@
+diff --git a/react-native.js b/react-native.js
+index 0b730ecae1086eae294f5fad7938502557f9569e..5b1c9436aa00182dd27db81d7744ea1163c6c4cf 100644
+--- a/react-native.js
++++ b/react-native.js
+@@ -6103,14 +6103,15 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
+   const ctx = useStateContext();
+   const columnWrapperStyle = ctx.columnWrapperStyle;
+   const animSize = useValue$("totalSize");
+-  const [readyToRender, numColumns, otherAxisSize = 0] = useArr$(["readyToRender", "numColumns", "otherAxisSize"]);
++  const [readyToRender, numColumns, otherAxisSize = 0, totalSize = 0] = useArr$(["readyToRender", "numColumns", "otherAxisSize", "totalSize"]);
++  const contentSize = IsNewArchitecture ? totalSize : animSize;
+   const isVisible = useFreshDataTransitionVisibility(!!readyToRender, freshDataTransitionEpoch);
+   const style = horizontal ? {
+     height: otherAxisSize || "100%",
+     minHeight: otherAxisSize,
+     opacity: isVisible ? 1 : 0,
+-    width: animSize
+-  } : { height: animSize, minWidth: otherAxisSize, opacity: isVisible ? 1 : 0 };
++    width: contentSize
++  } : { height: contentSize, minWidth: otherAxisSize, opacity: isVisible ? 1 : 0 };
+   if (columnWrapperStyle) {
+     const { columnGap, rowGap, gap } = columnWrapperStyle;
+     const gapX = columnGap || gap || 0;
+diff --git a/react-native.mjs b/react-native.mjs
+index a3d8d9a3939b11d410dbc04d5bc54df820a90534..9efdaa3874b9603c5b8d76db14bfa8113494ea90 100644
+--- a/react-native.mjs
++++ b/react-native.mjs
+@@ -6082,14 +6082,15 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
+   const ctx = useStateContext();
+   const columnWrapperStyle = ctx.columnWrapperStyle;
+   const animSize = useValue$("totalSize");
+-  const [readyToRender, numColumns, otherAxisSize = 0] = useArr$(["readyToRender", "numColumns", "otherAxisSize"]);
++  const [readyToRender, numColumns, otherAxisSize = 0, totalSize = 0] = useArr$(["readyToRender", "numColumns", "otherAxisSize", "totalSize"]);
++  const contentSize = IsNewArchitecture ? totalSize : animSize;
+   const isVisible = useFreshDataTransitionVisibility(!!readyToRender, freshDataTransitionEpoch);
+   const style = horizontal ? {
+     height: otherAxisSize || "100%",
+     minHeight: otherAxisSize,
+     opacity: isVisible ? 1 : 0,
+-    width: animSize
+-  } : { height: animSize, minWidth: otherAxisSize, opacity: isVisible ? 1 : 0 };
++    width: contentSize
++  } : { height: contentSize, minWidth: otherAxisSize, opacity: isVisible ? 1 : 0 };
+   if (columnWrapperStyle) {
+     const { columnGap, rowGap, gap } = columnWrapperStyle;
+     const gapX = columnGap || gap || 0;

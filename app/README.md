@@ -16,6 +16,8 @@ Use Bun. Do not start another Metro server if one is running. Native dependency 
 
 Bun applies the checked-in MaskedView manifest patch during installation. EAS uses the uploaded `google-services.json` when present so local and cloud builds use the same Firebase client file for fingerprinting.
 
+Bun also patches LegendList 3.6.0 to update Fabric content dimensions through React alongside row positions and the scroll anchor. Separate animated dimension updates caused a brief Android feed jump when filters changed. Keep this patch until an upstream release fixes that transition; check scrolled filter toggles frame by frame before removing it.
+
 ## Firebase setup
 
 The project is `subpager-subbyte`, with the default Firestore database in `europe-west3`. Enable anonymous Firebase Auth. The public client options come from the matching Android package in `google-services.json`, provided locally or through the EAS `GOOGLE_SERVICES_JSON` file variable. Keep service account credentials outside source control and mobile builds.
@@ -26,7 +28,7 @@ Deploy rules and indexes from the repository root after signing into the Firebas
 bunx firebase-tools deploy --only firestore --project subpager-subbyte
 ```
 
-`firestore.rules` permits a device to read its own approval. Only approved devices can read messages and RIC mappings or register their own Expo token. Clients can update only their own push token; they cannot change approval or labels, write messages or access private jobs. The receiver uses the official Firebase Admin SDK with a private service account. See the receiver README for configuration.
+`firestore.rules` permits a device to read its own approval. Only approved devices can read messages and RIC mappings or register their own Expo token. Clients can update their own push token and the boolean `showTestMessages` and `showVajaMessages` preferences; they cannot change approval or labels, write messages or access private jobs. Both preferences default to enabled. Disabling one hides events whose message content contains `test` or `vaja`, respectively, without regard to case, and excludes the device from matching push notifications, including queued sends. Confirmed preferences are cached for offline history. The receiver uses the official Firebase Admin SDK with a private service account. See the receiver README for configuration.
 
 The app creates an anonymous account and displays its ID in onboarding and settings. Run these commands from `../server/`:
 

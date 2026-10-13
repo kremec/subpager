@@ -52,6 +52,8 @@ const {
   initializeDatabase,
   cachedApproval,
   cacheApproval,
+  cachedMessagePreferences,
+  cacheMessagePreferences,
   cachedHistory,
   cachedSync,
   cacheMessages,
@@ -162,6 +164,22 @@ test.each([
     existing.close();
 
     initializeDatabase();
+    expect(cachedMessagePreferences("existing-device")).toEqual({
+      showTestMessages: true,
+      showVajaMessages: true,
+    });
+    cacheMessagePreferences("existing-device", {
+      showTestMessages: false,
+      showVajaMessages: true,
+    });
+    expect(cachedMessagePreferences("existing-device")).toEqual({
+      showTestMessages: false,
+      showVajaMessages: true,
+    });
+    expect(cachedMessagePreferences("another-device")).toEqual({
+      showTestMessages: true,
+      showVajaMessages: true,
+    });
     expect(cachedHistory("existing-device")?.messages).toEqual(
       [message, ...staleMessages]
         .map((row) => ({

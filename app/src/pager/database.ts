@@ -3,6 +3,7 @@ import { deleteDatabaseSync, openDatabaseSync } from "expo-sqlite";
 import type {
   CachedSync,
   MessageChanges,
+  MessagePreferences,
   PagerMessage,
   RicUnit,
   SpinEvent,
@@ -50,6 +51,15 @@ function getDatabase() {
             nanoseconds INTEGER NOT NULL DEFAULT 0
           );
         `);
+        const approvalColumns = opened.getAllSync<{ name: string }>(
+          "PRAGMA table_info(approval)",
+        );
+        for (const column of ["showTestMessages", "showVajaMessages"]) {
+          if (!approvalColumns.some((item) => item.name === column))
+            opened.execSync(
+              `ALTER TABLE approval ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 1`,
+            );
+        }
         if (
           !opened
             .getAllSync<{ name: string }>("PRAGMA table_info(messages)")
@@ -130,6 +140,32 @@ export function cachedApproval(uid: string) {
       "SELECT uid FROM approval WHERE uid = ?",
       uid,
     ) !== null
+  );
+}
+
+export function cachedMessagePreferences(uid: string): MessagePreferences {
+  const saved = getDatabase().getFirstSync<{
+    showTestMessages: number;
+    showVajaMessages: number;
+  }>(
+    "SELECT showTestMessages, showVajaMessages FROM approval WHERE uid = ?",
+    uid,
+  );
+  return {
+    showTestMessages: saved?.showTestMessages !== 0,
+    showVajaMessages: saved?.showVajaMessages !== 0,
+  };
+}
+
+export function cacheMessagePreferences(
+  uid: string,
+  preferences: MessagePreferences,
+) {
+  getDatabase().runSync(
+    "UPDATE approval SET showTestMessages = ?, showVajaMessages = ? WHERE uid = ?",
+    Number(preferences.showTestMessages),
+    Number(preferences.showVajaMessages),
+    uid,
   );
 }
 

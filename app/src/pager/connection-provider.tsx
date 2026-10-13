@@ -23,13 +23,15 @@ import { doc, onSnapshot } from "firebase/firestore";
 import { showErrorToast } from "@/components/ui/toast";
 import {
   cacheApproval,
+  cacheMessagePreferences,
   cachedApproval,
+  cachedMessagePreferences,
   initializeDatabase,
 } from "@/pager/database";
 import { getFirebase } from "@/pager/firebase";
-import type { Connection } from "@/pager/types";
+import type { Connection, MessagePreferences } from "@/pager/types";
 
-interface ConnectionContextValue {
+interface ConnectionContextValue extends MessagePreferences {
   connection: Connection | null;
   uid: string | null;
   approved: boolean;
@@ -45,7 +47,7 @@ interface ConnectionContextValue {
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
-interface DeviceAccess {
+interface DeviceAccess extends MessagePreferences {
   uid: string;
   approved: boolean;
 }
@@ -109,15 +111,24 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
           serverToken.current = undefined;
           setServerTokenKnown(false);
           let allowed = false;
+          let preferences: MessagePreferences = {
+            showTestMessages: true,
+            showVajaMessages: true,
+          };
           try {
             initializeDatabase();
             allowed = !!nextUid && cachedApproval(nextUid);
+            if (nextUid) preferences = cachedMessagePreferences(nextUid);
           } catch {
             showErrorToast("Could not read saved device approval.");
           }
           accessUid.current = allowed ? nextUid : null;
           setUid(nextUid);
-          setAccess(nextUid ? { uid: nextUid, approved: allowed } : null);
+          setAccess(
+            nextUid
+              ? { uid: nextUid, approved: allowed, ...preferences }
+              : null,
+          );
           setReady(true);
           if (!nextUid) {
             setError(
@@ -134,24 +145,42 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
             doc(database, "users", nextUid),
             { includeMetadataChanges: true },
             (snapshot) => {
+              if (!matchingIdentity()) return;
+              const data = snapshot.data();
+              const preferences: MessagePreferences = {
+                showTestMessages: data?.showTestMessages !== false,
+                showVajaMessages: data?.showVajaMessages !== false,
+              };
+              // Firestore applies local writes immediately and rolls back rejected writes.
+              if (data)
+                setAccess((previous) =>
+                  previous?.uid === nextUid
+                    ? { ...previous, ...preferences }
+                    : previous,
+                );
               if (
-                !matchingIdentity() ||
                 snapshot.metadata.fromCache ||
                 snapshot.metadata.hasPendingWrites
               )
                 return;
-              const approvedByServer = snapshot.data()?.approved === true;
-              const token = snapshot.data()?.expoPushToken;
+              const approvedByServer = data?.approved === true;
+              const token = data?.expoPushToken;
               serverToken.current = typeof token === "string" ? token : null;
               setServerTokenKnown(true);
               accessUid.current = approvedByServer ? nextUid : null;
-              setAccess({ uid: nextUid, approved: approvedByServer });
+              setAccess({
+                uid: nextUid,
+                approved: approvedByServer,
+                ...preferences,
+              });
               try {
                 cacheApproval(nextUid, approvedByServer);
+                if (approvedByServer)
+                  cacheMessagePreferences(nextUid, preferences);
               } catch {
                 showErrorToast(
                   approvedByServer
-                    ? "Could not save device approval."
+                    ? "Could not save device settings."
                     : "Could not clear saved history. Offline history may remain on this device.",
                 );
               }
@@ -207,6 +236,8 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
         connection,
         uid,
         approved,
+        showTestMessages: access?.uid === uid ? access.showTestMessages : true,
+        showVajaMessages: access?.uid === uid ? access.showVajaMessages : true,
         ready,
         error,
         pushStatus,

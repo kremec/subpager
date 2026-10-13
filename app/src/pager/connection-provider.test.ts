@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import type { EffectCallback, ReactElement } from "react";
 
-interface Access {
+import type { MessagePreferences } from "@/pager/types";
+
+interface Access extends MessagePreferences {
   uid: string;
   approved: boolean;
 }
-interface ConnectionValue {
+interface ConnectionValue extends MessagePreferences {
   uid: string | null;
   ready: boolean;
   approved: boolean;
@@ -17,8 +19,13 @@ interface ConnectionValue {
   confirmRegisteredToken: (uid: string, token: string | null) => void;
 }
 interface MemberSnapshot {
-  metadata: { fromCache: boolean };
-  data: () => { approved: boolean; expoPushToken?: string | null } | undefined;
+  metadata: { fromCache: boolean; hasPendingWrites?: boolean };
+  data: () =>
+    | ({
+        approved: boolean;
+        expoPushToken?: string | null;
+      } & Partial<MessagePreferences>)
+    | undefined;
 }
 type State = Access | string | boolean | number | null;
 interface TestAuth {
@@ -37,6 +44,10 @@ let memberListener: ((snapshot: MemberSnapshot) => void) | undefined;
 let memberError: ((error: Error) => void) | undefined;
 let authReady: (() => Promise<void>) | undefined;
 let cachedUid: string | null = null;
+let savedPreferences: MessagePreferences = {
+  showTestMessages: true,
+  showVajaMessages: true,
+};
 let cacheFailure = false;
 let signInFailure = false;
 let memberSubscriptions = 0;
@@ -122,6 +133,10 @@ mock.module("expo-notifications", () => ({
   },
 }));
 mock.module("@/pager/database", () => ({
+  cachedMessagePreferences: () => savedPreferences,
+  cacheMessagePreferences: (_uid: string, preferences: MessagePreferences) => {
+    savedPreferences = preferences;
+  },
   initializeDatabase: () => {},
   cachedApproval: (uid: string) => {
     if (cacheFailure) throw new Error("Cache unavailable");
@@ -171,6 +186,7 @@ beforeEach(() => {
   subscriptions.length = 0;
   auth.currentUser = { uid: "firebase-device" };
   cachedUid = null;
+  savedPreferences = { showTestMessages: true, showVajaMessages: true };
   cacheFailure = false;
   signInFailure = false;
   memberSubscriptions = 0;
@@ -351,4 +367,73 @@ test("acknowledged tokens deduplicate before listener delivery and later server 
   auth.currentUser = { uid: "replacement-device" };
   value.confirmRegisteredToken("firebase-device", "ExpoPushToken[stale]");
   expect(value.getRegisteredToken("firebase-device")).toBeUndefined();
+});
+
+test("message preferences load offline, follow confirmed user snapshots and reset for a different identity", async () => {
+  cachedUid = "firebase-device";
+  savedPreferences = { showTestMessages: false, showVajaMessages: true };
+  expect((await initialize()).showTestMessages).toBe(false);
+  memberListener?.({
+    metadata: { fromCache: false },
+    data: () => ({
+      approved: true,
+      showTestMessages: true,
+      showVajaMessages: false,
+    }),
+  });
+  expect(render().showTestMessages).toBe(true);
+  expect(render().showVajaMessages).toBe(false);
+  expect(savedPreferences).toEqual({
+    showTestMessages: true,
+    showVajaMessages: false,
+  });
+  member(true);
+  expect(render().showVajaMessages).toBe(true);
+  auth.currentUser = { uid: "another-device" };
+  savedPreferences = { showTestMessages: true, showVajaMessages: true };
+  authListener?.(auth.currentUser);
+  expect(render().showTestMessages).toBe(true);
+  expect(render().showVajaMessages).toBe(true);
+});
+
+test("local preference writes update immediately without changing approval or token and rejected writes roll back", async () => {
+  await initialize();
+  memberListener?.({
+    metadata: { fromCache: false },
+    data: () => ({
+      approved: true,
+      expoPushToken: "ExpoPushToken[registered]",
+    }),
+  });
+  memberListener?.({
+    metadata: { fromCache: true, hasPendingWrites: true },
+    data: () => ({
+      approved: false,
+      expoPushToken: null,
+      showTestMessages: false,
+    }),
+  });
+  expect(render().showTestMessages).toBe(false);
+  expect(render().showVajaMessages).toBe(true);
+  expect(render().approved).toBe(true);
+  expect(render().getRegisteredToken("firebase-device")).toBe(
+    "ExpoPushToken[registered]",
+  );
+  expect(savedPreferences).toEqual({
+    showTestMessages: true,
+    showVajaMessages: true,
+  });
+  memberListener?.({
+    metadata: { fromCache: false, hasPendingWrites: true },
+    data: () => ({
+      approved: true,
+      showTestMessages: false,
+      showVajaMessages: false,
+    }),
+  });
+  expect(render().showTestMessages).toBe(false);
+  expect(render().showVajaMessages).toBe(false);
+  member(true);
+  expect(render().showTestMessages).toBe(true);
+  expect(render().showVajaMessages).toBe(true);
 });

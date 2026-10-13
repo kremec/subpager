@@ -27,6 +27,7 @@ import {
 import type {
   CachedSync,
   MessageChanges,
+  MessagePreferences,
   PagerMessage,
   RicUnit,
   SpinEvent,
@@ -183,6 +184,19 @@ export async function registerDevice(
   const { database } = getFirebase();
   // setDoc resolves after server acknowledgement, including when a write starts offline.
   await setDoc(doc(database, "users", uid), { expoPushToken }, { merge: true });
+}
+
+export async function saveMessagePreference(
+  uid: string,
+  preference: keyof MessagePreferences,
+  enabled: boolean,
+) {
+  const { database } = getFirebase();
+  await setDoc(
+    doc(database, "users", uid),
+    { [preference]: enabled },
+    { merge: true },
+  );
 }
 
 export function watchSpinEvent(

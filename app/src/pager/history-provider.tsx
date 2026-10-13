@@ -20,7 +20,8 @@ interface HistoryProviderProps {
 }
 
 export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
-  const { connection, hasAccess } = useConnection();
+  const { connection, hasAccess, showTestMessages, showVajaMessages } =
+    useConnection();
   const uid = connection?.uid;
   const [historyUid, setHistoryUid] = useState<string>();
   const [messages, setMessages] = useState<PagerMessage[]>([]);
@@ -241,7 +242,15 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
   return (
     <HistoryContext.Provider
       value={{
-        messages: visible ? messages : [],
+        messages: visible
+          ? messages.filter((message) => {
+              const content = message.content.toLowerCase();
+              return (
+                (showTestMessages || !content.includes("test")) &&
+                (showVajaMessages || !content.includes("vaja"))
+              );
+            })
+          : [],
         unitNames: visible ? unitNames : new Map(),
         spinEvents: visible ? spinEvents : new Map(),
         loading: visible && loading,

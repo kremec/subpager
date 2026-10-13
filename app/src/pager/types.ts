@@ -2,6 +2,11 @@ export interface Connection {
   uid: string;
 }
 
+export interface MessagePreferences {
+  showTestMessages: boolean;
+  showVajaMessages: boolean;
+}
+
 export interface PagerMessage {
   id: string;
   receptions: { ric: number; time: string }[];

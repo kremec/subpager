@@ -435,6 +435,8 @@ describe("durable Expo batches", () => {
         approved: true,
         expoPushToken: `token-${id}`,
         notifyDowntime: preference,
+        showTestMessages: false,
+        showVajaMessages: false,
       });
     store.put("users/missing", {
       approved: true,
@@ -455,9 +457,13 @@ describe("durable Expo batches", () => {
       notifyDowntime: true,
     });
     const users = usersFixture(store);
-    expect(users.recipients("downtime").map((user) => user.deviceId)).toEqual([
+    const downtimeRecipients = users.recipients("downtime", "TeSt VaJa");
+    expect(downtimeRecipients.map((user) => user.deviceId)).toEqual([
       "enabled",
     ]);
+    expect(
+      users.authorized(downtimeRecipients[0]!, "downtime", "TeSt VaJa"),
+    ).toBe(true);
     expect(users.recipients().map((user) => user.deviceId)).toEqual([
       "enabled",
       "disabled",
@@ -694,6 +700,63 @@ describe("durable Expo batches", () => {
     expect(
       recipients(store, "revoked").map((recipient) => recipient.state),
     ).toEqual(["failed", "failed", "receipt"]);
+    users.stop();
+  });
+
+  test("message preference changes suppress queued recipients and later send retries", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    const ids = ["no-test", "no-vaja", "neither", "enabled"];
+    const body = "predTeStiranje in izVaJanje";
+    for (const id of ids) pushFixture(store, id, { body });
+    mergePushes(store, ids);
+    const users = usersFixture(store);
+    expect(users.recipients(undefined, body)).toHaveLength(4);
+    for (const [id, preferences] of [
+      ["no-test", { showTestMessages: false }],
+      ["no-vaja", { showVajaMessages: false }],
+      ["neither", { showTestMessages: false, showVajaMessages: false }],
+      ["enabled", { showTestMessages: true, showVajaMessages: true }],
+    ] as const)
+      store.put(`users/${id}`, {
+        ...store.docs.get(`users/${id}`),
+        ...preferences,
+      });
+    store.publishUsers();
+    let requests = 0;
+    const worker = new PushDelivery(
+      store.db,
+      async (_url, options) => {
+        requests++;
+        const payload = JSON.parse(options.body as string) as { to: string }[];
+        expect(payload.map((item) => item.to)).toEqual(["token-enabled"]);
+        return Response.json({
+          data: [
+            { status: "error", details: { error: "MessageRateExceeded" } },
+          ],
+        });
+      },
+      undefined,
+      users,
+    );
+    await worker.run(["no-test"]);
+    expect(recipients(store, "no-test").map((user) => user.state)).toEqual([
+      "failed",
+      "failed",
+      "failed",
+      "pending",
+    ]);
+    store.put("users/enabled", {
+      ...store.docs.get("users/enabled"),
+      showTestMessages: false,
+    });
+    store.publishUsers();
+    setSystemTime(now + 1000);
+    await worker.run(["no-test"]);
+    expect(requests).toBe(1);
+    expect(
+      recipients(store, "no-test").every((user) => user.state === "failed"),
+    ).toBe(true);
     users.stop();
   });
 

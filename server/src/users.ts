@@ -68,13 +68,22 @@ export class FirestoreUsers {
       throw new Error("User listener disconnected");
   }
 
-  recipients(kind?: "downtime"): PushRecipient[] {
+  private showsMessage(doc: QueryDocumentSnapshot, content: string) {
+    return (
+      (doc.get("showTestMessages") !== false || !content.includes("test")) &&
+      (doc.get("showVajaMessages") !== false || !content.includes("vaja"))
+    );
+  }
+
+  recipients(kind?: "downtime", content = ""): PushRecipient[] {
     this.requireConnected();
     const now = Date.now();
+    const lowerContent = content.toLowerCase();
     return [...this.documents.values()].flatMap((doc) => {
       const token: unknown = doc.get("expoPushToken");
       return doc.get("approved") === true &&
         (kind !== "downtime" || doc.get("notifyDowntime") === true) &&
+        (kind === "downtime" || this.showsMessage(doc, lowerContent)) &&
         typeof token === "string" &&
         token
         ? [
@@ -91,12 +100,18 @@ export class FirestoreUsers {
     });
   }
 
-  authorized(recipient: PushRecipient, kind?: "downtime"): boolean {
+  authorized(
+    recipient: PushRecipient,
+    kind?: "downtime",
+    content = "",
+  ): boolean {
     this.requireConnected();
     const device = this.documents.get(recipient.deviceId);
     return (
       device?.get("approved") === true &&
       (kind !== "downtime" || device.get("notifyDowntime") === true) &&
+      (kind === "downtime" ||
+        this.showsMessage(device, content.toLowerCase())) &&
       device.get("expoPushToken") === recipient.expoPushToken
     );
   }

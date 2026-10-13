@@ -392,6 +392,43 @@ test("message, push, location and SPIN jobs commit together, and persisted IDs p
   expect([...documents.entries()]).toEqual(committed);
 });
 
+test("message preferences filter push recipients independently using case-insensitive substrings", async () => {
+  const { backend, documents } = database();
+  for (const [id, preferences] of [
+    ["default", {}],
+    ["enabled", { showTestMessages: true, showVajaMessages: true }],
+    ["no-test", { showTestMessages: false }],
+    ["no-vaja", { showVajaMessages: false }],
+    ["neither", { showTestMessages: false, showVajaMessages: false }],
+  ] as const)
+    documents.set(`users/${id}`, {
+      approved: true,
+      expoPushToken: `token-${id}`,
+      ...preferences,
+    });
+  const cases = [
+    ["GORI V ŠOLI", ["default", "enabled", "no-test", "no-vaja", "neither"]],
+    ["predTeStiranje", ["default", "enabled", "no-vaja"]],
+    ["izVaJanje", ["default", "enabled", "no-test"]],
+    ["predTeStiranje in izVaJanje", ["default", "enabled"]],
+  ] as const;
+  for (const [index, [content, expected]] of cases.entries()) {
+    const reception = { ...page(index), content };
+    await backend.ingest([reception], true, Date.parse(reception.receivedAt));
+    const push = [...documents.entries()].find(
+      ([path, fields]) =>
+        path.startsWith("pushJobs/") && fields.messageId === reception.sourceId,
+    )![1];
+    expect(
+      (push.recipients as { deviceId: string }[]).map((user) => user.deviceId),
+    ).toEqual([...expected]);
+    expect(documents.get(`messages/${reception.sourceId}`)?.content).toBe(
+      content,
+    );
+  }
+  backend.users.stop();
+});
+
 test("content defines one event with all RIC/time pairs, while later sessions still alert", async () => {
   const { backend, documents } = database();
   documents.set("users/device", {
