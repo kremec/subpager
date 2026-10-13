@@ -229,6 +229,48 @@ test("monthly generic tests retain hidden reception history without jobs, while 
   );
 });
 
+test("tone-only receptions retain hidden history across retries and restarts without jobs", async () => {
+  const { backend, documents } = database();
+  documents.set("users/approved", {
+    expoPushToken: "ExponentPushToken[test]",
+    approved: true,
+  });
+  const first = { ...page(), function: 2, type: "tone" as const, content: "" };
+  const later = {
+    ...page(600_000),
+    ric: 456,
+    function: 2,
+    type: "tone" as const,
+    content: "",
+  };
+  await backend.ingest([first, later], true, Date.parse(first.receivedAt));
+  const restarted = new FirebaseBackend(backend.db);
+  await restarted.ingest([first, later], false);
+  const path = `messages/${first.sourceId}`;
+  expect([...documents.keys()]).toEqual(["users/approved", path]);
+  expect(documents.get(path)?.deleted).toBe(true);
+  expect(documents.get(path)?.receptions).toEqual(
+    [first, later].map((item) => ({ ric: item.ric, time: item.receivedAt })),
+  );
+  const next = {
+    ...page(86_400_000, 3),
+    function: 2,
+    type: "tone" as const,
+    content: "",
+  };
+  await restarted.ingest([next], true, Date.parse(next.receivedAt));
+  expect([...documents.keys()]).toEqual(["users/approved", path]);
+  expect(documents.get(path)?.receptions).toHaveLength(3);
+  const visible = page(86_400_001, 4);
+  await restarted.ingest([visible], true, Date.parse(visible.receivedAt));
+  expect(
+    documents.get(`messages/${visible.sourceId}`)?.deleted,
+  ).toBeUndefined();
+  expect(
+    [...documents.keys()].filter((key) => key.startsWith("pushJobs/")),
+  ).toHaveLength(1);
+});
+
 test("deletions retain a readable marker, remove pending jobs atomically and suppress reception retries", async () => {
   const { backend, documents, fail } = database();
   const reception = page();
@@ -485,7 +527,7 @@ test("imports suppress all jobs, expiry suppresses push, and tone/empty pages sk
   expect(documents.has(`spinJobs/${empty.sourceId}`)).toBe(false);
   expect(
     [...documents.keys()].filter((key) => key.startsWith("pushJobs/")),
-  ).toHaveLength(2);
+  ).toHaveLength(1);
 });
 
 test.each(["Reception00000000001", "00000000-0000-4000-8000-000000000001"])(
