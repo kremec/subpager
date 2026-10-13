@@ -1,5 +1,29 @@
 import type { Page } from "./radio/decoder";
 
+const dayFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Ljubljana",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+export function pagerDay(time: string) {
+  return dayFormatter.format(new Date(time));
+}
+
+// Receptions have already been restricted to one daily event.
+export function isEcho(
+  receptions: { ric: number; time: string }[],
+  reception: { ric: number; time: string },
+) {
+  const time = Date.parse(reception.time);
+  return receptions.some(
+    (item) =>
+      item.ric === reception.ric &&
+      Math.abs(Date.parse(item.time) - time) <= 30_000,
+  );
+}
+
 export function normalizeContent(content: string) {
   return (
     content

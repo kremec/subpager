@@ -178,58 +178,67 @@ function page(offset = 0, source = offset + 1): Reception {
   };
 }
 
-test("monthly generic tests retain hidden reception history without jobs, while other tests remain visible", async () => {
+test("monthly tests are visible daily events and respect test notification preferences", async () => {
   const { backend, documents } = database();
   documents.set("users/approved", {
     expoPushToken: "ExponentPushToken[test]",
     approved: true,
   });
-  const monthly = [
-    "TEST - MESEČNI- prejem javi poveljniku",
-    " test - mesecni- PREJEM   JAVI POVELJNIKU ",
-    "TEST - MESEČNI- prejem<CR><LF>javi poveljniku<EOT><NUL>",
-  ].map((content, index) => ({ ...page(index), content }));
-  await backend.ingest(monthly, true, Date.parse(page().receivedAt));
-  await backend.ingest(monthly, false);
-  const path = `messages/${monthly[0]!.sourceId}`;
-  expect([...documents.keys()]).toEqual(["users/approved", path]);
-  expect(documents.get(path)?.deleted).toBe(true);
-  expect(documents.get(path)?.receptions).toEqual(
-    monthly.map((item) => ({ ric: item.ric, time: item.receivedAt })),
+  documents.set("users/no-tests", {
+    approved: true,
+    expoPushToken: "token",
+    showTestMessages: false,
+  });
+  const first = {
+    ...page(),
+    content: "TEST - MESEČNI- prejem javi poveljniku",
+    receivedAt: "2026-10-12T21:59:55Z",
+  };
+  const second = {
+    ...first,
+    sourceId: page(1).sourceId,
+    ric: 456,
+    receivedAt: "2026-10-12T21:59:58Z",
+  };
+  const tomorrow = {
+    ...first,
+    sourceId: page(2).sourceId,
+    receivedAt: "2026-10-12T22:00:05Z",
+  };
+  await backend.ingest(
+    [first, second, tomorrow],
+    true,
+    Date.parse(tomorrow.receivedAt),
   );
-  const later = { ...page(86_400_000, 20), content: monthly[0]!.content };
-  const restarted = new FirebaseBackend(backend.db);
-  await restarted.ingest([later], true, Date.parse(later.receivedAt));
-  await restarted.ingest([later], true, Date.parse(later.receivedAt));
-  expect([...documents.keys()]).toEqual(["users/approved", path]);
-  expect(documents.get(path)?.deleted).toBe(true);
-  expect(documents.get(path)?.receptions).toEqual(
-    [...monthly, later].map((item) => ({
+  const events = [...documents.entries()].filter(([path]) =>
+    path.startsWith("messages/"),
+  );
+  expect(events.map(([, data]) => data.receptions)).toEqual([
+    [first, second].map((item) => ({
       ric: item.ric,
-      time: item.receivedAt,
+      time: new Date(item.receivedAt).toISOString(),
     })),
+    [{ ric: tomorrow.ric, time: new Date(tomorrow.receivedAt).toISOString() }],
+  ]);
+  expect(events.every(([, data]) => data.deleted !== true)).toBe(true);
+  const pushes = [...documents.entries()].filter(([path]) =>
+    path.startsWith("pushJobs/"),
   );
-  const retained = [
-    "IPKOM TEST PAGING",
-    "test za it100",
-    "TEST - DNEVNI- prejem javi poveljniku",
-    "TEST - MESEČNI- prejem javi poveljniku NUJNO",
-  ].map((content, index) => ({ ...page(index + 10), content }));
-  await backend.ingest(retained, false);
-  expect(
-    retained.map((item) => documents.get(`messages/${item.sourceId}`)?.content),
-  ).toEqual(retained.map((item) => item.content));
-  expect(
-    retained.every(
-      (item) => documents.get(`messages/${item.sourceId}`)?.deleted !== true,
-    ),
-  ).toBe(true);
-  expect([...documents.keys()].some((path) => path.includes("Jobs/"))).toBe(
+  expect(pushes).toHaveLength(2);
+  for (const [, push] of pushes)
+    expect(
+      (push.recipients as { deviceId: string }[]).map((item) => item.deviceId),
+    ).toEqual(["approved"]);
+  const committed = [...documents.entries()];
+  await new FirebaseBackend(backend.db).ingest(
+    [first, second, tomorrow],
     false,
   );
+  expect([...documents.entries()]).toEqual(committed);
+  backend.users.stop();
 });
 
-test("tone-only receptions retain hidden history across retries and restarts without jobs", async () => {
+test("tone-only receptions are discarded before storage or jobs, including retries and imports", async () => {
   const { backend, documents } = database();
   documents.set("users/approved", {
     expoPushToken: "ExponentPushToken[test]",
@@ -246,12 +255,7 @@ test("tone-only receptions retain hidden history across retries and restarts wit
   await backend.ingest([first, later], true, Date.parse(first.receivedAt));
   const restarted = new FirebaseBackend(backend.db);
   await restarted.ingest([first, later], false);
-  const path = `messages/${first.sourceId}`;
-  expect([...documents.keys()]).toEqual(["users/approved", path]);
-  expect(documents.get(path)?.deleted).toBe(true);
-  expect(documents.get(path)?.receptions).toEqual(
-    [first, later].map((item) => ({ ric: item.ric, time: item.receivedAt })),
-  );
+  expect([...documents.keys()]).toEqual(["users/approved"]);
   const next = {
     ...page(86_400_000, 3),
     function: 2,
@@ -259,8 +263,7 @@ test("tone-only receptions retain hidden history across retries and restarts wit
     content: "",
   };
   await restarted.ingest([next], true, Date.parse(next.receivedAt));
-  expect([...documents.keys()]).toEqual(["users/approved", path]);
-  expect(documents.get(path)?.receptions).toHaveLength(3);
+  expect([...documents.keys()]).toEqual(["users/approved"]);
   const visible = page(86_400_001, 4);
   await restarted.ingest([visible], true, Date.parse(visible.receivedAt));
   expect(
@@ -474,11 +477,11 @@ test("content defines one event with all RIC/time pairs, while later sessions st
   expect([...documents.entries()]).toEqual(afterDelete);
 });
 
-test("out-of-order uploads preserve chronological history, including repeated RICs", async () => {
+test("out-of-order uploads preserve chronological history, including genuine repeated RICs", async () => {
   const { backend, documents } = database();
   const newer = page(120_000);
   const older = { ...page(), ric: 456 };
-  const latest = page(86_400_000);
+  const latest = page(360_000);
   await backend.ingest([newer, older, latest], false);
   expect(documents.get(`messages/${newer.sourceId}`)?.receptions).toEqual(
     [older, newer, latest].map((item) => ({
@@ -489,6 +492,58 @@ test("out-of-order uploads preserve chronological history, including repeated RI
   expect(
     [...documents.keys()].filter((path) => path.startsWith("messages/")),
   ).toHaveLength(1);
+});
+
+test("same-RIC echoes add no receptions or jobs, while different RICs and later paging remain", async () => {
+  const { backend, documents } = database();
+  documents.set("users/device", { approved: true, expoPushToken: "token" });
+  const first = page();
+  const echo = page(15_894);
+  const anotherRic = { ...page(1_293), ric: 456 };
+  const anotherEcho = { ...page(17_316), ric: 456 };
+  await backend.ingest([first, anotherRic], true, Date.parse(first.receivedAt));
+  const committed = [...documents.entries()];
+  await backend.ingest(
+    [echo, anotherEcho],
+    true,
+    Date.parse(anotherEcho.receivedAt),
+  );
+  await new FirebaseBackend(backend.db).ingest([echo, anotherEcho], false);
+  expect([...documents.entries()]).toEqual(committed);
+  const later = page(30_001);
+  await backend.ingest([later], true, Date.parse(later.receivedAt));
+  expect(documents.get(`messages/${first.sourceId}`)?.receptions).toEqual(
+    [first, anotherRic, later].map((item) => ({
+      ric: item.ric,
+      time: item.receivedAt,
+    })),
+  );
+  expect(
+    [...documents.keys()].filter((path) => path.startsWith("pushJobs/")),
+  ).toHaveLength(1);
+  backend.users.stop();
+});
+
+test("a canonical source retry is still ignored after its echo timestamp was cleaned up", async () => {
+  const { backend, documents } = database();
+  const original = page();
+  const earlier = { ric: original.ric, time: page(-15_000).receivedAt };
+  const path = `messages/${original.sourceId}`;
+  documents.set(path, {
+    function: original.function,
+    type: original.type,
+    content: "ŠOLA GOLO",
+    receptions: [earlier],
+  });
+  const before = [...documents.entries()];
+  await backend.ingest([original], false);
+  expect([...documents.entries()]).toEqual(before);
+  await expect(
+    backend.ingest(
+      [{ ...original, receivedAt: page(31_000).receivedAt }],
+      false,
+    ),
+  ).rejects.toThrow("conflicting content");
 });
 
 test("ready incident results survive a later paging session", async () => {
@@ -502,7 +557,7 @@ test("ready incident results survive a later paging session", async () => {
     result: { id: "paid-result" },
   });
   const paid = documents.get(ref);
-  const later = page(86_400_000);
+  const later = page(360_000);
   await backend.ingest([later], true, Date.parse(later.receivedAt));
   expect(documents.get(ref)?.state).toBe("ready");
   expect(documents.get(ref)?.result).toEqual(paid?.result);

@@ -9,7 +9,12 @@ import type { Config } from "./config";
 import { isReceptionId, type Outbox, type Reception } from "./outbox";
 import { isObject, isRic, type Page } from "./radio/decoder";
 import { SPIN_MATCHING_HORIZON } from "./spin";
-import { canGroupPages, normalizeContent } from "./pager-group";
+import {
+  canGroupPages,
+  isEcho,
+  normalizeContent,
+  pagerDay,
+} from "./pager-group";
 
 export interface RicUnit {
   ric: number;
@@ -87,6 +92,7 @@ export class FirebaseBackend {
         typeof raw.content !== "string"
       )
         throw new FirebaseInputError("Invalid pager reception");
+      if (raw.type === "tone") continue;
       const { sourceId: messageId, ric, receivedAt, ...fields } = raw;
       const reception = { ric, time: new Date(receivedAt).toISOString() };
       const message: FirebaseMessage = {
@@ -94,12 +100,8 @@ export class FirebaseBackend {
         content: normalizeContent(raw.content),
         receptions: [reception],
       };
-      const hidden =
-        message.type === "tone" ||
-        /^\s*TEST\s*-\s*MESE[ČC]NI\s*-\s*prejem\s+javi\s+poveljniku\s*$/i.test(
-          message.content,
-        );
-      if (notify && !hidden) await this.users.ready();
+      const day = pagerDay(reception.time);
+      if (notify) await this.users.ready();
       await this.db.runTransaction(async (transaction) => {
         const messageRef = this.db.collection("messages").doc(messageId);
         const existing = await transaction.get(messageRef);
@@ -107,9 +109,8 @@ export class FirebaseBackend {
           if (existing.get("deleted") === true) return;
           const stored = existing.data() as FirebaseMessage;
           if (
-            !stored.receptions.some(
-              (item) => item.ric === ric && item.time === reception.time,
-            ) ||
+            pagerDay(stored.receptions[0]!.time) !== day ||
+            !isEcho(stored.receptions, reception) ||
             stored.function !== message.function ||
             stored.type !== message.type ||
             normalizeContent(stored.content) !== message.content
@@ -119,21 +120,22 @@ export class FirebaseBackend {
             );
           return;
         }
-        // Content defines an event, so matching has no reception-time cutoff.
+        // Matching content defines one event per Ljubljana calendar day.
         const events = await transaction.get(this.db.collection("messages"));
-        const matched = events.docs.filter((doc) =>
-          canGroupPages(doc.data() as FirebaseMessage, message),
+        const matched = events.docs.filter(
+          (doc) =>
+            canGroupPages(doc.data() as FirebaseMessage, message) &&
+            pagerDay((doc.get("receptions") as PagerReception[])[0]!.time) ===
+              day,
         );
         if (
           matched.some((doc) =>
-            (doc.get("receptions") as PagerReception[]).some(
-              (item) => item.ric === ric && item.time === reception.time,
-            ),
+            isEcho(doc.get("receptions") as PagerReception[], reception),
           )
         )
           return;
         const source = matched
-          .filter((doc) => hidden || doc.get("deleted") !== true)
+          .filter((doc) => doc.get("deleted") !== true)
           .sort((a, b) => {
             const first = (a.get("receptions") as PagerReception[])[0]!.time;
             const second = (b.get("receptions") as PagerReception[])[0]!.time;
@@ -144,11 +146,11 @@ export class FirebaseBackend {
         const expiresAt = Date.parse(reception.time) + 300_000;
         const newBatch =
           !stored || startsNotificationBatch(stored.receptions, reception.time);
-        const fresh = notify && !hidden && newBatch && expiresAt > now;
+        const fresh = notify && newBatch && expiresAt > now;
         const recipients = fresh
           ? this.users.recipients(undefined, message.content)
           : [];
-        const infer = notify && !hidden && newBatch && message.content.trim();
+        const infer = notify && newBatch && message.content.trim();
         const spinRef = this.db.collection("spinJobs").doc(eventId);
         const spinJob =
           infer && source ? await transaction.get(spinRef) : undefined;
@@ -157,13 +159,11 @@ export class FirebaseBackend {
             receptions: [...stored!.receptions, reception].sort((a, b) =>
               a.time.localeCompare(b.time),
             ),
-            ...(hidden && { deleted: true }),
             updatedAt: FieldValue.serverTimestamp(),
           });
         } else
           transaction.create(messageRef, {
             ...message,
-            ...(hidden && { deleted: true }),
             updatedAt: FieldValue.serverTimestamp(),
           });
         if (infer) {

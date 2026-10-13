@@ -209,7 +209,11 @@ test("live query updates replace messages and include later locations", () => {
 test("preferences hide case-insensitive substrings independently and restore events without changing the cache", () => {
   const messages = [
     message,
-    { ...message, id: "test", content: "PreTeSting pager" },
+    {
+      ...message,
+      id: "test",
+      content: "TEST - MESEČNI- prejem javi poveljniku",
+    },
     { ...message, id: "vaja", content: "PredVAJAmi pager" },
     { ...message, id: "both", content: "TeSt VAjA" },
   ];
