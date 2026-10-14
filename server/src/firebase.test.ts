@@ -498,9 +498,9 @@ test("same-RIC echoes add no receptions or jobs, while different RICs and later 
   const { backend, documents } = database();
   documents.set("users/device", { approved: true, expoPushToken: "token" });
   const first = page();
-  const echo = page(15_894);
+  const echo = page(60_000);
   const anotherRic = { ...page(1_293), ric: 456 };
-  const anotherEcho = { ...page(17_316), ric: 456 };
+  const anotherEcho = { ...page(61_293), ric: 456 };
   await backend.ingest([first, anotherRic], true, Date.parse(first.receivedAt));
   const committed = [...documents.entries()];
   await backend.ingest(
@@ -510,7 +510,7 @@ test("same-RIC echoes add no receptions or jobs, while different RICs and later 
   );
   await new FirebaseBackend(backend.db).ingest([echo, anotherEcho], false);
   expect([...documents.entries()]).toEqual(committed);
-  const later = page(30_001);
+  const later = page(60_001);
   await backend.ingest([later], true, Date.parse(later.receivedAt));
   expect(documents.get(`messages/${first.sourceId}`)?.receptions).toEqual(
     [first, anotherRic, later].map((item) => ({
@@ -522,6 +522,28 @@ test("same-RIC echoes add no receptions or jobs, while different RICs and later 
     [...documents.keys()].filter((path) => path.startsWith("pushJobs/")),
   ).toHaveLength(1);
   backend.users.stop();
+});
+
+test("legacy echoes do not suppress later pagings and are removed on the next saved reception", async () => {
+  const { backend, documents } = database();
+  const original = page();
+  await backend.ingest([original], false);
+  const path = `messages/${original.sourceId}`;
+  documents.get(path)!.receptions = [original, page(45_000)].map((item) => ({
+    ric: item.ric,
+    time: item.receivedAt,
+  }));
+  const later = page(90_000);
+  await backend.ingest([later], false);
+  expect(documents.get(path)?.receptions).toEqual(
+    [original, later].map((item) => ({ ric: item.ric, time: item.receivedAt })),
+  );
+  expect(
+    [...documents.keys()].filter((key) => key.startsWith("messages/")),
+  ).toEqual([path]);
+  const committed = [...documents.entries()];
+  await new FirebaseBackend(backend.db).ingest([page(45_000), later], false);
+  expect([...documents.entries()]).toEqual(committed);
 });
 
 test("a canonical source retry is still ignored after its echo timestamp was cleaned up", async () => {
@@ -540,7 +562,7 @@ test("a canonical source retry is still ignored after its echo timestamp was cle
   expect([...documents.entries()]).toEqual(before);
   await expect(
     backend.ingest(
-      [{ ...original, receivedAt: page(31_000).receivedAt }],
+      [{ ...original, receivedAt: page(61_000).receivedAt }],
       false,
     ),
   ).rejects.toThrow("conflicting content");

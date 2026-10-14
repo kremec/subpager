@@ -20,12 +20,16 @@ interface ElementProps {
   children?: ReactNode;
 }
 
-test("reception history keeps repeated RICs in chronological order above one message body", () => {
+test("reception history hides saved echoes and keeps later pagings in chronological order", () => {
   const message: PagerMessage = {
     id: "event",
     receptions: [
+      { ric: 790193, time: "2026-10-12T15:01:02.001Z" },
       { ric: 790193, time: "2026-10-12T15:00:03Z" },
+      { ric: 790193, time: "2026-10-12T15:00:32Z" },
+      { ric: 790193, time: "2026-10-12T15:01:02Z" },
       { ric: 790113, time: "2026-10-12T15:00:01Z" },
+      { ric: 790113, time: "2026-10-12T15:00:03Z" },
       { ric: 790193, time: "2026-10-12T15:00:02Z" },
     ],
     function: 0,
@@ -56,9 +60,10 @@ test("reception history keeps repeated RICs in chronological order above one mes
     ],
     [
       "PGD\u00a0Example\u00a0(0790193)",
-      formatReceivedAt("2026-10-12T15:00:03Z"),
+      formatReceivedAt("2026-10-12T15:01:02.001Z"),
     ],
   ]);
   expect(children[1]!.type).toBe("MessageContent");
-  expect(message.receptions[0]!.time).toBe("2026-10-12T15:00:03Z");
+  expect(message.receptions[0]!.time).toBe("2026-10-12T15:01:02.001Z");
+  expect(message.receptions).toHaveLength(7);
 });

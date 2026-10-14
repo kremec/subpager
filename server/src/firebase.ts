@@ -4,6 +4,7 @@ import {
   getFirestore,
   type Firestore,
 } from "firebase-admin/firestore";
+import { withoutEchoes } from "../../shared/pager-receptions";
 import { FirestoreUsers } from "./users";
 import type { Config } from "./config";
 import { isReceptionId, type Outbox, type Reception } from "./outbox";
@@ -110,7 +111,7 @@ export class FirebaseBackend {
           const stored = existing.data() as FirebaseMessage;
           if (
             pagerDay(stored.receptions[0]!.time) !== day ||
-            !isEcho(stored.receptions, reception) ||
+            !isEcho(withoutEchoes(stored.receptions), reception) ||
             stored.function !== message.function ||
             stored.type !== message.type ||
             normalizeContent(stored.content) !== message.content
@@ -130,7 +131,10 @@ export class FirebaseBackend {
         );
         if (
           matched.some((doc) =>
-            isEcho(doc.get("receptions") as PagerReception[], reception),
+            isEcho(
+              withoutEchoes(doc.get("receptions") as PagerReception[]),
+              reception,
+            ),
           )
         )
           return;
@@ -142,10 +146,11 @@ export class FirebaseBackend {
             return first.localeCompare(second) || a.id.localeCompare(b.id);
           })[0];
         const stored = source?.data() as FirebaseMessage | undefined;
+        const receptions = stored ? withoutEchoes(stored.receptions) : [];
         const eventId = source?.id ?? messageId;
         const expiresAt = Date.parse(reception.time) + 300_000;
         const newBatch =
-          !stored || startsNotificationBatch(stored.receptions, reception.time);
+          !stored || startsNotificationBatch(receptions, reception.time);
         const fresh = notify && newBatch && expiresAt > now;
         const recipients = fresh
           ? this.users.recipients(undefined, message.content)
@@ -156,7 +161,7 @@ export class FirebaseBackend {
           infer && source ? await transaction.get(spinRef) : undefined;
         if (source) {
           transaction.update(source.ref, {
-            receptions: [...stored!.receptions, reception].sort((a, b) =>
+            receptions: [...receptions, reception].sort((a, b) =>
               a.time.localeCompare(b.time),
             ),
             updatedAt: FieldValue.serverTimestamp(),

@@ -9,6 +9,7 @@ const files = [
   "bun.lock",
   "app/package.json",
   "app/patches",
+  "shared",
   "server/package.json",
   "server/src",
   "server/scripts",
@@ -29,7 +30,7 @@ cd "$stage"
 bun install --filter subpager-server --production --frozen-lockfile --ignore-scripts
 
 doas rc-service subpager stop
-for path in server/src server/scripts server/node_modules node_modules app/patches; do
+for path in server/src server/scripts server/node_modules node_modules app/patches shared; do
   rm -rf "$target/$path"
   if [ -e "$stage/$path" ]; then
     mv "$stage/$path" "$target/$path"

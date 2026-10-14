@@ -8,6 +8,8 @@ import { SpinReport } from "@/pager/spin-report";
 import type { PagerMessage, SpinEvent } from "@/pager/types";
 import { useTheme } from "@/theme/use-theme";
 
+import { withoutEchoes } from "../../../../shared/pager-receptions";
+
 interface MessageRowProps {
   message: PagerMessage;
   unitNames?: ReadonlyMap<number, string>;
@@ -26,37 +28,35 @@ export const MessageRow: FC<MessageRowProps> = (props) => {
       }}
     >
       <View style={{ gap: theme.spacing.xs }}>
-        {[...message.receptions]
-          .sort((a, b) => a.time.localeCompare(b.time))
-          .map((reception, index) => (
-            <View
-              key={`${reception.ric}:${reception.time}:${index}`}
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                gap: theme.spacing.sm,
-              }}
+        {withoutEchoes(message.receptions).map((reception, index) => (
+          <View
+            key={`${reception.ric}:${reception.time}:${index}`}
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              gap: theme.spacing.sm,
+            }}
+          >
+            <Typography
+              variant="bodySmall"
+              style={{ flexShrink: 0, maxWidth: "100%", fontWeight: "600" }}
             >
-              <Typography
-                variant="bodySmall"
-                style={{ flexShrink: 0, maxWidth: "100%", fontWeight: "600" }}
-              >
-                {formatRicUnit(
-                  reception.ric,
-                  unitNames?.get(reception.ric),
-                ).replace(/\s/g, "\u00a0")}
-              </Typography>
-              <Typography
-                variant="caption"
-                color={theme.colors.textSecondary}
-                style={{ marginLeft: "auto", flexShrink: 0 }}
-              >
-                {formatReceivedAt(reception.time)}
-              </Typography>
-            </View>
-          ))}
+              {formatRicUnit(
+                reception.ric,
+                unitNames?.get(reception.ric),
+              ).replace(/\s/g, "\u00a0")}
+            </Typography>
+            <Typography
+              variant="caption"
+              color={theme.colors.textSecondary}
+              style={{ marginLeft: "auto", flexShrink: 0 }}
+            >
+              {formatReceivedAt(reception.time)}
+            </Typography>
+          </View>
+        ))}
       </View>
       <MessageContent message={message} />
       {spinEvent && (

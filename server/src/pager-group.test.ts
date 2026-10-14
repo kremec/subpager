@@ -68,19 +68,25 @@ test("pager days use Ljubljana midnight including daylight-saving changes", () =
   expect(pagerDay("2026-12-12T23:00:00Z")).toBe("2026-12-13");
 });
 
-test("echoes match only the same RIC within 30 seconds of a retained reception", () => {
+test("echoes match only the same RIC within 60 seconds of a retained reception", () => {
   const first = { ric: 790113, time: "2026-10-12T15:00:49.600Z" };
   expect(isEcho([first], { ...first, time: "2026-10-12T15:01:05.494Z" })).toBe(
     true,
   );
-  expect(isEcho([first], { ...first, time: "2026-10-12T15:01:19.600Z" })).toBe(
+  expect(isEcho([first], { ...first, time: "2026-10-12T15:01:49.600Z" })).toBe(
     true,
   );
-  expect(isEcho([first], { ...first, time: "2026-10-12T15:01:19.601Z" })).toBe(
+  expect(isEcho([first], { ...first, time: "2026-10-12T15:01:49.601Z" })).toBe(
     false,
   );
   expect(isEcho([first], { ...first, ric: 790193 })).toBe(false);
   expect(isEcho([first], { ...first, time: "2026-10-12T15:00:36.292Z" })).toBe(
     true,
+  );
+  expect(isEcho([first], { ...first, time: "2026-10-12T14:59:49.600Z" })).toBe(
+    true,
+  );
+  expect(isEcho([first], { ...first, time: "2026-10-12T14:59:49.599Z" })).toBe(
+    false,
   );
 });

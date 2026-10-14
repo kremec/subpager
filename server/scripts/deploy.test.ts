@@ -104,6 +104,13 @@ test("deploy replaces code and dependencies while preserving box state", async (
     await Bun.file(join(result.target, "server/src/index.ts")).text(),
   ).toBe(await Bun.file(join(import.meta.dir, "../src/index.ts")).text());
   expect(
+    await Bun.file(join(result.target, "shared/pager-receptions.ts")).text(),
+  ).toBe(
+    await Bun.file(
+      join(import.meta.dir, "../../shared/pager-receptions.ts"),
+    ).text(),
+  );
+  expect(
     await Bun.file(join(result.target, "node_modules/runtime")).text(),
   ).toBe("installed\n");
   for (const file of [
