@@ -289,11 +289,15 @@ function locationFixture(
   store.put(`messages/${id}`, { content: job.content, duplicateOf: null });
 }
 
-const openAIResult = () =>
+const openAIResult = (location = "ŠOLI GOLO", address: string | null = null) =>
   Response.json({
     status: "completed",
     output: [
-      { content: [{ type: "output_text", text: '{"location":"ŠOLI GOLO"}' }] },
+      {
+        content: [
+          { type: "output_text", text: JSON.stringify({ location, address }) },
+        ],
+      },
     ],
   });
 
@@ -1072,7 +1076,7 @@ describe("durable location jobs", () => {
       setSystemTime(now);
       const store = new TestFirestore();
       locationFixture(store);
-      const output = JSON.stringify({ location });
+      const output = JSON.stringify({ location, address: null });
       const logged = spyOn(console, "log").mockImplementation(() => {});
       const clock = spyOn(performance, "now")
         .mockReturnValueOnce(100)
@@ -1139,7 +1143,7 @@ describe("durable location jobs", () => {
   test("paid result survives persistence failure and enriches only the original without more inference", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
-    locationFixture(store);
+    locationFixture(store, "location", { content: "GORI V ŠOLI GOLO 5." });
     store.put("messages/repeat", { duplicateOf: "location", deleted: true });
     let requests = 0;
     const worker = new LocationExtraction(
@@ -1156,7 +1160,7 @@ describe("durable location jobs", () => {
         expect(request.reasoning.effort).toBe("none");
         expect(request.stream).toBeUndefined();
         requests++;
-        return openAIResult();
+        return openAIResult("ŠOLI GOLO 5", "GOLO 5");
       },
     );
     store.rejectWrite = (_path, patch) => patch.state === "ready";
@@ -1171,7 +1175,8 @@ describe("durable location jobs", () => {
       logged.mockRestore();
     }
     expect(requests).toBe(1);
-    expect(store.docs.get("messages/location")?.location).toBe("ŠOLI GOLO");
+    expect(store.docs.get("messages/location")?.location).toBe("ŠOLI GOLO 5");
+    expect(store.docs.get("messages/location")?.locationAddress).toBe("GOLO 5");
     expect(store.docs.get("messages/repeat")).toEqual({
       duplicateOf: "location",
       deleted: true,
@@ -1198,6 +1203,7 @@ describe("durable location jobs", () => {
     await worker.run(["pending", "ready"]);
     expect(requests).toBe(0);
     expect(store.docs.get("messages/ready")?.location).toBeNull();
+    expect(store.docs.get("messages/ready")?.locationAddress).toBeNull();
     expect(store.docs.get("locationJobs/pending")?.state).toBe("pending");
   });
 
@@ -1330,6 +1336,68 @@ function spinResponse(
 }
 
 describe("durable SPIN matching", () => {
+  test("geocodes the extracted postal address, keeps full pager context, and retries empty lookups after catalog changes", async () => {
+    setSystemTime(now);
+    const store = new TestFirestore();
+    spinFixture(store);
+    const location = "TRZIN  TRZIN  LJUBLJANSKA CESTA 15C";
+    const content = `POŠKODBA KOLESARJA - ${location}`;
+    store.put("messages/spin", {
+      ...store.docs.get("messages/spin"),
+      content,
+      location,
+      locationAddress: "LJUBLJANSKA CESTA 15C",
+    });
+    const catalog = {
+      ready: true,
+      revision: "r1",
+      events: [{ ...spinEvent, title: "Prometna nesreča", description: "" }],
+    };
+    const queries: string[] = [];
+    let requests = 0;
+    const worker = new SpinMatching(
+      store.db,
+      catalog,
+      "test-key",
+      undefined,
+      async (_url, options) => {
+        const body = JSON.parse(options!.body as string) as {
+          input: { content: string }[];
+        };
+        expect(JSON.parse(body.input[1]!.content).pager).toMatchObject({
+          message: content,
+          receivedAt: new Date(now).toISOString(),
+          location,
+        });
+        requests++;
+        return spinResponse(null);
+      },
+      async (query) => {
+        queries.push(query);
+        return queries.length === 1
+          ? []
+          : [
+              {
+                address: "Ljubljanska cesta, 15C, Trzin",
+                latitude: 46.12,
+                longitude: 14.56,
+              },
+            ];
+      },
+    );
+    await worker.run(["spin"]);
+    await worker.run(["spin"]);
+    expect(queries).toEqual(["LJUBLJANSKA CESTA 15C"]);
+    expect(requests).toBe(1);
+    catalog.revision = "r2";
+    await worker.run(["spin"]);
+    expect(queries).toEqual(["LJUBLJANSKA CESTA 15C", "LJUBLJANSKA CESTA 15C"]);
+    catalog.revision = "r3";
+    await worker.run(["spin"]);
+    expect(queries).toHaveLength(2);
+    expect(requests).toBe(3);
+  });
+
   test("seeding stores only matching state and skips messages at or beyond three days", async () => {
     setSystemTime(now);
     const store = new TestFirestore();
@@ -2078,6 +2146,7 @@ describe("durable SPIN matching", () => {
       state: "ready",
       content: message.content as string,
       result: "GOLO 40",
+      address: "GOLO 40",
     });
     store.put("messages/spin", message);
     const partial = {
@@ -2116,6 +2185,7 @@ describe("durable SPIN matching", () => {
     await startedRequest;
     await new LocationExtraction(store.db).run(["spin"]);
     expect(store.docs.get("messages/spin")?.location).toBe("GOLO 40");
+    expect(store.docs.get("messages/spin")?.locationAddress).toBe("GOLO 40");
     expect(store.docs.get("spinJobs/spin")).toMatchObject({
       state: "pending",
       attempts: 2,

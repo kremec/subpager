@@ -81,6 +81,7 @@ interface ClaimedSpin extends SpinJob {
   content: string;
   receivedAt: string;
   location?: string;
+  locationAddress?: string;
   currentLinkId?: string;
   rejectedEventIds: string[];
   rics: number[];
@@ -303,6 +304,9 @@ export class SpinMatching {
         ...(typeof data.location === "string"
           ? { location: data.location }
           : {}),
+        ...(typeof data.locationAddress === "string"
+          ? { locationAddress: data.locationAddress }
+          : {}),
       };
       tx.update(ref, {
         attempts: claimed.attempts,
@@ -508,13 +512,14 @@ export class SpinMatching {
     let decision: SpinDecision;
     try {
       let addresses: SpinAddress[] = [];
-      if (job.location && events.some((event) => !hasSpinReport(event))) {
-        const cached = this.addresses.get(job.location);
-        addresses = cached ?? (await this.geocode(job.location));
-        if (!cached) {
+      const addressLocation = job.locationAddress ?? job.location;
+      if (addressLocation && events.some((event) => !hasSpinReport(event))) {
+        const cached = this.addresses.get(addressLocation);
+        addresses = cached ?? (await this.geocode(addressLocation));
+        if (!cached && addresses.length) {
           if (this.addresses.size >= 200)
             this.addresses.delete(this.addresses.keys().next().value!);
-          this.addresses.set(job.location, addresses);
+          this.addresses.set(addressLocation, addresses);
         }
       }
       const units = await Promise.all(

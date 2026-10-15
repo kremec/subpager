@@ -12,6 +12,7 @@ export interface LocationJob {
   failures: number;
   leaseUntil: number;
   result?: string | null;
+  address?: string | null;
   lastError?: string;
 }
 
@@ -21,6 +22,11 @@ interface ClaimedLocation extends LocationJob {
 interface CachedLocation {
   job: ClaimedLocation;
   result: string | null;
+  address: string | null;
+}
+interface LocationResult {
+  location: string | null;
+  address: string | null;
 }
 type HttpRequest = (url: string, options: RequestInit) => Promise<Response>;
 
@@ -49,6 +55,52 @@ export function parseLocation(text: string, content: string): string | null {
   )
     throw new Error("Location is not an exact source substring or null");
   return value.location;
+}
+
+export function parseLocationResult(
+  text: string,
+  content: string,
+): LocationResult {
+  const value: unknown = JSON.parse(text);
+  if (
+    !isObject(value) ||
+    Object.keys(value).length !== 2 ||
+    !("address" in value)
+  )
+    throw new Error("Expected a location and postal address");
+  const location = parseLocation(
+    JSON.stringify({ location: value.location }),
+    content,
+  );
+  if (value.address === null) return { location, address: null };
+  if (
+    !location ||
+    typeof value.address !== "string" ||
+    value.address.trim() !== value.address ||
+    !/\p{L}.*\s\d+(?:\s?\p{L})?(?=$|[\s,])/u.test(value.address) ||
+    !location.includes(value.address)
+  )
+    throw new Error("Postal address is not a numbered source substring");
+  for (
+    let index = content.indexOf(location);
+    index >= 0;
+    index = content.indexOf(location, index + 1)
+  ) {
+    const start = index + location.indexOf(value.address);
+    const before = content.slice(0, start).at(-1) ?? "";
+    const after = content.slice(start + value.address.length);
+    if (
+      !/[\p{L}\p{N}]/u.test(before) &&
+      !/^[\p{L}\p{N}/]|^-[\p{L}\p{N}]/u.test(after) &&
+      !(
+        /\d$/.test(value.address) && /^\s+\p{L}(?=$|[^\p{L}\p{N}])/u.test(after)
+      )
+    )
+      return { location, address: value.address };
+  }
+  throw new Error(
+    "Postal address truncates a source word or house number suffix",
+  );
 }
 
 export function readLocationResponse(payload: unknown): string {
@@ -182,6 +234,7 @@ export class LocationExtraction {
         tx.update(ref, {
           state: "ready",
           result: cached.result,
+          address: cached.address,
           leaseUntil: 0,
           nextAttempt: Date.now(),
         });
@@ -210,9 +263,16 @@ export class LocationExtraction {
       }
       const spinRef = this.db.collection("spinJobs").doc(job.messageId);
       const spin = await tx.get(spinRef);
-      parseLocation(JSON.stringify({ location: current.result }), job.content);
+      const result = parseLocationResult(
+        JSON.stringify({
+          location: current.result,
+          address: current.address ?? null,
+        }),
+        job.content,
+      );
       const patch = {
-        location: current.result,
+        location: result.location,
+        locationAddress: result.address,
         updatedAt: FieldValue.serverTimestamp(),
       };
       tx.update(messageRef, patch);
@@ -233,7 +293,7 @@ export class LocationExtraction {
       await this.fail(job, "OpenAI API key is not configured", 401);
       return;
     }
-    let result: string | null;
+    let result: LocationResult;
     const startedAt = performance.now();
     try {
       const response = await this.request(
@@ -268,8 +328,11 @@ export class LocationExtraction {
                 strict: true,
                 schema: {
                   type: "object",
-                  properties: { location: { type: ["string", "null"] } },
-                  required: ["location"],
+                  properties: {
+                    location: { type: ["string", "null"] },
+                    address: { type: ["string", "null"] },
+                  },
+                  required: ["location", "address"],
                   additionalProperties: false,
                 },
               },
@@ -288,7 +351,7 @@ export class LocationExtraction {
       logInfo(
         `OpenAI location result for call ${job.messageId}; model=${this.model}; durationMs=${Math.round(performance.now() - startedAt)}; result=${output}`,
       );
-      result = parseLocation(output, job.content);
+      result = parseLocationResult(output, job.content);
     } catch (error) {
       await this.fail(
         job,
@@ -298,7 +361,11 @@ export class LocationExtraction {
       return;
     }
     // A failed Firestore write retries this cached paid result, never inference.
-    this.results.set(job.id, { job, result });
+    this.results.set(job.id, {
+      job,
+      result: result.location,
+      address: result.address,
+    });
     await this.saveResults();
     this.report(null);
   }

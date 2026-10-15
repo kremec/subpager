@@ -65,15 +65,15 @@ test.each([
 });
 
 describe("SPIN partial evidence checks", () => {
-  test("a partial selection requires a verified selected address", () => {
+  test("a plausible partial selection can proceed without an exact pager address", () => {
     expect(checkSpinDecision(pager, [partial], [address], selection)).toEqual(
       selection,
     );
     for (const addresses of [[], [address]]) {
       const decision = { ...selection, addressIndex: null };
-      expect(
-        checkSpinDecision(pager, [partial], addresses, decision).incidentId,
-      ).toBeNull();
+      expect(checkSpinDecision(pager, [partial], addresses, decision)).toEqual(
+        decision,
+      );
     }
     expect(
       checkSpinDecision(pager, [partial], [], selection).incidentId,
@@ -129,7 +129,7 @@ describe("SPIN partial evidence checks", () => {
     ).toBeNull();
   });
 
-  test("two equally supported partial incidents reject a forced model choice", () => {
+  test("nearby partial rivals allow the model to select the best plausible incident", () => {
     expect(
       checkSpinDecision(
         pager,
@@ -137,7 +137,7 @@ describe("SPIN partial evidence checks", () => {
         [address],
         selection,
       ),
-    ).toEqual({ ...selection, incidentId: null, addressIndex: null });
+    ).toEqual(selection);
     expect(
       checkSpinDecision(
         pager,
@@ -145,10 +145,10 @@ describe("SPIN partial evidence checks", () => {
         [address],
         selection,
       ).incidentId,
-    ).toBeNull();
+    ).toBe(partial.id);
   });
 
-  test("a nearby partial rival blocks attachment even when its category and dated RSS title differ", () => {
+  test("a partial rival with different circumstances does not veto a compatible selection", () => {
     const rival = {
       ...partial,
       id: "472585",
@@ -163,7 +163,48 @@ describe("SPIN partial evidence checks", () => {
         [address],
         selection,
       ),
-    ).toEqual({ ...selection, incidentId: null, addressIndex: null });
+    ).toEqual(selection);
+  });
+
+  test("the bird rescue can provisionally match its close technical-assistance report without an address", () => {
+    const bird = {
+      content: "REŠEVANJE PTICE UJEDE IZ MASKE OSEBNEGA VOZILA",
+      receivedAt: "2026-10-13T12:25:52.742Z",
+    };
+    const litija = {
+      ...partial,
+      id: "472750",
+      title: "Tehnična in druga pomoč",
+      description: "Litija",
+      municipality: "Litija",
+      category: "Tehnična in druga pomoč",
+      eventAt: "2026-10-13T12:21:58.000Z",
+      latitude: 46.097,
+      longitude: 14.828,
+    };
+    const decision = {
+      ...selection,
+      incidentId: litija.id,
+      addressIndex: null,
+    };
+    expect(checkSpinDecision(bird, [litija], [], decision)).toEqual(decision);
+    expect(
+      checkSpinDecision(
+        bird,
+        [{ ...litija, eventAt: "2026-10-13T11:55:00.000Z" }],
+        [],
+        decision,
+      ).incidentId,
+    ).toBeNull();
+  });
+
+  test("missing address selection cannot bypass contradictory verified geography", () => {
+    expect(
+      checkSpinDecision(pager, [partial], [{ ...address, latitude: 45.917 }], {
+        ...selection,
+        addressIndex: null,
+      }).incidentId,
+    ).toBeNull();
   });
 
   test("a missing current source or municipality-only report remains uncertain", () => {

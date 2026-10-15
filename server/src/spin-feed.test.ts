@@ -117,6 +117,20 @@ test("detail rejects invalid coordinates, field types, local dates, and unsucces
   }
 });
 
+test("early details retain the broad incident type before a detailed category is assigned", () => {
+  expect(
+    parseSpinDetail({ value: { intervencijaVrstaNaziv: "Prometna nesreča" } }),
+  ).toEqual({ category: "Prometna nesreča" });
+  expect(
+    parseSpinDetail({
+      value: {
+        intervencijaVrstaNaziv: "Tehnična in druga pomoč",
+        dogodekNaziv: "Reševanje obolelih oseb",
+      },
+    }),
+  ).toEqual({ category: "Reševanje obolelih oseb" });
+});
+
 test("municipality-only early entries cannot be treated as narrative reports", () => {
   const event = parseSpinFeed(feed(item("472569", "Grosuplje")))[0]!;
   expect(hasSpinReport({ ...event, municipality: "Grosuplje" })).toBe(false);

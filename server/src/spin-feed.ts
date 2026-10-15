@@ -110,6 +110,10 @@ export function parseSpinDetail(payload: unknown): Partial<SpinEvent> {
     const content = text(value[source]);
     if (content) event[target] = content;
   }
+  if (!event.category && value.intervencijaVrstaNaziv != null) {
+    const category = text(value.intervencijaVrstaNaziv);
+    if (category) event.category = category;
+  }
   if (event.description === event.municipality) delete event.description;
   if (value.prijavaCas !== undefined && value.prijavaCas !== null) {
     const local = text(value.prijavaCas);

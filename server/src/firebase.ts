@@ -34,6 +34,7 @@ export interface PagerReception {
 export interface FirebaseMessage extends Omit<Page, "ric" | "receivedAt"> {
   receptions: PagerReception[];
   location?: string | null;
+  locationAddress?: string | null;
   spinEventId?: string;
   spinMatchStatus?: "provisional" | "confirmed";
 }
