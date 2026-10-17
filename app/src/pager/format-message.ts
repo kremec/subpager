@@ -13,7 +13,7 @@ export function formatRic(ric: number) {
 }
 
 export function formatRicUnit(ric: number, unitName?: string) {
-  return unitName ? `${unitName} (${formatRic(ric)})` : formatRic(ric);
+  return unitName || formatRic(ric);
 }
 
 export function formatMessageContent(content: string) {

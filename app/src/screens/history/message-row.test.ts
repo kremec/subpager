@@ -54,14 +54,8 @@ test("reception history hides saved echoes and keeps later pagings in chronologi
     ),
   ).toEqual([
     ["0790113", formatReceivedAt("2026-10-12T15:00:01Z")],
-    [
-      "PGD\u00a0Example\u00a0(0790193)",
-      formatReceivedAt("2026-10-12T15:00:02Z"),
-    ],
-    [
-      "PGD\u00a0Example\u00a0(0790193)",
-      formatReceivedAt("2026-10-12T15:01:02.001Z"),
-    ],
+    ["PGD\u00a0Example", formatReceivedAt("2026-10-12T15:00:02Z")],
+    ["PGD\u00a0Example", formatReceivedAt("2026-10-12T15:01:02.001Z")],
   ]);
   expect(children[1]!.type).toBe("MessageContent");
   expect(message.receptions[0]!.time).toBe("2026-10-12T15:01:02.001Z");

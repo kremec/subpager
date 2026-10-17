@@ -14,8 +14,8 @@ test("shows day/month/year and 24-hour time in the device timezone", () => {
   expect(formatReceivedAt(midnight)).toBe("08/10/2026, 00:05");
 });
 
-test("uses the current unit name while keeping the padded RIC visible", () => {
-  expect(formatRicUnit(90473, "Unit name")).toBe("Unit name (0090473)");
+test("shows only the unit name, falling back to the padded RIC without a mapping", () => {
+  expect(formatRicUnit(90473, "Unit name")).toBe("Unit name");
   expect(formatRicUnit(90473)).toBe("0090473");
 });
 
