@@ -1,7 +1,16 @@
 diff --git a/react-native.js b/react-native.js
-index 0b730ecae1086eae294f5fad7938502557f9569e..5b1c9436aa00182dd27db81d7744ea1163c6c4cf 100644
+index 0b730ecae1086eae294f5fad7938502557f9569e..159dde1fd843b11b1f0e8b01e583f0d810e60dc0 100644
 --- a/react-native.js
 +++ b/react-native.js
+@@ -4357,7 +4357,7 @@ function trackVisibleRange(range, i, top, size, scroll, scrollBottom) {
+ function getIdsInVisibleRange(state, range) {
+   var _a3, _b;
+   const idsInView = [];
+-  const firstVisibleAnchorIndex = (_a3 = range.firstFullyOnScreenIndex) != null ? _a3 : range.startNoBuffer;
++  const firstVisibleAnchorIndex = range.startNoBuffer;
+   if (firstVisibleAnchorIndex !== null && firstVisibleAnchorIndex !== void 0 && range.endNoBuffer !== null) {
+     for (let i = firstVisibleAnchorIndex; i <= range.endNoBuffer; i++) {
+       const id = (_b = state.idCache[i]) != null ? _b : getId(state, i);
 @@ -6103,14 +6103,15 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
    const ctx = useStateContext();
    const columnWrapperStyle = ctx.columnWrapperStyle;
@@ -22,9 +31,18 @@ index 0b730ecae1086eae294f5fad7938502557f9569e..5b1c9436aa00182dd27db81d7744ea11
      const { columnGap, rowGap, gap } = columnWrapperStyle;
      const gapX = columnGap || gap || 0;
 diff --git a/react-native.mjs b/react-native.mjs
-index a3d8d9a3939b11d410dbc04d5bc54df820a90534..9efdaa3874b9603c5b8d76db14bfa8113494ea90 100644
+index a3d8d9a3939b11d410dbc04d5bc54df820a90534..74e76129805317d46658ac7b8b5625268ccac970 100644
 --- a/react-native.mjs
 +++ b/react-native.mjs
+@@ -4336,7 +4336,7 @@ function trackVisibleRange(range, i, top, size, scroll, scrollBottom) {
+ function getIdsInVisibleRange(state, range) {
+   var _a3, _b;
+   const idsInView = [];
+-  const firstVisibleAnchorIndex = (_a3 = range.firstFullyOnScreenIndex) != null ? _a3 : range.startNoBuffer;
++  const firstVisibleAnchorIndex = range.startNoBuffer;
+   if (firstVisibleAnchorIndex !== null && firstVisibleAnchorIndex !== void 0 && range.endNoBuffer !== null) {
+     for (let i = firstVisibleAnchorIndex; i <= range.endNoBuffer; i++) {
+       const id = (_b = state.idCache[i]) != null ? _b : getId(state, i);
 @@ -6082,14 +6082,15 @@ var ContainersLayer = typedMemo(function ContainersLayer2({
    const ctx = useStateContext();
    const columnWrapperStyle = ctx.columnWrapperStyle;

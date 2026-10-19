@@ -16,7 +16,7 @@ Use Bun. Do not start another Metro server if one is running. Native dependency 
 
 Bun applies the checked-in MaskedView manifest patch during installation. EAS uses the uploaded `google-services.json` when present so local and cloud builds use the same Firebase client file for fingerprinting.
 
-Bun also patches LegendList 3.6.0 to update Fabric content dimensions through React alongside row positions and the scroll anchor. Separate animated dimension updates caused a brief Android feed jump when filters changed. Keep this patch until an upstream release fixes that transition; check scrolled filter toggles frame by frame before removing it.
+Bun also patches LegendList 3.6.0 to update Fabric content dimensions through React alongside row positions and the scroll anchor. Separate animated dimension updates caused a brief Android feed jump when filters changed. The patch also anchors the first partly visible row, so expanding its SPIN report grows downward instead of keeping the following row in place. Keep this patch until upstream fixes both behaviors; check expansion, scrolling and scrolled filter toggles before removing it.
 
 ## Firebase setup
 
