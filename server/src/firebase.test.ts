@@ -364,7 +364,7 @@ test("message, push, location and SPIN jobs commit together, and persisted IDs p
   expect(pushPath).toMatch(/^pushJobs\/[A-Za-z0-9]{20}$/);
   expect(push.messageId).toBe(reception.sourceId);
   expect(push.body).toBe("ŠOLA GOLO");
-  expect(push.title).toBe("0000123 · 21/09/2026, 16:13");
+  expect(push.title).toBe("123 · 21/09/2026, 16:13");
   expect(push.recipients).toEqual([
     {
       deviceId: "approved",

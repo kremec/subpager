@@ -30,22 +30,20 @@ const messages: PagerMessage[] = [
   },
 ];
 
-test("search matches all words across padded RIC and full text regardless of case or accents", () => {
+test("search matches all words across RIC and full text regardless of case or accents", () => {
   const index = indexMessages(messages);
-  expect(searchMessages(index, "  ZIGA   0000123 pozar ")).toEqual([
-    messages[0],
-  ]);
+  expect(searchMessages(index, "  ZIGA   123 pozar ")).toEqual([messages[0]]);
   expect(searchMessages(index, "vhod preveri")).toEqual(messages.slice(0, 2));
   expect(searchMessages(index, "šiški")).toEqual([messages[0]]);
-  expect(searchMessages(index, "0000456 pozar")).toEqual([]);
-  expect(searchMessages(index, "tone-only 0000123")).toEqual([messages[2]]);
+  expect(searchMessages(index, "456 pozar")).toEqual([]);
+  expect(searchMessages(index, "tone-only 123")).toEqual([messages[2]]);
 });
 
 test("clearing and changing search preserves original messages and order", () => {
   const index = indexMessages(messages);
   expect(searchMessages(index, " ")).toEqual(messages);
   expect(searchMessages(index, "vhod")[0]).toBe(messages[0]);
-  expect(searchMessages(index, "0000123")).toEqual([messages[0], messages[2]]);
+  expect(searchMessages(index, "123")).toEqual([messages[0], messages[2]]);
   expect(searchMessages(index, "unmatched")).toEqual([]);
   expect(searchMessages(index, "")).toEqual(messages);
 });
@@ -69,7 +67,7 @@ test("unit renames update search for existing messages while RIC remains searcha
     messages,
     new Map([[123, "Gasilska enota Šiška"]]),
   );
-  expect(searchMessages(oldIndex, "enota siska 0000123")).toEqual([
+  expect(searchMessages(oldIndex, "enota siska 123")).toEqual([
     messages[0],
     messages[2],
   ]);
@@ -132,6 +130,6 @@ test("search includes every stored RIC and mapped unit in one row", () => {
     ],
   };
   const index = indexMessages([message], new Map([[789, "PGD Golo"]]));
-  expect(searchMessages(index, "0000789 golo")).toEqual([message]);
-  expect(searchMessages(index, "0000123")).toEqual([message]);
+  expect(searchMessages(index, "789 golo")).toEqual([message]);
+  expect(searchMessages(index, "123")).toEqual([message]);
 });

@@ -14,13 +14,14 @@ test("shows day/month/year and 24-hour time in the device timezone", () => {
   expect(formatReceivedAt(midnight)).toBe("08/10/2026, 00:05");
 });
 
-test("shows only the unit name, falling back to the padded RIC without a mapping", () => {
+test("shows only the unit name, falling back to the RIC without a mapping", () => {
   expect(formatRicUnit(90473, "Unit name")).toBe("Unit name");
-  expect(formatRicUnit(90473)).toBe("0090473");
+  expect(formatRicUnit(90473)).toBe("90473");
 });
 
-test("shows the seven-digit RIC without a label", () => {
-  expect(formatRic(90033)).toBe("0090033");
+test("shows the RIC without padding or a label", () => {
+  expect(formatRic(90033)).toBe("90033");
+  expect(formatRic(792433)).toBe("792433");
   expect(formatRic(2097151)).toBe("2097151");
 });
 

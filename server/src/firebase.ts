@@ -221,7 +221,7 @@ export class FirebaseBackend {
                 nextAttempt: now,
                 attempts: 0,
               })),
-            title: `${String(ric).padStart(7, "0")} · ${receivedAtFormatter.format(new Date(reception.time))}`,
+            title: `${String(ric)} · ${receivedAtFormatter.format(new Date(reception.time))}`,
             body: message.content,
             expiresAt,
             nextAttempt: now,

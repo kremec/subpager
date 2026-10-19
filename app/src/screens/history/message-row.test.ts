@@ -53,7 +53,7 @@ test("reception history hides saved echoes and keeps later pagings in chronologi
       ),
     ),
   ).toEqual([
-    ["0790113", formatReceivedAt("2026-10-12T15:00:01Z")],
+    ["790113", formatReceivedAt("2026-10-12T15:00:01Z")],
     ["PGD\u00a0Example", formatReceivedAt("2026-10-12T15:00:02Z")],
     ["PGD\u00a0Example", formatReceivedAt("2026-10-12T15:01:02.001Z")],
   ]);
