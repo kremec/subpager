@@ -12,7 +12,7 @@ export const OnboardingScreen: FC = () => {
   const { error, retry } = useConnection();
   const theme = useTheme();
   return (
-    <Screen headerShown={false} style={{ gap: 0 }}>
+    <Screen style={{ padding: theme.spacing.lg }}>
       <View
         style={{ flex: 1, width: "100%", maxWidth: 420, alignSelf: "center" }}
       >
@@ -41,7 +41,7 @@ export const OnboardingScreen: FC = () => {
             </Typography>
           </View>
           <DeviceIdentity />
-          {error && <Button label="Retry connection" onPress={retry} />}
+          {error && <Button onPress={retry}>Retry connection</Button>}
         </ScrollView>
       </View>
     </Screen>

@@ -1,20 +1,26 @@
 import { type FC } from "react";
-import { Text, type TextProps } from "react-native";
+import { Platform, Text, type TextProps, type TextStyle } from "react-native";
 
 import { useTheme } from "@/theme/use-theme";
 
-type Variant =
-  | "display"
-  | "title"
-  | "titleSmall"
-  | "body"
-  | "bodyStrong"
-  | "bodySmall"
-  | "caption"
-  | "mono";
+const variants = {
+  display: { fontSize: 32, lineHeight: 38, fontWeight: "700" },
+  title: { fontSize: 24, lineHeight: 28, fontWeight: "700" },
+  titleSmall: { fontSize: 18, lineHeight: 22, fontWeight: "600" },
+  body: { fontSize: 16, lineHeight: 22 },
+  bodyStrong: { fontSize: 16, lineHeight: 22, fontWeight: "700" },
+  bodySmall: { fontSize: 14, lineHeight: 18, fontWeight: "500" },
+  caption: { fontSize: 12, lineHeight: 16, fontWeight: "500" },
+  mono: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "400",
+    fontFamily: Platform.select({ ios: "ui-monospace", default: "monospace" }),
+  },
+} satisfies Record<string, TextStyle>;
 
 interface TypographyProps extends TextProps {
-  variant?: Variant;
+  variant?: keyof typeof variants;
   color?: string;
 }
 
@@ -22,66 +28,14 @@ export const Typography: FC<TypographyProps> = (props) => {
   const { variant = "body", color, style, ...textProps } = props;
   const theme = useTheme();
 
-  const variantStyle = (() => {
-    switch (variant) {
-      case "display":
-        return {
-          fontSize: theme.typography.display,
-          lineHeight: theme.typography.display + 6,
-          fontWeight: "700" as const,
-        };
-      case "title":
-        return {
-          fontSize: theme.typography.title,
-          lineHeight: theme.typography.title + 4,
-          fontWeight: "700" as const,
-        };
-      case "titleSmall":
-        return {
-          fontSize: theme.typography.titleSmall,
-          lineHeight: theme.typography.titleSmall + 4,
-          fontWeight: "600" as const,
-        };
-      case "bodyStrong":
-        return {
-          fontSize: theme.typography.body,
-          lineHeight: theme.typography.body + 6,
-          fontWeight: "700" as const,
-        };
-      case "bodySmall":
-        return {
-          fontSize: theme.typography.bodySmall,
-          lineHeight: theme.typography.bodySmall + 4,
-          fontWeight: "500" as const,
-        };
-      case "caption":
-        return {
-          fontSize: theme.typography.caption,
-          lineHeight: theme.typography.caption + 4,
-          fontWeight: "500" as const,
-        };
-      case "mono":
-        return {
-          fontSize: theme.typography.bodySmall,
-          lineHeight: theme.typography.bodySmall + 4,
-          fontFamily: theme.fonts?.mono,
-        };
-      default:
-        return {
-          fontSize: theme.typography.body,
-          lineHeight: theme.typography.body + 6,
-          fontWeight: "400" as const,
-        };
-    }
-  })();
-
   return (
     <Text
       style={[
         {
           color: color ?? theme.colors.text,
+          fontWeight: theme.typography.bodyWeight,
         },
-        variantStyle,
+        variants[variant],
         style,
       ]}
       {...textProps}

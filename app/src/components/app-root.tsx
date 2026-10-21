@@ -15,14 +15,20 @@ export const AppRoot: FC = () => {
   useNotifications();
   if (!ready)
     return (
-      <Screen>
+      <Screen
+        edges={["left", "right", "bottom"]}
+        style={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+      >
         <ActivityIndicator />
       </Screen>
     );
   if (error && !uid)
     return (
-      <Screen>
-        <Button label="Retry" onPress={retry} />
+      <Screen
+        edges={["left", "right", "bottom"]}
+        style={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+      >
+        <Button onPress={retry}>Retry</Button>
       </Screen>
     );
   return (

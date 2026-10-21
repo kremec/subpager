@@ -24,7 +24,7 @@ export const HistoryScreen: FC<HistoryScreenProps> = (props) => {
     if (syncVersion > 0) preservePosition.current = true;
   }, [syncVersion]);
   return (
-    <Screen headerShown={false} style={{ padding: 0, gap: 0 }}>
+    <Screen>
       <HistoryHeader spinPreview={props.spinPreview} />
       {props.spinPreview && (
         <Typography

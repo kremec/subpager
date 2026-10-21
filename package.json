@@ -14,7 +14,9 @@
     "test": "bun run --filter '*' test",
     "format": "bun run --filter '*' format",
     "format:check": "bun run --filter '*' format:check",
-    "prepare": "git config --local core.hooksPath .githooks"
+    "prepare": "git config --local core.hooksPath .githooks",
+    "ui:sync": "bun scripts/sync-ui.ts",
+    "ui:check": "bun scripts/sync-ui.ts --check"
   },
   "engines": {
     "bun": ">=1.4.3"
@@ -22,6 +24,7 @@
   "packageManager": "bun@1.4.3",
   "patchedDependencies": {
     "@react-native-masked-view/masked-view@0.3.2": "app/patches/@react-native-masked-view%2Fmasked-view@0.3.2.patch",
-    "@legendapp/list@3.6.0": "app/patches/@legendapp%2Flist@3.6.0.patch"
+    "@legendapp/list@3.6.0": "app/patches/@legendapp%2Flist@3.6.0.patch",
+    "@expo/ui@57.0.25": "app/patches/@expo%2Fui@57.0.25.patch"
   }
 }
