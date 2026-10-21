@@ -1,4 +1,4 @@
-import { type FC } from "react";
+import { Fragment, type FC } from "react";
 
 import { Redirect, useLocalSearchParams } from "expo-router";
 
@@ -8,10 +8,13 @@ import { SearchScreen } from "@/screens/search/search-screen";
 const SearchRoute: FC = () => {
   const { approved } = useConnection();
   const { spinPreview } = useLocalSearchParams<{ spinPreview?: string }>();
-  return approved ? (
-    <SearchScreen spinPreview={__DEV__ && spinPreview === "1"} />
-  ) : (
-    <Redirect href="/" />
+  return (
+    <Fragment>
+      {approved && (
+        <SearchScreen spinPreview={__DEV__ && spinPreview === "1"} />
+      )}
+      {!approved && <Redirect href="/" />}
+    </Fragment>
   );
 };
 

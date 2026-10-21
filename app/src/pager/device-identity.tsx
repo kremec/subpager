@@ -64,9 +64,10 @@ export const DeviceIdentity: FC = () => {
       >
         {uid ?? "Creating…"}
       </Typography>
-      {copied ? (
+      {copied && (
         <IconCheck color={theme.colors.success} size={20} strokeWidth={1.8} />
-      ) : (
+      )}
+      {!copied && (
         <IconCopy
           color={theme.colors.textSecondary}
           size={20}

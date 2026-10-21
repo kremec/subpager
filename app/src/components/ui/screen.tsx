@@ -30,7 +30,7 @@ export const Screen: FC<PropsWithChildren<ScreenProps>> = (props) => {
         edges={edges}
         style={{ flex: 1, backgroundColor: theme.colors.background }}
       >
-        {scroll ? (
+        {scroll && (
           <ScrollView
             contentContainerStyle={[contentStyle, style]}
             keyboardShouldPersistTaps="handled"
@@ -38,7 +38,8 @@ export const Screen: FC<PropsWithChildren<ScreenProps>> = (props) => {
           >
             {children}
           </ScrollView>
-        ) : (
+        )}
+        {!scroll && (
           <View style={[contentStyle, { flex: 1 }, style]}>{children}</View>
         )}
       </SafeAreaView>

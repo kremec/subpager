@@ -30,7 +30,7 @@ export const Example: FC<ExampleProps> = (props) => {
 
 ### Conditional Rendering
 
-- Avoid JSX ternaries that render `null`. Use short-circuit rendering instead:
+- Use separate short-circuit conditions for alternative components (`{visible && <Content />}` and `{!visible && <Placeholder />}`). Do not use ternaries to choose JSX elements or render `null`:
 
 ```tsx
 {
