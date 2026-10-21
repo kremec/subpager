@@ -14,9 +14,7 @@
     "test": "bun run --filter '*' test",
     "format": "bun run --filter '*' format",
     "format:check": "bun run --filter '*' format:check",
-    "prepare": "git config --local core.hooksPath .githooks",
-    "ui:sync": "bun scripts/sync-ui.ts",
-    "ui:check": "bun scripts/sync-ui.ts --check"
+    "prepare": "git config --local core.hooksPath .githooks"
   },
   "engines": {
     "bun": ">=1.4.3"
