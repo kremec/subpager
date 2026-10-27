@@ -83,7 +83,7 @@ export const SpinReport: FC<SpinReportProps> = (props) => {
             paddingHorizontal: theme.spacing.md,
           }}
         >
-          <Typography variant="readingBody">{event.description}</Typography>
+          <Typography variant="bodyRegular">{event.description}</Typography>
         </View>
       )}
       {(!hasDescription || expanded) && (

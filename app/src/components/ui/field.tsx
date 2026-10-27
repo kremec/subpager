@@ -26,7 +26,7 @@ export const Field: FC<FieldProps> = (props) => {
             color: theme.colors.text,
             paddingHorizontal: theme.spacing.md,
             paddingVertical: theme.spacing.md,
-            fontSize: 16,
+            fontSize: theme.typography.body,
           },
           style,
         ]}

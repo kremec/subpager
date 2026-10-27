@@ -1,25 +1,58 @@
 import { type FC } from "react";
 import { Platform, Text, type TextProps, type TextStyle } from "react-native";
 
+import { typography } from "@/theme/tokens";
 import { useTheme } from "@/theme/use-theme";
 
 const variants = {
-  display: { fontSize: 32, lineHeight: 38, fontWeight: "700" },
-  title: { fontSize: 24, lineHeight: 28, fontWeight: "700" },
-  titleSmall: { fontSize: 18, lineHeight: 22, fontWeight: "600" },
-  body: { fontSize: 16, lineHeight: 22 },
-  bodySemibold: { fontSize: 16, lineHeight: 22, fontWeight: "600" },
-  bodyStrong: { fontSize: 16, lineHeight: 22, fontWeight: "700" },
-  bodySmall: { fontSize: 14, lineHeight: 18, fontWeight: "500" },
-  bodySmallRegular: { fontSize: 14, lineHeight: 18, fontWeight: "400" },
-  bodySmallSemibold: { fontSize: 14, lineHeight: 18, fontWeight: "600" },
-  caption: { fontSize: 12, lineHeight: 16, fontWeight: "500" },
-  captionSemibold: { fontSize: 12, lineHeight: 16, fontWeight: "600" },
-  readingTitle: { fontSize: 18, lineHeight: 24, fontWeight: "400" },
-  readingBody: { fontSize: 16, lineHeight: 23, fontWeight: "400" },
-  readingSmall: { fontSize: 14, lineHeight: 20, fontWeight: "400" },
+  display: { fontSize: typography.display, lineHeight: 38, fontWeight: "700" },
+  title: { fontSize: typography.title, lineHeight: 28, fontWeight: "700" },
+  titleSmall: {
+    fontSize: typography.titleSmall,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+  body: { fontSize: typography.body, lineHeight: 22 },
+  bodySemibold: {
+    fontSize: typography.body,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+  bodyStrong: { fontSize: typography.body, lineHeight: 22, fontWeight: "700" },
+  bodySmall: {
+    fontSize: typography.bodySmall,
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+  bodySmallRegular: {
+    fontSize: typography.bodySmall,
+    lineHeight: 18,
+    fontWeight: "400",
+  },
+  bodySmallSemibold: {
+    fontSize: typography.bodySmall,
+    lineHeight: 18,
+    fontWeight: "600",
+  },
+  caption: { fontSize: typography.caption, lineHeight: 16, fontWeight: "500" },
+  captionSemibold: {
+    fontSize: typography.caption,
+    lineHeight: 16,
+    fontWeight: "600",
+  },
+  titleSmallRegular: {
+    fontSize: typography.titleSmall,
+    lineHeight: 24,
+    fontWeight: "400",
+  },
+  bodyRegular: { fontSize: typography.body, lineHeight: 23, fontWeight: "400" },
+  bodySmallRelaxed: {
+    fontSize: typography.bodySmall,
+    lineHeight: 20,
+    fontWeight: "400",
+  },
   mono: {
-    fontSize: 14,
+    fontSize: typography.bodySmall,
     lineHeight: 18,
     fontWeight: "400",
     fontFamily: Platform.select({ ios: "ui-monospace", default: "monospace" }),
