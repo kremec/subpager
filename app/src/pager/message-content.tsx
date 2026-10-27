@@ -17,7 +17,7 @@ export const MessageContent: FC<MessageContentProps> = (props) => {
   const { message } = props;
   const span = messageLocation(message);
   return (
-    <Typography style={{ lineHeight: 23 }}>
+    <Typography variant="readingBody">
       {!span && (formatMessageContent(message.content) || "Tone-only call")}
       {span && formatMessageContent(span.before)}
       {span && (

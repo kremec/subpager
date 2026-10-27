@@ -67,9 +67,9 @@ export const SpinReport: FC<SpinReportProps> = (props) => {
           <IconChevronDown size={14} color={theme.colors.textSecondary} />
         )}
         <Typography
-          variant="bodySmall"
+          variant="bodySmallRegular"
           numberOfLines={2}
-          style={{ flex: 1, fontWeight: "400" }}
+          style={{ flex: 1 }}
         >
           {location}
         </Typography>
@@ -83,9 +83,7 @@ export const SpinReport: FC<SpinReportProps> = (props) => {
             paddingHorizontal: theme.spacing.md,
           }}
         >
-          <Typography style={{ lineHeight: 23 }}>
-            {event.description}
-          </Typography>
+          <Typography variant="readingBody">{event.description}</Typography>
         </View>
       )}
       {(!hasDescription || expanded) && (
@@ -113,8 +111,8 @@ export const SpinReport: FC<SpinReportProps> = (props) => {
             })}
           >
             <Typography
-              variant="bodySmall"
-              style={{ fontWeight: "400", textDecorationLine: "underline" }}
+              variant="bodySmallRegular"
+              style={{ textDecorationLine: "underline" }}
             >
               SPIN
             </Typography>

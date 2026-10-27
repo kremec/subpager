@@ -40,8 +40,8 @@ export const MessageRow: FC<MessageRowProps> = (props) => {
             }}
           >
             <Typography
-              variant="bodySmall"
-              style={{ flexShrink: 0, maxWidth: "100%", fontWeight: "600" }}
+              variant="bodySmallSemibold"
+              style={{ flexShrink: 0, maxWidth: "100%" }}
             >
               {formatRicUnit(
                 reception.ric,
