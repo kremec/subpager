@@ -7,8 +7,7 @@ import { MessageContent } from "@/pager/message-content";
 import { SpinReport } from "@/pager/spin-report";
 import type { PagerMessage, SpinEvent } from "@/pager/types";
 import { useTheme } from "@/theme/use-theme";
-
-import { withoutEchoes } from "../../../../shared/pager-receptions";
+import { withoutEchoes } from "@shared/pager-receptions";
 
 interface MessageRowProps {
   message: PagerMessage;

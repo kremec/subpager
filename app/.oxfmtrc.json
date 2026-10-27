@@ -1,9 +1,8 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "printWidth": 80,
-  "ignorePatterns": ["convex/_generated/**"],
   "sortImports": {
-    "internalPattern": ["@/"],
+    "internalPattern": ["@/", "@shared/"],
     "customGroups": [
       {
         "groupName": "react",
