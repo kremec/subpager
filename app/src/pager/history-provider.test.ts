@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import type { EffectCallback, ReactElement } from "react";
+import type { DependencyList, EffectCallback, ReactElement } from "react";
 
 import type {
   CachedSync,
@@ -27,7 +27,12 @@ type State =
 const react = await import("react");
 const effects: EffectCallback[] = [];
 const states: State[] = [];
+const memos: {
+  dependencies: DependencyList;
+  value: PagerMessage[] | HistoryValue;
+}[] = [];
 let stateIndex = 0;
+let memoIndex = 0;
 let cleanup: (() => void) | undefined;
 let foreground: ((state: string) => void) | undefined;
 let allowed = true;
@@ -70,6 +75,22 @@ mock.module("react", () => ({
     ];
   },
   useCallback: <T>(callback: T) => callback,
+  useMemo: <T extends PagerMessage[] | HistoryValue>(
+    factory: () => T,
+    dependencies: DependencyList,
+  ) => {
+    const index = memoIndex++;
+    const previous = memos[index];
+    if (
+      !previous ||
+      dependencies.some(
+        (value, index) => !Object.is(value, previous.dependencies[index]),
+      )
+    ) {
+      memos[index] = { dependencies, value: factory() };
+    }
+    return memos[index]!.value as T;
+  },
 }));
 mock.module("react-native", () => ({
   AppState: {
@@ -148,6 +169,7 @@ mock.module("@/components/ui/toast", () => ({
 const { HistoryProvider } = await import("@/pager/history-provider");
 function render() {
   stateIndex = 0;
+  memoIndex = 0;
   effects.length = 0;
   // oxlint-disable-next-line react-hooks/rules-of-hooks -- Exercise captured effects without a native renderer.
   const element = HistoryProvider({ children: null }) as ReactElement<{
@@ -165,6 +187,7 @@ const message: PagerMessage = {
 
 beforeEach(() => {
   states.length = 0;
+  memos.length = 0;
   allowed = true;
   showTestMessages = true;
   showVajaMessages = true;
@@ -204,6 +227,19 @@ test("live query updates replace messages and include later locations", () => {
   expect(history.unitNames.get(123)).toBe("Golo");
   expect(history.loading).toBe(false);
   expect(savedMessages.at(-1)?.[0]?.location).toBe("ŠOLI GOLO");
+});
+
+test("unrelated connection updates preserve history and message references", () => {
+  onMessages?.([message]);
+  const history = render();
+
+  expect(render()).toBe(history);
+
+  onUnits?.([{ ric: 123, unitName: "Golo" }]);
+  const next = render();
+  expect(next).not.toBe(history);
+  expect(next.messages).toBe(history.messages);
+  expect(next.unitNames.get(123)).toBe("Golo");
 });
 
 test("preferences hide case-insensitive substrings independently and restore events without changing the cache", () => {

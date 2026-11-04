@@ -230,25 +230,44 @@ export const ConnectionProvider: FC<ConnectionProviderProps> = (props) => {
     return () => listener.remove();
   }, [error, retry]);
 
+  const showTestMessages = access?.uid === uid ? access.showTestMessages : true;
+  const showVajaMessages = access?.uid === uid ? access.showVajaMessages : true;
+  const value = useMemo(
+    () => ({
+      connection,
+      uid,
+      approved,
+      showTestMessages,
+      showVajaMessages,
+      ready,
+      error,
+      pushStatus,
+      setPushStatus,
+      retry,
+      hasAccess,
+      serverTokenKnown,
+      getRegisteredToken,
+      confirmRegisteredToken,
+    }),
+    [
+      connection,
+      uid,
+      approved,
+      showTestMessages,
+      showVajaMessages,
+      ready,
+      error,
+      pushStatus,
+      retry,
+      hasAccess,
+      serverTokenKnown,
+      getRegisteredToken,
+      confirmRegisteredToken,
+    ],
+  );
+
   return (
-    <ConnectionContext.Provider
-      value={{
-        connection,
-        uid,
-        approved,
-        showTestMessages: access?.uid === uid ? access.showTestMessages : true,
-        showVajaMessages: access?.uid === uid ? access.showVajaMessages : true,
-        ready,
-        error,
-        pushStatus,
-        setPushStatus,
-        retry,
-        hasAccess,
-        serverTokenKnown,
-        getRegisteredToken,
-        confirmRegisteredToken,
-      }}
-    >
+    <ConnectionContext.Provider value={value}>
       {props.children}
     </ConnectionContext.Provider>
   );
