@@ -21,12 +21,7 @@ export const Dialog: FC<PropsWithChildren<DialogProps>> = (props) => {
   const theme = useTheme();
 
   return (
-    <Modal
-      animationType="fade"
-      transparent
-      visible={visible}
-      onRequestClose={onClose}
-    >
+    <Modal transparent visible={visible} onRequestClose={onClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={{
