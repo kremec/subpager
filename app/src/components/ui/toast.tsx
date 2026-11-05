@@ -45,12 +45,5 @@ export const Toast: FC<ToastProps> = (props) => {
     },
   };
 
-  return (
-    <ToastMessage
-      config={config}
-      topOffset={topOffset}
-      animationConfig={{ type: "timing", duration: 0 }}
-      swipeable={false}
-    />
-  );
+  return <ToastMessage config={config} topOffset={topOffset} />;
 };
