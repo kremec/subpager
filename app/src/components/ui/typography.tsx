@@ -4,7 +4,7 @@ import { Platform, Text, type TextProps, type TextStyle } from "react-native";
 import { typography } from "@/theme/tokens";
 import { useTheme } from "@/theme/use-theme";
 
-const variants = {
+export const typographyStyles = {
   display: { fontSize: typography.display, lineHeight: 38, fontWeight: "700" },
   title: { fontSize: typography.title, lineHeight: 28, fontWeight: "700" },
   titleSmall: {
@@ -60,7 +60,7 @@ const variants = {
 } satisfies Record<string, TextStyle>;
 
 interface TypographyProps extends TextProps {
-  variant?: keyof typeof variants;
+  variant?: keyof typeof typographyStyles;
   color?: string;
 }
 
@@ -75,7 +75,7 @@ export const Typography: FC<TypographyProps> = (props) => {
           color: color ?? theme.colors.text,
           fontWeight: theme.typography.bodyWeight,
         },
-        variants[variant],
+        typographyStyles[variant],
         style,
       ]}
       {...textProps}
