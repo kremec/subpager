@@ -4,7 +4,7 @@ import { Platform, Text, type TextProps, type TextStyle } from "react-native";
 import { typography } from "@/theme/tokens";
 import { useTheme } from "@/theme/use-theme";
 
-export const typographyStyles = {
+const variants = {
   display: { fontSize: typography.display, lineHeight: 38, fontWeight: "700" },
   title: { fontSize: typography.title, lineHeight: 28, fontWeight: "700" },
   titleSmall: {
@@ -21,17 +21,17 @@ export const typographyStyles = {
   bodyStrong: { fontSize: typography.body, lineHeight: 22, fontWeight: "700" },
   bodySmall: {
     fontSize: typography.bodySmall,
-    lineHeight: 18,
+    lineHeight: typography.bodySmallLineHeight,
     fontWeight: "500",
   },
   bodySmallRegular: {
     fontSize: typography.bodySmall,
-    lineHeight: 18,
+    lineHeight: typography.bodySmallLineHeight,
     fontWeight: "400",
   },
   bodySmallSemibold: {
     fontSize: typography.bodySmall,
-    lineHeight: 18,
+    lineHeight: typography.bodySmallLineHeight,
     fontWeight: "600",
   },
   caption: { fontSize: typography.caption, lineHeight: 16, fontWeight: "500" },
@@ -53,14 +53,14 @@ export const typographyStyles = {
   },
   mono: {
     fontSize: typography.bodySmall,
-    lineHeight: 18,
+    lineHeight: typography.bodySmallLineHeight,
     fontWeight: "400",
     fontFamily: Platform.select({ ios: "ui-monospace", default: "monospace" }),
   },
 } satisfies Record<string, TextStyle>;
 
 interface TypographyProps extends TextProps {
-  variant?: keyof typeof typographyStyles;
+  variant?: keyof typeof variants;
   color?: string;
 }
 
@@ -75,7 +75,7 @@ export const Typography: FC<TypographyProps> = (props) => {
           color: color ?? theme.colors.text,
           fontWeight: theme.typography.bodyWeight,
         },
-        typographyStyles[variant],
+        variants[variant],
         style,
       ]}
       {...textProps}

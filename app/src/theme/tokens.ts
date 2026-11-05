@@ -26,6 +26,7 @@ export const typography = {
   titleSmall: 18,
   body: 16,
   bodySmall: 14,
+  bodySmallLineHeight: 18,
   caption: 12,
 } as const;
 

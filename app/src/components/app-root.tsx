@@ -17,7 +17,10 @@ export const AppRoot: FC = () => {
     return (
       <Screen
         edges={["left", "right", "bottom"]}
-        style={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+        style={{
+          paddingTop: theme.spacing.lg,
+          paddingBottom: theme.spacing.lg,
+        }}
       >
         <ActivityIndicator />
       </Screen>
@@ -26,7 +29,10 @@ export const AppRoot: FC = () => {
     return (
       <Screen
         edges={["left", "right", "bottom"]}
-        style={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+        style={{
+          paddingTop: theme.spacing.lg,
+          paddingBottom: theme.spacing.lg,
+        }}
       >
         <Button onPress={retry}>Retry</Button>
       </Screen>

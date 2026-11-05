@@ -29,7 +29,7 @@ export const SearchScreen: FC<SearchScreenProps> = (props) => {
   };
 
   return (
-    <Screen>
+    <Screen style={{ paddingHorizontal: 0, paddingTop: 0, gap: 0 }}>
       <View
         style={{
           height: 56,

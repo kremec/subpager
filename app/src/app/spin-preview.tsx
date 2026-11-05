@@ -10,7 +10,11 @@ import { MessageRow } from "@/screens/history/message-row";
 const SpinPreviewRoute: FC = () => {
   if (!__DEV__) return <Redirect href="/" />;
   return (
-    <Screen scroll edges={["left", "right", "bottom"]} style={{ gap: 16 }}>
+    <Screen
+      scroll
+      edges={["left", "right", "bottom"]}
+      style={{ paddingHorizontal: 0, paddingTop: 0 }}
+    >
       <Typography variant="caption" style={{ paddingHorizontal: 16 }}>
         Preview data · Tap SPIN report to expand
       </Typography>

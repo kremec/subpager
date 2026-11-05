@@ -12,7 +12,9 @@ export const OnboardingScreen: FC = () => {
   const { error, retry } = useConnection();
   const theme = useTheme();
   return (
-    <Screen style={{ padding: theme.spacing.lg }}>
+    <Screen
+      style={{ paddingTop: theme.spacing.lg, paddingBottom: theme.spacing.lg }}
+    >
       <View
         style={{ flex: 1, width: "100%", maxWidth: 420, alignSelf: "center" }}
       >

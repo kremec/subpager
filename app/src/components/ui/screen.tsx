@@ -22,6 +22,9 @@ export const Screen: FC<PropsWithChildren<ScreenProps>> = (props) => {
     width: "100%" as const,
     maxWidth: 820,
     alignSelf: "center" as const,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    gap: theme.spacing.lg,
   };
 
   return (
