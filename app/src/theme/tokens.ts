@@ -20,7 +20,7 @@ export const radius = {
 } as const;
 
 export const typography = {
-  bodyWeight: "400",
+  bodyWeight: "500",
   display: 32,
   title: 24,
   titleSmall: 18,
