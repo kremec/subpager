@@ -64,7 +64,7 @@ export const SearchScreen: FC<SearchScreenProps> = (props) => {
             style={{
               flex: 1,
               color: theme.colors.text,
-              fontSize: theme.typography.body,
+              fontSize: theme.typography.body.fontSize,
               paddingVertical: theme.spacing.sm,
             }}
           />

@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+import { Platform, type TextStyle } from "react-native";
 
 export const spacing = {
   xxs: 2,
@@ -20,15 +20,59 @@ export const radius = {
 } as const;
 
 export const typography = {
-  bodyWeight: "500",
-  display: 32,
-  title: 24,
-  titleSmall: 18,
-  body: 16,
-  bodySmall: 14,
-  bodySmallLineHeight: 18,
-  caption: 12,
-} as const;
+  display: { fontSize: 32, lineHeight: 38, fontWeight: "700" },
+  title: { fontSize: 24, lineHeight: 28, fontWeight: "700" },
+  titleSmall: {
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+  body: { fontSize: 16, lineHeight: 22, fontWeight: "500" },
+  bodySemibold: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+  bodyStrong: { fontSize: 16, lineHeight: 22, fontWeight: "700" },
+  bodySmall: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+  bodySmallRegular: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "400",
+  },
+  bodySmallSemibold: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "600",
+  },
+  caption: { fontSize: 12, lineHeight: 16, fontWeight: "500" },
+  captionSemibold: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600",
+  },
+  titleSmallRegular: {
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: "400",
+  },
+  bodyRegular: { fontSize: 16, lineHeight: 23, fontWeight: "400" },
+  bodySmallRelaxed: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "400",
+  },
+  mono: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "400",
+    fontFamily: Platform.select({ ios: "ui-monospace", default: "monospace" }),
+  },
+} satisfies Record<string, TextStyle>;
 
 export const fonts = Platform.select({
   ios: {
