@@ -1,0 +1,134 @@
+diff --git a/build/universal/Slider/types.d.ts b/build/universal/Slider/types.d.ts
+--- a/build/universal/Slider/types.d.ts
++++ b/build/universal/Slider/types.d.ts
+@@ -1,3 +1,4 @@
++import type { ColorValue } from 'react-native';
+ import type { ModifierConfig } from '../../types';
+ /**
+  * Props for the [`Slider`](#slider) component.
+@@ -10,7 +11,8 @@
+     /**
+      * Called when the user changes the slider value.
+      */
+-    onValueChange: (value: number) => void;
++    onValueChange?: (value: number) => void;
++    onSlidingComplete?: (value: number) => void;
+     /**
+      * Minimum value of the slider range.
+      * @default 0
+@@ -38,4 +40,7 @@
+      * from `@expo/ui/swift-ui/modifiers` or `@expo/ui/jetpack-compose/modifiers`.
+      */
+     modifiers?: ModifierConfig[];
++    minimumTrackTintColor?: ColorValue;
++    maximumTrackTintColor?: ColorValue;
++    thumbTintColor?: ColorValue;
+ }
+diff --git a/build/universal/Slider/index.android.js b/build/universal/Slider/index.android.js
+--- a/build/universal/Slider/index.android.js
++++ b/build/universal/Slider/index.android.js
+@@ -1,7 +1,9 @@
+ import { jsx as _jsx } from "react/jsx-runtime";
++import { useRef } from 'react';
+ import { Slider as ComposeSlider } from '@expo/ui/jetpack-compose';
+ import { testID as testIDModifier } from '@expo/ui/jetpack-compose/modifiers';
+-export function Slider({ value, onValueChange, min = 0, max = 1, step, disabled, testID, modifiers }) {
++export function Slider({ value, onValueChange, onSlidingComplete, minimumTrackTintColor, maximumTrackTintColor, thumbTintColor, min = 0, max = 1, step, disabled, testID, modifiers }) {
++    const lastValueRef = useRef(value);
+     // Android `steps` = number of discrete intervals between min and max.
+     // Universal `step` = increment size. Convert: steps = (max - min) / step - 1.
+     let steps;
+@@ -9,7 +11,11 @@
+         steps = Math.round((max - min) / step) - 1;
+         if (steps < 0) steps = 0;
+     }
+-    const handleValueChange = disabled ? undefined : step != null && step > 0 ? (v)=>onValueChange(Math.round((v - min) / step) * step + min) : onValueChange;
++    const handleValueChange = disabled ? undefined : (v) => {
++        const nextValue = step != null && step > 0 ? Math.round((v - min) / step) * step + min : v;
++        lastValueRef.current = nextValue;
++        onValueChange?.(nextValue);
++    };
+     return /*#__PURE__*/ _jsx(ComposeSlider, {
+         value: value,
+         onValueChange: handleValueChange,
+@@ -17,6 +23,12 @@
+         max: max,
+         steps: steps,
+         enabled: !disabled,
++        colors: {
++            activeTrackColor: minimumTrackTintColor,
++            inactiveTrackColor: maximumTrackTintColor,
++            thumbColor: thumbTintColor
++        },
++        onValueChangeFinished: onSlidingComplete === undefined ? undefined : () => onSlidingComplete(lastValueRef.current),
+         modifiers: [
+             ...modifiers ?? [],
+             ...testID ? [
+diff --git a/build/universal/Slider/index.ios.js b/build/universal/Slider/index.ios.js
+--- a/build/universal/Slider/index.ios.js
++++ b/build/universal/Slider/index.ios.js
+@@ -1,13 +1,22 @@
+ import { jsx as _jsx } from "react/jsx-runtime";
++import { useRef } from 'react';
+ import { Slider as SwiftUISlider } from '@expo/ui/swift-ui';
+-import { disabled as disabledMod } from '@expo/ui/swift-ui/modifiers';
+-export function Slider({ value, onValueChange, min = 0, max = 1, step, disabled, testID, modifiers: extraModifiers }) {
++import { disabled as disabledMod, tint as tintMod } from '@expo/ui/swift-ui/modifiers';
++export function Slider({ value, onValueChange, onSlidingComplete, minimumTrackTintColor, min = 0, max = 1, step, disabled, testID, modifiers: extraModifiers }) {
++    const lastValueRef = useRef(value);
+     const modifiers = [];
+     if (disabled) modifiers.push(disabledMod(true));
++    if (minimumTrackTintColor !== undefined) modifiers.push(tintMod(minimumTrackTintColor));
+     if (extraModifiers) modifiers.push(...extraModifiers);
+     return /*#__PURE__*/ _jsx(SwiftUISlider, {
+         value: value,
+-        onValueChange: onValueChange,
++        onValueChange: (nextValue) => {
++            lastValueRef.current = nextValue;
++            onValueChange?.(nextValue);
++        },
++        onEditingChanged: (isEditing) => {
++            if (!isEditing) onSlidingComplete?.(lastValueRef.current);
++        },
+         min: min,
+         max: max,
+         step: step,
+diff --git a/build/universal/Slider/index.js b/build/universal/Slider/index.js
+--- a/build/universal/Slider/index.js
++++ b/build/universal/Slider/index.js
+@@ -1,3 +1,4 @@
++import { useRef } from 'react';
+ import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+ import { StyleSheet, View } from 'react-native';
+ import { colors, createWebComponent, css, durations, easings, shadows } from '../webUtils';
+@@ -88,7 +89,8 @@
+ `;
+ /**
+  * A control for selecting a value from a continuous or stepped range.
+- */ export function Slider({ value, onValueChange, min = 0, max = 1, step, disabled = false, testID }) {
++ */ export function Slider({ value, onValueChange, onSlidingComplete, minimumTrackTintColor, min = 0, max = 1, step, disabled = false, testID }) {
++    const lastValueRef = useRef(value);
+     const pct = (value - min) / (max - min) * 100;
+     return /*#__PURE__*/ _jsxs(View, {
+         style: styles.view,
+@@ -108,12 +110,18 @@
+                 max: max,
+                 step: step ?? 'any',
+                 disabled: disabled,
+-                onChange: ({ target: { value } })=>onValueChange(Number.parseFloat(value)),
++                onChange: ({ target: { value } }) => {
++                    lastValueRef.current = Number.parseFloat(value);
++                    onValueChange?.(lastValueRef.current);
++                },
++                onPointerUp: () => onSlidingComplete?.(lastValueRef.current),
++                onTouchEnd: () => onSlidingComplete?.(lastValueRef.current),
+                 "data-testid": testID,
+                 style: [
+                     styles.input,
+                     {
+-                        '--_pct': `${pct}%`
++                        '--_pct': `${pct}%`,
++                        ...(minimumTrackTintColor !== undefined && { '--_track-fill': minimumTrackTintColor })
+                     },
+                     disabled && styles.disabled
+                 ]
