@@ -69,7 +69,9 @@ export default {
       "expo-splash-screen",
       {
         backgroundColor: "#F7F7F5",
-        android: { image: "./assets/splash-icon.png", imageWidth: 76 },
+        image: "./assets/splash-icon.png",
+        imageWidth: 76,
+        dark: { backgroundColor: "#111110" },
       },
     ],
     ["expo-dev-client", { addGeneratedScheme: IS_DEV }],
