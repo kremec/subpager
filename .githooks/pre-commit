@@ -1,6 +1,5 @@
 #!/usr/bin/env sh
 set -eu
 
-bun run check
-bun run format:check
-bun run lint
+(cd app && bun --check && bunx --no-install oxfmt --check && bunx --no-install oxlint src)
+(cd server && bun run check && bun run format:check && bun run lint)
