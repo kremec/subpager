@@ -60,4 +60,4 @@ export const Example: FC<ExampleProps> = (props) => {
 
 - Don't run dev server commands (e.g. `bun dev`) - assume it's already running.
 - Don't run build commands unless specifically told to.
-- Focus on checking commands like `bun run typecheck`, `bun run lint`, etc.
+- Use direct checks: `bun --check`, `bunx --no-install tsc --noEmit`, `bunx --no-install oxlint src`, and `bunx --no-install oxfmt --check`.
