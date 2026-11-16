@@ -51,7 +51,7 @@ export const DeviceIdentity: FC = () => {
     >
       <Typography style={{ includeFontPadding: false }}>Device ID</Typography>
       <Typography
-        variant="mono"
+        variant="bodySmall"
         color={theme.colors.textSecondary}
         numberOfLines={1}
         ellipsizeMode="middle"

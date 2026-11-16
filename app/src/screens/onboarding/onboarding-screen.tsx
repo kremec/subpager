@@ -16,9 +16,7 @@ export const OnboardingScreen: FC = () => {
       <View
         style={{ flex: 1, width: "100%", maxWidth: 420, alignSelf: "center" }}
       >
-        <Typography variant="title" style={{ fontFamily: theme.fonts.rounded }}>
-          subpager
-        </Typography>
+        <Typography variant="title">subpager</Typography>
         <ScrollView
           showsVerticalScrollIndicator={false}
           style={{ flex: 1 }}
@@ -30,10 +28,7 @@ export const OnboardingScreen: FC = () => {
           }}
         >
           <View style={{ gap: theme.spacing.sm }}>
-            <Typography
-              variant="display"
-              style={{ fontFamily: theme.fonts.rounded, letterSpacing: -0.5 }}
-            >
+            <Typography variant="display" style={{ letterSpacing: -0.5 }}>
               Connect your device
             </Typography>
             <Typography color={theme.colors.textSecondary}>
