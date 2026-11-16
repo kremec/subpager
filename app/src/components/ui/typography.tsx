@@ -10,8 +10,7 @@ type Variant =
   | "body"
   | "bodyStrong"
   | "bodySmall"
-  | "caption"
-  | "mono";
+  | "caption";
 
 interface TypographyProps extends TextProps {
   variant?: Variant;
@@ -59,12 +58,6 @@ export const Typography: FC<TypographyProps> = (props) => {
           fontSize: theme.typography.caption,
           lineHeight: theme.typography.caption + 4,
           fontWeight: "500" as const,
-        };
-      case "mono":
-        return {
-          fontSize: theme.typography.bodySmall,
-          lineHeight: theme.typography.bodySmall + 4,
-          fontFamily: theme.fonts?.mono,
         };
       default:
         return {

@@ -29,11 +29,7 @@ export const HistoryHeader: FC<HistoryHeaderProps> = (props) => {
         paddingHorizontal: theme.spacing.lg,
       }}
     >
-      <Typography
-        variant="title"
-        numberOfLines={1}
-        style={{ flex: 1, fontFamily: theme.fonts.rounded }}
-      >
+      <Typography variant="title" numberOfLines={1} style={{ flex: 1 }}>
         subpager
       </Typography>
       <IconButton

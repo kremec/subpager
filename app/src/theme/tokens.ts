@@ -1,5 +1,3 @@
-import { Platform } from "react-native";
-
 export const spacing = {
   xxs: 2,
   xs: 4,
@@ -27,21 +25,6 @@ export const typography = {
   bodySmall: 14,
   caption: 12,
 } as const;
-
-export const fonts = Platform.select({
-  ios: {
-    sans: "system-ui",
-    serif: "ui-serif",
-    rounded: "ui-rounded",
-    mono: "ui-monospace",
-  },
-  default: {
-    sans: "normal",
-    serif: "serif",
-    rounded: "normal",
-    mono: "monospace",
-  },
-});
 
 export const layout = {
   screenMaxWidth: 820,

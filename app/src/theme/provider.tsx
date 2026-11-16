@@ -2,7 +2,7 @@ import { createContext, type FC, type ReactNode, useContext } from "react";
 import { useColorScheme } from "react-native";
 
 import { palette, type ThemeColors, type ThemeName } from "@/theme/palette";
-import { fonts, layout, radius, spacing, typography } from "@/theme/tokens";
+import { layout, radius, spacing, typography } from "@/theme/tokens";
 
 interface ThemeContextValue {
   themeName: ThemeName;
@@ -10,7 +10,6 @@ interface ThemeContextValue {
   spacing: typeof spacing;
   radius: typeof radius;
   typography: typeof typography;
-  fonts: typeof fonts;
   layout: typeof layout;
 }
 
@@ -20,7 +19,6 @@ const ThemeContext = createContext<ThemeContextValue>({
   spacing,
   radius,
   typography,
-  fonts,
   layout,
 });
 
@@ -38,7 +36,6 @@ export const ThemeProvider: FC<ThemeProviderProps> = (props) => {
     spacing,
     radius,
     typography,
-    fonts,
     layout,
   };
 
