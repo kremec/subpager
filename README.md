@@ -55,7 +55,7 @@ The root `.easignore` excludes local server data and credentials from build uplo
 
 ## Git history
 
-Both original repository histories and all current work were preserved during the monorepo migration. Tags under `app/` and `server/` preserve earlier checkpoints; `app/pre-monorepo` and `server/pre-monorepo` identify the exact snapshots imported into this repository.
+The monorepo preserves both original histories. The app and receiver snapshots imported during the migration are `80fed3f` and `92ade0a`, respectively.
 
 ## License
 

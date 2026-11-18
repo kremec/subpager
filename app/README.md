@@ -64,7 +64,7 @@ Firebase Cloud Messaging remains the Android push transport. Keep `google-servic
 
 ## Migration and rollback
 
-The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The final Convex checkpoints are app `def4ee6` and receiver `6462a62`, also tagged `firebase-return-checkpoint-*`. The temporary migration archives were removed after verifying Firestore.
+The original Firebase checkpoints are app `1cac205` and receiver `39829c3`. The final Convex checkpoints are app `def4ee6` and receiver `6462a62`. The temporary migration archives were removed after verifying Firestore.
 
 On 2026-10-09, all 22 messages, 14 completed locations, original Firebase approvals and device tokens were imported into Firestore and checked against the migration archive. No notification or model jobs were created. Server SQLite remains removed. The receiver outbox holds only unacknowledged receptions and removes them after Firestore confirms ingestion.
 
