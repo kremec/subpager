@@ -1,4 +1,4 @@
-import { type FC, type ReactNode, useEffect, useState } from "react";
+import { type FC, type ReactNode, useEffect, useMemo, useState } from "react";
 import { AppState } from "react-native";
 
 import { showErrorToast } from "@/components/ui/toast";
@@ -200,23 +200,31 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
   }, [uid, hasAccess]);
 
   const visible = !!uid && historyUid === uid && hasAccess(uid);
+  const visibleMessages = useMemo(
+    () =>
+      visible
+        ? messages.filter((message) => {
+            const content = message.content.toLowerCase();
+            return (
+              (showTestMessages || !content.includes("test")) &&
+              (showVajaMessages || !content.includes("vaja"))
+            );
+          })
+        : [],
+    [visible, messages, showTestMessages, showVajaMessages],
+  );
+  const value = useMemo(
+    () => ({
+      messages: visibleMessages,
+      spinEvents: visible ? spinEvents : new Map<string, SpinEvent>(),
+      loading: visible && loading,
+      syncVersion,
+    }),
+    [visible, visibleMessages, spinEvents, loading, syncVersion],
+  );
+
   return (
-    <HistoryContext.Provider
-      value={{
-        messages: visible
-          ? messages.filter((message) => {
-              const content = message.content.toLowerCase();
-              return (
-                (showTestMessages || !content.includes("test")) &&
-                (showVajaMessages || !content.includes("vaja"))
-              );
-            })
-          : [],
-        spinEvents: visible ? spinEvents : new Map(),
-        loading: visible && loading,
-        syncVersion,
-      }}
-    >
+    <HistoryContext.Provider value={value}>
       {props.children}
     </HistoryContext.Provider>
   );

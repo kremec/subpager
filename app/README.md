@@ -112,7 +112,7 @@ These require an explicitly approved cloud setup and an installed phone build. T
 
 - Open an unapproved installation. Confirm its UID is stable after restarting and history stays blocked. Approve the UID and confirm history and notification registration become available without signing in.
 - Receive a real call while the app is open, locked and closed. Compare message content, time and RIC with the receiver. Tap an alert and confirm the feed loads.
-- Confirm alerts arrive for all RICs and that their title is the seven-digit RIC and reception time, with received content in the body.
+- Confirm alerts arrive for all RICs and that their title shows the RIC and reception time, with received content in the body.
 - Disable notification permission and resume. Confirm the device token becomes null while history keeps syncing. Enable permission, resume and confirm new alerts resume without replaying old ones.
 - Open a previously approved app without internet. Confirm its last synced feed remains readable. Restore internet and confirm the feed updates.
 - Disconnect the receiver from the internet. Confirm receptions remain in its disk outbox, then upload after reconnecting without a burst of delayed notifications.

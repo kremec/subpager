@@ -9,7 +9,7 @@ export function formatReceivedAt(receivedAt: string) {
 }
 
 export function formatRic(ric: number) {
-  return String(ric).padStart(7, "0");
+  return String(ric);
 }
 
 export function formatRicUnit(ric: number, unitName?: string) {

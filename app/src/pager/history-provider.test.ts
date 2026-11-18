@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import type { EffectCallback, ReactElement } from "react";
+import type { DependencyList, EffectCallback, ReactElement } from "react";
 
 import type {
   CachedSync,
@@ -24,7 +24,12 @@ type State =
 const react = await import("react");
 const effects: EffectCallback[] = [];
 const states: State[] = [];
+const memos: {
+  dependencies: DependencyList;
+  value: PagerMessage[] | HistoryValue;
+}[] = [];
 let stateIndex = 0;
+let memoIndex = 0;
 let cleanup: (() => void) | undefined;
 let foreground: ((state: string) => void) | undefined;
 let allowed = true;
@@ -62,6 +67,22 @@ mock.module("react", () => ({
     ];
   },
   useCallback: <T>(callback: T) => callback,
+  useMemo: <T extends PagerMessage[] | HistoryValue>(
+    factory: () => T,
+    dependencies: DependencyList,
+  ) => {
+    const index = memoIndex++;
+    const previous = memos[index];
+    if (
+      !previous ||
+      dependencies.some(
+        (value, index) => !Object.is(value, previous.dependencies[index]),
+      )
+    ) {
+      memos[index] = { dependencies, value: factory() };
+    }
+    return memos[index]!.value as T;
+  },
 }));
 mock.module("react-native", () => ({
   AppState: {
@@ -126,6 +147,7 @@ mock.module("@/components/ui/toast", () => ({
 const { HistoryProvider } = await import("@/pager/history-provider");
 function render() {
   stateIndex = 0;
+  memoIndex = 0;
   effects.length = 0;
   // oxlint-disable-next-line react-hooks/rules-of-hooks -- Exercise captured effects without a native renderer.
   const element = HistoryProvider({ children: null }) as ReactElement<{
@@ -143,6 +165,7 @@ const message: PagerMessage = {
 
 beforeEach(() => {
   states.length = 0;
+  memos.length = 0;
   allowed = true;
   showTestMessages = true;
   showVajaMessages = true;
@@ -177,6 +200,13 @@ test("live query updates replace messages and include later locations", () => {
   expect(history.messages[0]?.location).toBe("ŠOLI GOLO");
   expect(history.loading).toBe(false);
   expect(savedMessages.at(-1)?.[0]?.location).toBe("ŠOLI GOLO");
+});
+
+test("unrelated connection updates preserve history and message references", () => {
+  onMessages?.([message]);
+  const history = render();
+
+  expect(render()).toBe(history);
 });
 
 test("preferences hide case-insensitive substrings independently and restore events without changing the cache", () => {
@@ -378,9 +408,12 @@ test("only linked SPIN reports are watched once and their revisions update the c
   const second = { ...linked, id: "second-pager" };
   onMessages?.([linked, second]);
   expect(spinAttached).toEqual([spinEvent.id]);
-  expect(render().spinEvents.size).toBe(0);
+  const history = render();
+  expect(history.spinEvents.size).toBe(0);
   spinCallbacks.get(spinEvent.id)?.(spinEvent);
-  expect(render().spinEvents.get(spinEvent.id)).toEqual(spinEvent);
+  const next = render();
+  expect(next.messages).toBe(history.messages);
+  expect(next.spinEvents.get(spinEvent.id)).toEqual(spinEvent);
   const revised = { ...spinEvent, description: "Updated public report." };
   spinCallbacks.get(spinEvent.id)?.(revised);
   expect(savedSpinReports.at(-1)).toEqual(revised);
