@@ -5,7 +5,6 @@ import type {
   MessageChanges,
   MessagePreferences,
   PagerMessage,
-  RicUnit,
   SpinEvent,
 } from "@/pager/types";
 
@@ -16,6 +15,8 @@ function getDatabase() {
   if (!database) {
     const opened = openDatabaseSync(DATABASE_NAME);
     try {
+      // Scrub legacy catalog entries when their tables are dropped.
+      opened.execSync("PRAGMA secure_delete = ON");
       opened.withTransactionSync(() => {
         opened.execSync(`
           CREATE TABLE IF NOT EXISTS approval (uid TEXT PRIMARY KEY NOT NULL);
@@ -29,10 +30,7 @@ function getDatabase() {
             spinEventId TEXT,
             spinMatchStatus TEXT
           );
-          CREATE TABLE IF NOT EXISTS ric_units (
-            ric INTEGER PRIMARY KEY,
-            unitName TEXT NOT NULL
-          );
+          DROP TABLE IF EXISTS ric_units;
           CREATE TABLE IF NOT EXISTS spin_events (
             id TEXT PRIMARY KEY NOT NULL,
             title TEXT NOT NULL,
@@ -106,9 +104,6 @@ function getDatabase() {
               json_extract(value, '$.type'), json_extract(value, '$.content'),
               json_extract(value, '$.location')
             FROM history, json_each(history.messages);
-            INSERT INTO ric_units (ric, unitName)
-            SELECT json_extract(value, '$.ric'), json_extract(value, '$.unitName')
-            FROM history, json_each(history.units);
             DROP TABLE history;
           `);
         }
@@ -175,7 +170,7 @@ export function cacheApproval(uid: string, approved: boolean) {
   try {
     cache.withTransactionSync(() => {
       cache.execSync(
-        "DELETE FROM messages; DELETE FROM spin_events; DELETE FROM ric_units; DELETE FROM sync_state; DELETE FROM approval;",
+        "DELETE FROM messages; DELETE FROM spin_events; DELETE FROM sync_state; DELETE FROM approval;",
       );
       if (approved) cache.runSync("INSERT INTO approval (uid) VALUES (?)", uid);
     });
@@ -227,22 +222,16 @@ export function cacheSpinEvent(
   return true;
 }
 
-export function cachedHistory(uid: string) {
+export function cachedMessages(uid: string) {
   if (!cachedApproval(uid)) return null;
-  const database = getDatabase();
-  return {
-    messages: database
-      .getAllSync<Omit<PagerMessage, "receptions"> & { receptions: string }>(
-        "SELECT id, receptions, function, type, content, location, spinEventId, spinMatchStatus FROM messages ORDER BY json_extract(receptions, '$[#-1].time') DESC, id DESC",
-      )
-      .map((message) => ({
-        ...message,
-        receptions: JSON.parse(
-          message.receptions,
-        ) as PagerMessage["receptions"],
-      })),
-    units: database.getAllSync<RicUnit>("SELECT * FROM ric_units ORDER BY ric"),
-  };
+  return getDatabase()
+    .getAllSync<Omit<PagerMessage, "receptions"> & { receptions: string }>(
+      "SELECT id, receptions, function, type, content, location, spinEventId, spinMatchStatus FROM messages ORDER BY json_extract(receptions, '$[#-1].time') DESC, id DESC",
+    )
+    .map((message) => ({
+      ...message,
+      receptions: JSON.parse(message.receptions) as PagerMessage["receptions"],
+    }));
 }
 
 export function cachedSync(uid: string): CachedSync {
@@ -306,22 +295,6 @@ export function cacheMessages(
           initialized = 1, seconds = excluded.seconds, nanoseconds = excluded.nanoseconds`,
         changes.cursor.seconds,
         changes.cursor.nanoseconds,
-      );
-    }
-  });
-  return true;
-}
-
-export function cacheRicUnits(uid: string, units: RicUnit[]) {
-  if (!cachedApproval(uid)) return false;
-  const database = getDatabase();
-  database.withTransactionSync(() => {
-    database.execSync("DELETE FROM ric_units");
-    for (const unit of units) {
-      database.runSync(
-        "INSERT INTO ric_units (ric, unitName) VALUES (?, ?)",
-        unit.ric,
-        unit.unitName,
       );
     }
   });

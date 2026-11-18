@@ -9,18 +9,13 @@ export interface MessagePreferences {
 
 export interface PagerMessage {
   id: string;
-  receptions: { ric: number; time: string }[];
+  receptions: { ric: number; time: string; unitName?: string }[];
   function: number;
   type: "alpha" | "numeric" | "tone";
   content: string;
   location?: string | null;
   spinEventId?: string | null;
   spinMatchStatus?: "provisional" | "confirmed" | null;
-}
-
-export interface RicUnit {
-  ric: number;
-  unitName: string;
 }
 
 export interface SpinEvent {

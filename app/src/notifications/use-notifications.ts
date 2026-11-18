@@ -55,7 +55,43 @@ export function useNotifications() {
       await registerDevice(uid, token);
       confirmRegisteredToken(uid, token);
     }
-    async function register(devicePushToken?: Notifications.DevicePushToken) {
+    async function updateRegistration(
+      devicePushToken?: Notifications.DevicePushToken,
+    ) {
+      if (Platform.OS === "android")
+        await Notifications.setNotificationChannelAsync("pager-alerts", {
+          name: "Pager alerts",
+          importance: Notifications.AndroidImportance.HIGH,
+          vibrationPattern: [0, 250, 250, 250],
+        });
+      let permission = await Notifications.getPermissionsAsync();
+      if (!permission.granted && permission.canAskAgain)
+        permission = await Notifications.requestPermissionsAsync();
+      if (cancelled) return;
+      if (!permission.granted) {
+        await saveToken(null);
+        if (!cancelled)
+          setPushStatus("Notifications disabled in phone settings");
+        return;
+      }
+      const projectId: string | undefined =
+        Constants.expoConfig?.extra?.eas?.projectId ??
+        Constants.easConfig?.projectId;
+      if (!projectId)
+        throw new Error(
+          "Install a development or release build to enable push notifications.",
+        );
+      const expoPushToken = (
+        await Notifications.getExpoPushTokenAsync({
+          projectId,
+          devicePushToken,
+        })
+      ).data;
+      if (cancelled) return;
+      await saveToken(expoPushToken);
+      if (!cancelled) setPushStatus("Push notifications registered");
+    }
+    function register(devicePushToken?: Notifications.DevicePushToken) {
       if (cancelled || !connection) return;
       if (running) {
         pending = true;
@@ -63,65 +99,33 @@ export function useNotifications() {
         return;
       }
       running = true;
-      try {
-        if (Platform.OS === "android")
-          await Notifications.setNotificationChannelAsync("pager-alerts", {
-            name: "Pager alerts",
-            importance: Notifications.AndroidImportance.HIGH,
-            vibrationPattern: [0, 250, 250, 250],
-          });
-        let permission = await Notifications.getPermissionsAsync();
-        if (!permission.granted && permission.canAskAgain)
-          permission = await Notifications.requestPermissionsAsync();
-        if (cancelled) return;
-        if (!permission.granted) {
-          await saveToken(null);
-          if (!cancelled)
-            setPushStatus("Notifications disabled in phone settings");
-          return;
-        }
-        const projectId: string | undefined =
-          Constants.expoConfig?.extra?.eas?.projectId ??
-          Constants.easConfig?.projectId;
-        if (!projectId)
-          throw new Error(
-            "Install a development or release build to enable push notifications.",
-          );
-        const expoPushToken = (
-          await Notifications.getExpoPushTokenAsync({
-            projectId,
-            devicePushToken,
-          })
-        ).data;
-        if (cancelled) return;
-        await saveToken(expoPushToken);
-        if (!cancelled) setPushStatus("Push notifications registered");
-      } catch (error) {
-        if (!cancelled) {
+      void updateRegistration(devicePushToken)
+        .catch((error) => {
+          if (cancelled) return;
           setPushStatus("Push notifications unavailable");
           showErrorToast(
             error instanceof Error ? error.message : "Push registration failed",
           );
-        }
-      } finally {
-        running = false;
-        if (pending) {
-          pending = false;
-          const nextToken = pendingDeviceToken;
-          pendingDeviceToken = undefined;
-          void register(nextToken);
-        }
-      }
+        })
+        .finally(() => {
+          running = false;
+          if (pending) {
+            pending = false;
+            const nextToken = pendingDeviceToken;
+            pendingDeviceToken = undefined;
+            register(nextToken);
+          }
+        });
     }
-    void register();
+    register();
     const appState = AppState.addEventListener("change", (state) => {
       if (state === "active") {
-        void register();
+        register();
       }
     });
     const tokenChanged = Notifications.addPushTokenListener((token) => {
       // Fetching the native token here would emit another token event.
-      void register(token);
+      register(token);
     });
     return () => {
       cancelled = true;

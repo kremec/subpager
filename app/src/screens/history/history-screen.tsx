@@ -5,14 +5,15 @@ import { type LegendListRef } from "@legendapp/list/react-native";
 import { Screen } from "@/components/ui/screen";
 import { Typography } from "@/components/ui/typography";
 import { useMessageHistory } from "@/pager/use-message-history";
-import { HistoryHeader } from "@/screens/history/history-header";
-import { MessageList } from "@/screens/history/message-list";
+import { HistoryHeader } from "@/screens/history/components/history-header";
+import { MessageList } from "@/screens/history/components/message-list";
 
 interface HistoryScreenProps {
   spinPreview?: boolean;
 }
 
 export const HistoryScreen: FC<HistoryScreenProps> = (props) => {
+  const { spinPreview } = props;
   const { messages, loading, syncVersion } = useMessageHistory();
   const list = useRef<LegendListRef>(null);
   const preservePosition = useRef(false);
@@ -24,9 +25,9 @@ export const HistoryScreen: FC<HistoryScreenProps> = (props) => {
     if (syncVersion > 0) preservePosition.current = true;
   }, [syncVersion]);
   return (
-    <Screen headerShown={false} style={{ padding: 0, gap: 0 }}>
-      <HistoryHeader spinPreview={props.spinPreview} />
-      {props.spinPreview && (
+    <Screen style={{ paddingHorizontal: 0, paddingTop: 0, gap: 0 }}>
+      <HistoryHeader spinPreview={spinPreview} />
+      {spinPreview && (
         <Typography
           variant="caption"
           style={{ paddingHorizontal: 16, paddingBottom: 8 }}
@@ -37,7 +38,7 @@ export const HistoryScreen: FC<HistoryScreenProps> = (props) => {
       <MessageList
         messages={messages}
         loading={loading}
-        spinPreview={props.spinPreview}
+        spinPreview={spinPreview}
         listRef={list}
         onScrollBeginDrag={() => {
           preservePosition.current = true;

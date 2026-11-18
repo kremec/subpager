@@ -1,6 +1,6 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { afterAll, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,13 +54,12 @@ const {
   cacheApproval,
   cachedMessagePreferences,
   cacheMessagePreferences,
-  cachedHistory,
+  cachedMessages,
   cachedSync,
   cacheMessages,
-  cacheRicUnits,
   cachedSpinEvents,
   cacheSpinEvent,
-} = await import("@/pager/database");
+} = await import("@/db/pager-cache");
 
 test("optional storage opens lazily and can retry after an opening failure", () => {
   expect(opens).toBe(0);
@@ -84,6 +83,7 @@ test.each([
 ])(
   "$name preserves history and refreshes links only when needed",
   (fixture) => {
+    const catalogMarker = "Old local catalog";
     const existing = new Database(databasePath);
     existing.exec(`
     CREATE TABLE approval (uid TEXT PRIMARY KEY NOT NULL);
@@ -102,6 +102,8 @@ test.each([
       seconds INTEGER NOT NULL DEFAULT 0, nanoseconds INTEGER NOT NULL DEFAULT 0,
       ricRevision TEXT
     );
+    CREATE TABLE ric_units (ric INTEGER PRIMARY KEY, unitName TEXT NOT NULL);
+    INSERT INTO ric_units VALUES (123, '${catalogMarker}');
     INSERT INTO approval VALUES ('existing-device');
     INSERT INTO sync_state VALUES (1, 1, 123, 456, 'r1');
     PRAGMA user_version = ${fixture.version};
@@ -163,7 +165,9 @@ test.each([
     }
     existing.close();
 
+    expect(readFileSync(databasePath).includes(catalogMarker)).toBe(true);
     initializeDatabase();
+    expect(readFileSync(databasePath).includes(catalogMarker)).toBe(false);
     expect(cachedMessagePreferences("existing-device")).toEqual({
       showTestMessages: true,
       showVajaMessages: true,
@@ -180,7 +184,7 @@ test.each([
       showTestMessages: true,
       showVajaMessages: true,
     });
-    expect(cachedHistory("existing-device")?.messages).toEqual(
+    expect(cachedMessages("existing-device")).toEqual(
       [message, ...staleMessages]
         .map((row) => ({
           ...row,
@@ -204,6 +208,11 @@ test.each([
     expect(sqlite!.query("PRAGMA user_version").get()).toEqual({
       user_version: 6,
     });
+    expect(
+      sqlite!
+        .query("SELECT name FROM sqlite_master WHERE name = 'ric_units'")
+        .get(),
+    ).toBeNull();
     const columns = sqlite!
       .query<{ name: string }, []>("PRAGMA table_info(messages)")
       .all()
@@ -223,12 +232,12 @@ test.each([
       cursor,
       reset: !cachedSync("existing-device").initialized,
     });
-    expect(cachedHistory("existing-device")?.messages[0]?.spinEventId).toBe(
+    expect(cachedMessages("existing-device")?.[0]?.spinEventId).toBe(
       linked.spinEventId,
     );
-    expect(
-      cachedHistory("existing-device")?.messages.map((row) => row.id),
-    ).toEqual([message.id]);
+    expect(cachedMessages("existing-device")?.map((row) => row.id)).toEqual([
+      message.id,
+    ]);
     expect(cachedSync("existing-device")).toEqual({
       initialized: true,
       cursor,
@@ -264,10 +273,9 @@ test("the old JSON cache migrates into columns without losing offline history", 
 
   initializeDatabase();
   expect(cachedApproval("legacy-device")).toBe(true);
-  expect(cachedHistory("legacy-device")).toEqual({
-    messages: [{ ...message, location: null }],
-    units: [{ ric: 123, unitName: "Golo" }],
-  });
+  expect(cachedMessages("legacy-device")).toEqual([
+    { ...message, location: null },
+  ]);
   expect(
     sqlite!.query("SELECT content, receptions FROM messages").get(),
   ).toEqual({
@@ -276,24 +284,27 @@ test("the old JSON cache migrates into columns without losing offline history", 
   });
   expect(
     sqlite!
-      .query("SELECT name FROM sqlite_master WHERE name = 'history'")
-      .get(),
-  ).toBeNull();
+      .query(
+        "SELECT name FROM sqlite_master WHERE name IN ('history', 'ric_units')",
+      )
+      .all(),
+  ).toEqual([]);
 });
 
 test("offline snapshots require the same approved identity and retain location updates", () => {
   cacheApproval("approved-device", true);
   cacheMessages("approved-device", [message]);
-  cacheRicUnits("approved-device", [{ ric: 123, unitName: "Golo" }]);
   expect(cachedApproval("approved-device")).toBe(true);
   expect(cachedApproval("another-device")).toBe(false);
-  expect(cachedHistory("another-device")).toBeNull();
-  cacheMessages("approved-device", [{ ...message, location: "ŠOLI GOLO" }]);
+  expect(cachedMessages("another-device")).toBeNull();
+  const updated = {
+    ...message,
+    receptions: [{ ...message.receptions[0]!, unitName: "Golo" }],
+    location: "ŠOLI GOLO",
+  };
+  cacheMessages("approved-device", [updated]);
   cacheApproval("approved-device", true);
-  expect(cachedHistory("approved-device")).toEqual({
-    messages: [{ ...message, location: "ŠOLI GOLO" }],
-    units: [{ ric: 123, unitName: "Golo" }],
-  });
+  expect(cachedMessages("approved-device")).toEqual([updated]);
 });
 
 test("snapshot replacement orders events by their latest reception and removes deleted rows", () => {
@@ -315,33 +326,18 @@ test("snapshot replacement orders events by their latest reception and removes d
     ],
   };
   cacheMessages("approved-device", [repeated, newer]);
-  cacheRicUnits("approved-device", [
-    { ric: 123, unitName: "Golo" },
-    { ric: 456, unitName: "Other unit" },
-  ]);
-  expect(cachedHistory("approved-device")?.messages).toEqual([
+  expect(cachedMessages("approved-device")).toEqual([
     { ...repeated, location: null },
     newer,
   ]);
   cacheMessages("approved-device", [newer]);
-  cacheRicUnits("approved-device", []);
-  expect(cachedHistory("approved-device")).toEqual({
-    messages: [newer],
-    units: [],
-  });
+  expect(cachedMessages("approved-device")).toEqual([newer]);
 });
 
 test("failed snapshot writes roll back without deleting saved data", () => {
-  const saved = cachedHistory("approved-device");
+  const saved = cachedMessages("approved-device");
   expect(() => cacheMessages("approved-device", [message, message])).toThrow();
-  expect(cachedHistory("approved-device")).toEqual(saved);
-  expect(() =>
-    cacheRicUnits("approved-device", [
-      { ric: 123, unitName: "Golo" },
-      { ric: 123, unitName: "Duplicate" },
-    ]),
-  ).toThrow();
-  expect(cachedHistory("approved-device")).toEqual(saved);
+  expect(cachedMessages("approved-device")).toEqual(saved);
 });
 
 test("incremental sync preserves history and saves exact cursor together with late updates", () => {
@@ -371,7 +367,7 @@ test("incremental sync preserves history and saves exact cursor together with la
     cursor: nextCursor,
     reset: false,
   });
-  expect(cachedHistory("approved-device")?.messages).toEqual([
+  expect(cachedMessages("approved-device")).toEqual([
     { ...newer, location: null },
     update,
   ]);
@@ -382,7 +378,7 @@ test("incremental sync preserves history and saves exact cursor together with la
 });
 
 test("a failed message batch rolls back both records and cursor", () => {
-  const history = cachedHistory("approved-device");
+  const history = cachedMessages("approved-device");
   const sync = cachedSync("approved-device");
   const changes = {
     messages: [
@@ -396,7 +392,7 @@ test("a failed message batch rolls back both records and cursor", () => {
   expect(() =>
     cacheMessages("approved-device", changes.messages, changes),
   ).toThrow();
-  expect(cachedHistory("approved-device")).toEqual(history);
+  expect(cachedMessages("approved-device")).toEqual(history);
   expect(cachedSync("approved-device")).toEqual(sync);
 });
 
@@ -468,23 +464,20 @@ test("confirmation and unlink updates replace the cached match status", () => {
   };
   cacheMessages("approved-device", [confirmed], changes);
   expect(
-    cachedHistory("approved-device")?.messages.find(
-      (item) => item.id === message.id,
-    )?.spinMatchStatus,
+    cachedMessages("approved-device")?.find((item) => item.id === message.id)
+      ?.spinMatchStatus,
   ).toBe("confirmed");
   cacheMessages("approved-device", [message], {
     ...changes,
     messages: [message],
   });
   expect(
-    cachedHistory("approved-device")?.messages.find(
-      (item) => item.id === message.id,
-    )?.spinEventId,
+    cachedMessages("approved-device")?.find((item) => item.id === message.id)
+      ?.spinEventId,
   ).toBeNull();
   expect(
-    cachedHistory("approved-device")?.messages.find(
-      (item) => item.id === message.id,
-    )?.spinMatchStatus,
+    cachedMessages("approved-device")?.find((item) => item.id === message.id)
+      ?.spinMatchStatus,
   ).toBeNull();
   cacheMessages("approved-device", [confirmed], changes);
 });
@@ -534,20 +527,7 @@ test("SPIN reports tolerate a late event document, share one row, and retain rev
   expect(cachedSpinEvents("approved-device")).toEqual([]);
 });
 
-test("RIC snapshots replace rows atomically, empty snapshots clear them, and message sync stays independent", () => {
-  const sync = cachedSync("approved-device");
-  const units = [{ ric: 123, unitName: "Golo" }];
-  cacheRicUnits("approved-device", units);
-  expect(() =>
-    cacheRicUnits("approved-device", [
-      { ric: 123, unitName: "Golo" },
-      { ric: 123, unitName: "Duplicate" },
-    ]),
-  ).toThrow();
-  expect(cachedHistory("approved-device")?.units).toEqual(units);
-  expect(cachedSync("approved-device")).toEqual(sync);
-  cacheRicUnits("approved-device", []);
-  expect(cachedHistory("approved-device")?.units).toEqual([]);
+test("an empty full snapshot still initializes sync", () => {
   cacheMessages("approved-device", [], {
     messages: [],
     removedIds: [],
@@ -555,25 +535,24 @@ test("RIC snapshots replace rows atomically, empty snapshots clear them, and mes
     reset: true,
   });
   expect(cachedSync("approved-device").initialized).toBe(true);
-  expect(cachedHistory("approved-device")?.messages).toEqual([]);
+  expect(cachedMessages("approved-device")).toEqual([]);
 });
 
 test("identity changes isolate snapshots and revocation removes approval and all data", () => {
   cacheApproval("new-device", true);
   cacheMessages("approved-device", []);
-  cacheRicUnits("approved-device", [{ ric: 123, unitName: "Stale unit" }]);
   cacheApproval("approved-device", false);
-  expect(cachedHistory("approved-device")).toBeNull();
+  expect(cachedMessages("approved-device")).toBeNull();
   expect(cachedApproval("new-device")).toBe(true);
-  expect(cachedHistory("new-device")).toEqual({ messages: [], units: [] });
+  expect(cachedMessages("new-device")).toEqual([]);
   cacheApproval("new-device", false);
   expect(cachedApproval("new-device")).toBe(false);
-  expect(cachedHistory("new-device")).toBeNull();
+  expect(cachedMessages("new-device")).toBeNull();
 });
 
 test("failed SQL revocation deletes the cache file without clearing another identity", () => {
   cacheApproval("revoked-device", true);
-  cacheRicUnits("revoked-device", [{ ric: 123, unitName: "Golo" }]);
+  cacheMessages("revoked-device", [message]);
   sqlite!.exec("PRAGMA query_only = ON");
   cacheApproval("other-device", false);
   expect(cachedApproval("revoked-device")).toBe(true);
@@ -581,7 +560,7 @@ test("failed SQL revocation deletes the cache file without clearing another iden
   cacheApproval("revoked-device", false);
   expect(existsSync(databasePath)).toBe(false);
   expect(cachedApproval("revoked-device")).toBe(false);
-  expect(cachedHistory("revoked-device")).toBeNull();
+  expect(cachedMessages("revoked-device")).toBeNull();
   cacheApproval("new-device", true);
   expect(cachedApproval("new-device")).toBe(true);
 });

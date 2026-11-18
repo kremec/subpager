@@ -26,9 +26,9 @@ GoogleService-Info.plist
 *-firebase-adminsdk-*.json
 receiver-service-account.json
 subpager-873873498300.json
-/server/bin
-/server/config.json
-/server/data
+# Keep the receiver manifest for Bun's workspace install.
+/server/*
+!/server/package.json
 *.sqlite*
 *.wav
 *.raw

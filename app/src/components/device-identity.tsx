@@ -3,8 +3,7 @@ import { Pressable } from "react-native";
 
 import { setStringAsync } from "expo-clipboard";
 
-import { IconCheck, IconCopy } from "@tabler/icons-react-native";
-
+import { Icon, IconName } from "@/components/ui/icon";
 import { showErrorToast } from "@/components/ui/toast";
 import { Typography } from "@/components/ui/typography";
 import { useConnection } from "@/pager/connection-provider";
@@ -64,15 +63,11 @@ export const DeviceIdentity: FC = () => {
       >
         {uid ?? "Creating…"}
       </Typography>
-      {copied ? (
-        <IconCheck color={theme.colors.success} size={20} strokeWidth={1.8} />
-      ) : (
-        <IconCopy
-          color={theme.colors.textSecondary}
-          size={20}
-          strokeWidth={1.8}
-        />
-      )}
+      <Icon
+        name={copied ? IconName.CHECK : IconName.COPY}
+        color={copied ? theme.colors.success : theme.colors.textSecondary}
+        size={20}
+      />
     </Pressable>
   );
 };

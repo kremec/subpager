@@ -27,7 +27,7 @@ import {
   cachedApproval,
   cachedMessagePreferences,
   initializeDatabase,
-} from "@/pager/database";
+} from "@/db/pager-cache";
 import { getFirebase } from "@/pager/firebase";
 import type { Connection, MessagePreferences } from "@/pager/types";
 

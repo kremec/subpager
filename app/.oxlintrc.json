@@ -1,13 +1,10 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "$schema": "../node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "oxc", "react", "import"],
   "rules": {
-    "no-restricted-imports": [
-      "error",
-      {
-        "patterns": ["./*", "../*"]
-      }
-    ],
-    "react/rules-of-hooks": "error"
+    "no-restricted-imports": ["error", { "patterns": ["./**", "../**"] }],
+    "react/rules-of-hooks": "error",
+    "react/todo": "error",
+    "react/unsupported-syntax": "error"
   }
 }

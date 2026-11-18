@@ -29,7 +29,6 @@ import type {
   MessageChanges,
   MessagePreferences,
   PagerMessage,
-  RicUnit,
   SpinEvent,
   SyncTimestamp,
 } from "@/pager/types";
@@ -156,22 +155,6 @@ export function watchMessages(
         for (const message of messages) confirmedIds.add(message.id);
       }
       first = false;
-    },
-    failure,
-  );
-}
-
-export function watchRicUnits(
-  success: (units: RicUnit[]) => void,
-  failure: (error: Error) => void,
-) {
-  const { database } = getFirebase();
-  return onSnapshot(
-    query(collection(database, "ricUnits"), where("ric", ">=", 0)),
-    { includeMetadataChanges: true },
-    (snapshot) => {
-      if (snapshot.metadata.fromCache) return;
-      success(snapshot.docs.map((item) => item.data() as RicUnit));
     },
     failure,
   );

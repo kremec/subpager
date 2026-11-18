@@ -1,5 +1,6 @@
 import { cert, initializeApp, type ServiceAccount } from "firebase-admin/app";
 import {
+  FieldPath,
   FieldValue,
   getFirestore,
   type Firestore,
@@ -30,6 +31,7 @@ export interface CloudDevice {
 export interface PagerReception {
   ric: number;
   time: string;
+  unitName?: string;
 }
 export interface FirebaseMessage extends Omit<Page, "ric" | "receivedAt"> {
   receptions: PagerReception[];
@@ -57,6 +59,10 @@ const receivedAtFormatter = new Intl.DateTimeFormat("en-GB", {
   timeStyle: "short",
   hour12: false,
 });
+
+function readUnitName(value: unknown) {
+  return typeof value === "string" ? value.trim() || undefined : undefined;
+}
 
 export class FirebaseInputError extends Error {
   readonly code = 3;
@@ -160,9 +166,16 @@ export class FirebaseBackend {
         const spinRef = this.db.collection("spinJobs").doc(eventId);
         const spinJob =
           infer && source ? await transaction.get(spinRef) : undefined;
+        const unit = await transaction.get(
+          this.db.collection("ricUnits").doc(String(ric)),
+        );
+        const unitName = readUnitName(unit.get("unitName"));
+        const namedReception = unitName
+          ? { ...reception, unitName }
+          : reception;
         if (source) {
           transaction.update(source.ref, {
-            receptions: [...receptions, reception].sort((a, b) =>
+            receptions: [...receptions, namedReception].sort((a, b) =>
               a.time.localeCompare(b.time),
             ),
             updatedAt: FieldValue.serverTimestamp(),
@@ -170,6 +183,7 @@ export class FirebaseBackend {
         } else
           transaction.create(messageRef, {
             ...message,
+            receptions: [namedReception],
             updatedAt: FieldValue.serverTimestamp(),
           });
         if (infer) {
@@ -247,8 +261,18 @@ export class FirebaseBackend {
       const messageRef = message.ref;
       const canonicalId = message.id;
       if (message.get("deleted") !== true) {
-        // Retain reception history so retries cannot recreate a deleted event.
+        const receptions = message.get("receptions") as
+          | PagerReception[]
+          | undefined;
+        // Keep RIC and time for deduplication, but omit names from deletion markers.
         transaction.update(messageRef, {
+          ...(receptions?.some((reception) => reception.unitName !== undefined)
+            ? {
+                receptions: receptions.map(
+                  ({ unitName: _unitName, ...reception }) => reception,
+                ),
+              }
+            : {}),
           deleted: true,
           updatedAt: FieldValue.serverTimestamp(),
         });
@@ -277,6 +301,60 @@ export class FirebaseBackend {
     } finally {
       await writer.close();
     }
+    return this.refreshEventUnitNames();
+  }
+
+  async refreshEventUnitNames() {
+    const units = await this.db.collection("ricUnits").get();
+    const names = new Map(
+      units.docs.map((unit) => [unit.id, readUnitName(unit.get("unitName"))]),
+    );
+    const pageSize = 100;
+    const messages = this.db
+      .collection("messages")
+      .orderBy(FieldPath.documentId())
+      .limit(pageSize);
+    let cursor: string | undefined;
+    let updated = 0;
+    do {
+      const query = cursor ? messages.startAfter(cursor) : messages;
+      const page = await this.db.runTransaction(async (transaction) => {
+        const { docs } = await transaction.get(query);
+        let changed = 0;
+        for (const event of docs) {
+          if (event.get("deleted") === true) continue;
+          const ric: unknown = event.get("ric");
+          const receivedAt: unknown = event.get("receivedAt");
+          const stored = event.get("receptions") as
+            | PagerReception[]
+            | undefined;
+          const receptions =
+            stored ??
+            (isRic(ric) && typeof receivedAt === "string"
+              ? [{ ric, time: receivedAt }]
+              : []);
+          let dirty = false;
+          const named = receptions.map(({ unitName, ...reception }) => {
+            const name = names.get(String(reception.ric));
+            dirty ||= name !== unitName;
+            return name ? { ...reception, unitName: name } : reception;
+          });
+          if (!dirty) continue;
+          transaction.update(event.ref, {
+            receptions: named,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          changed++;
+        }
+        return {
+          changed,
+          next: docs.length === pageSize ? docs.at(-1)?.id : undefined,
+        };
+      });
+      updated += page.changed;
+      cursor = page.next;
+    } while (cursor);
+    return updated;
   }
 
   async setMember(uid: string, approved: boolean, label?: string) {

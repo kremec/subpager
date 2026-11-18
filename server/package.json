@@ -17,6 +17,7 @@
     "member:revoke": "bun -e 'import { setMember } from \"./scripts/tools\"; await setMember(Bun.argv[1], false, Bun.argv[2])'",
     "member:list": "bun -e 'import { listMembers } from \"./scripts/tools\"; await listMembers()'",
     "ric:sync": "bun -e 'import { syncRicUnits } from \"./scripts/tools\"; await syncRicUnits(Bun.argv[1])'",
+    "ric:refresh-events": "bun -e 'import { refreshEventUnitNames } from \"./scripts/tools\"; await refreshEventUnitNames()'",
     "spin:unlink": "bun -e 'import { unlinkSpin } from \"./scripts/tools\"; await unlinkSpin(Bun.argv[1])'",
     "message:delete": "bun -e 'import { deleteMessage } from \"./scripts/tools\"; await deleteMessage(Bun.argv[1])'",
     "check": "tsc --noEmit",

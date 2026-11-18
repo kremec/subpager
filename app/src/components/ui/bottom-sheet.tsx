@@ -19,7 +19,7 @@ export const BottomSheet: FC<PropsWithChildren<BottomSheetProps>> = (props) => {
   const { children, visible, onClose } = props;
   const { colors, spacing } = useTheme();
   const { height, width } = useWindowDimensions();
-  const { top } = useSafeAreaInsets();
+  const { top, bottom } = useSafeAreaInsets();
 
   return (
     <NativeBottomSheet
@@ -31,6 +31,7 @@ export const BottomSheet: FC<PropsWithChildren<BottomSheetProps>> = (props) => {
       <BottomSheetScrollView
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: bottom }}
         style={{ width, maxHeight: height - top - spacing.xxxl - spacing.lg }}
       >
         {children}

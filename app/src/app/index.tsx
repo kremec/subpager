@@ -9,10 +9,8 @@ import { OnboardingScreen } from "@/screens/onboarding/onboarding-screen";
 const HistoryRoute: FC = () => {
   const { approved } = useConnection();
   const { spinPreview } = useLocalSearchParams<{ spinPreview?: string }>();
-  return approved ? (
-    <HistoryScreen spinPreview={__DEV__ && spinPreview === "1"} />
-  ) : (
-    <OnboardingScreen />
-  );
+  if (!approved) return <OnboardingScreen />;
+
+  return <HistoryScreen spinPreview={__DEV__ && spinPreview === "1"} />;
 };
 export default HistoryRoute;

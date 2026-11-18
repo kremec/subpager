@@ -279,11 +279,23 @@ export async function syncRicUnits(filePath?: string) {
     throw new Error("Mappings contain duplicate RICs");
   const { client } = await cloudClient();
   try {
-    await client.syncRicUnits(units);
+    const updated = await client.syncRicUnits(units);
+    console.log(
+      `RIC mappings: synchronized ${units.length}; refreshed ${updated} events.`,
+    );
   } finally {
     await client.db.terminate();
   }
-  console.log(`RIC mappings: synchronized ${units.length}.`);
+}
+
+export async function refreshEventUnitNames() {
+  const { client } = await cloudClient();
+  try {
+    const updated = await client.refreshEventUnitNames();
+    console.log(`RIC mappings: refreshed ${updated} events.`);
+  } finally {
+    await client.db.terminate();
+  }
 }
 
 export async function unlinkSpin(messageId?: string) {

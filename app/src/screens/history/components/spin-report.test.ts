@@ -16,10 +16,13 @@ mock.module("expo-linking", () => ({
     openedURLs.push(url);
   },
 }));
-mock.module("@tabler/icons-react-native", () => ({
-  IconChevronDown: "IconChevronDown",
-  IconChevronUp: "IconChevronUp",
-  IconMapPin: "IconMapPin",
+mock.module("@/components/ui/icon", () => ({
+  Icon: "Icon",
+  IconName: {
+    CHEVRON_DOWN: "chevron-down",
+    CHEVRON_UP: "chevron-up",
+    MAP_PIN: "map-pin",
+  },
 }));
 mock.module("@/components/ui/toast", () => ({ showErrorToast: () => {} }));
 mock.module("@/components/ui/typography", () => ({ Typography: "Typography" }));
@@ -31,11 +34,12 @@ mock.module("@/theme/use-theme", () => ({
   }),
 }));
 
-const { SpinReport } = await import("@/pager/spin-report");
+const { SpinReport } = await import("@/screens/history/components/spin-report");
 interface NodeProps {
   children?: ReactNode;
   onPress?: () => void;
   accessibilityLabel?: string;
+  name?: string;
 }
 function elements(node: ReactNode): ReactElement<NodeProps>[] {
   return react.Children.toArray(node).flatMap((child) => {
@@ -88,9 +92,7 @@ test("partial matches are static municipality, source links and date rows", () =
     ),
   ).toBeUndefined();
   expect(
-    elements(row).some((element) =>
-      String(element.type).startsWith("IconChevron"),
-    ),
+    elements(row).some((element) => element.props.name?.startsWith("chevron-")),
   ).toBe(false);
 });
 

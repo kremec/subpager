@@ -5,13 +5,13 @@ import { Redirect } from "expo-router";
 import { Screen } from "@/components/ui/screen";
 import { Typography } from "@/components/ui/typography";
 import { spinPreviews } from "@/pager/spin-preview-data";
-import { MessageRow } from "@/screens/history/message-row";
+import { MessageRow } from "@/screens/history/components/message-row";
 
 const SpinPreviewRoute: FC = () => {
   if (!__DEV__) return <Redirect href="/" />;
   return (
-    <Screen scroll style={{ padding: 0 }}>
-      <Typography variant="caption" style={{ paddingHorizontal: 16 }}>
+    <Screen scroll edges={["left", "right", "bottom"]} style={{ padding: 0 }}>
+      <Typography variant="bodySmall" style={{ paddingHorizontal: 16 }}>
         Preview data · Tap SPIN report to expand
       </Typography>
       {spinPreviews.map(({ message, event }) => (

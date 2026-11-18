@@ -36,10 +36,10 @@ mock.module("@/pager/use-message-history", () => ({
 }));
 mock.module("@/components/ui/screen", () => ({ Screen: "Screen" }));
 mock.module("@/components/ui/typography", () => ({ Typography: "Typography" }));
-mock.module("@/screens/history/history-header", () => ({
+mock.module("@/screens/history/components/history-header", () => ({
   HistoryHeader: "HistoryHeader",
 }));
-mock.module("@/screens/history/message-list", () => ({
+mock.module("@/screens/history/components/message-list", () => ({
   MessageList: "MessageList",
 }));
 

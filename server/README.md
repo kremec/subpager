@@ -47,7 +47,7 @@ starts the OpenRC service. Reception pauses briefly during the restart.
 An upload or dependency-install failure leaves the running server unchanged.
 
 The box keeps its `.env`, `config.json`, credentials, native tools and `data/`.
-App source is not deployed. No build or Git push is required.
+The deploy includes shared code and the app manifest and patches for Bun's workspace install. Git pushes and app releases do not deploy the receiver.
 SSH uses the `subpager-server` entry in `~/setup/dotfiles/ssh_config`.
 Press `q` for the shell, then use `logs -f` for live output.
 
@@ -93,7 +93,8 @@ bun run calibrate 120                          # manual gain comparison
 bun run member:approve DEVICE_UID "Name"
 bun run member:revoke DEVICE_UID
 bun run member:list
-bun run ric:sync /path/ric-units.json            # replace cloud RIC unit mappings
+bun run ric:sync /path/ric-units.json            # replace cloud RIC mappings and refresh event names
+bun run ric:refresh-events                      # refresh event names from the existing Firebase catalog
 bun run message:delete MESSAGE_ID              # remove a pager from synced history
 ```
 
@@ -184,7 +185,11 @@ Publish a complete JSON array with `bun run ric:sync FILE`:
 [{ "ric": 90473, "unitName": "Unit name" }]
 ```
 
-The command replaces `ricUnits` with one document per RIC: `ricUnits/{RIC}` contains `{ ric, unitName }` with an unpadded document ID. Omitted mappings are deleted, and an empty array clears the collection. Phones listen directly to this collection and cache the names in SQLite. Each foreground connection reads all mappings; subsequent snapshots read changed documents. RICs must be unique integers from 0 to 2097151 and names must be nonempty. Renaming a unit updates existing local history without rewriting messages. The importer uses Firestore BulkWriter, so a large import is not atomic; rerunning a failed import finishes synchronization.
+The command replaces the admin-only `ricUnits` catalog: `ricUnits/{RIC}` contains `{ ric, unitName }` with an unpadded document ID. Omitted mappings are deleted, and an empty array clears the collection. RICs must be unique integers from 0 to 2097151 and names must be nonempty. The receiver adds the matching `unitName` to each new event reception. Phones receive the name only as part of an event they can read.
+
+After updating the catalog, `ric:sync` refreshes existing events. It updates the `updatedAt` cursor only for changed events and queues no jobs. Rerun a failed import to finish synchronization, or run `bun run ric:refresh-events` to refresh from Firebase without a mapping file. Run mapping imports and refreshes one at a time.
+
+For the first rollout, deploy the updated receiver, run `bun run ric:refresh-events` from `server/` with its existing Admin configuration, and update phones. Then deploy the repository root Firestore rules and indexes to close client catalog access. Older app builds still query the catalog and will get a permission error after that rules deployment.
 
 ### SPIN incident reports
 
@@ -206,7 +211,7 @@ Deploy the root rules and indexes before enabling the worker on the receiver. `s
 
 ### Activating the optimized protocol
 
-These source changes do not update running processes, installed apps or Firestore rules. Deploy the repository root `firestore.rules` and `firestore.indexes.json` together, stop the old receiver after its active push jobs finish, then run the updated receiver and update the phones. Old per-device push jobs and new batched jobs have different schemas; do not run mixed worker versions. Publish the RIC JSON once with the updated `ric:sync` command. Existing phone caches perform one full bootstrap, then use deltas. No message backfill or history deletion is needed. Keep indexes enabled for `receivedAt`, `updatedAt`, `duplicateOf` and active-job queries; the checked-in exemptions remove unused catalog, recipient, text and location indexes.
+Old per-device push jobs and new batched jobs have different schemas. When upgrading from the old worker, finish its active push jobs before starting the updated receiver. Keep indexes enabled for `receivedAt`, `updatedAt`, `duplicateOf` and active-job queries; the checked-in exemptions remove unused catalog, recipient, text and location indexes. Follow the RIC unit mapping rollout above before deploying the current Firestore rules.
 
 ### USB enumeration failures on the box
 

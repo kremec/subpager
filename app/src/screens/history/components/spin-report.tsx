@@ -3,12 +3,7 @@ import { Pressable, View } from "react-native";
 
 import { openURL } from "expo-linking";
 
-import {
-  IconChevronDown,
-  IconChevronUp,
-  IconMapPin,
-} from "@tabler/icons-react-native";
-
+import { Icon, IconName } from "@/components/ui/icon";
 import { showErrorToast } from "@/components/ui/toast";
 import { Typography } from "@/components/ui/typography";
 import { formatReceivedAt } from "@/pager/format-message";
@@ -60,17 +55,15 @@ export const SpinReport: FC<SpinReportProps> = (props) => {
           gap: theme.spacing.md,
         }}
       >
-        {hasDescription && expanded && (
-          <IconChevronUp size={14} color={theme.colors.textSecondary} />
+        {hasDescription && (
+          <Icon
+            name={expanded ? IconName.CHEVRON_UP : IconName.CHEVRON_DOWN}
+            size={14}
+            color={theme.colors.textSecondary}
+            strokeWidth={2}
+          />
         )}
-        {hasDescription && !expanded && (
-          <IconChevronDown size={14} color={theme.colors.textSecondary} />
-        )}
-        <Typography
-          variant="bodySmall"
-          numberOfLines={2}
-          style={{ flex: 1, fontWeight: "400" }}
-        >
+        <Typography variant="bodySmall" numberOfLines={2} style={{ flex: 1 }}>
           {location}
         </Typography>
         <Typography variant="caption" color={theme.colors.textSecondary}>
@@ -114,7 +107,7 @@ export const SpinReport: FC<SpinReportProps> = (props) => {
           >
             <Typography
               variant="bodySmall"
-              style={{ fontWeight: "400", textDecorationLine: "underline" }}
+              style={{ textDecorationLine: "underline" }}
             >
               SPIN
             </Typography>
@@ -137,9 +130,9 @@ export const SpinReport: FC<SpinReportProps> = (props) => {
                 opacity: pressed ? 0.55 : 1,
               })}
             >
-              <IconMapPin
+              <Icon
+                name={IconName.MAP_PIN}
                 size={18}
-                strokeWidth={1.8}
                 color={theme.colors.text}
               />
             </Pressable>

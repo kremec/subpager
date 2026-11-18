@@ -1,18 +1,24 @@
 import { type FC } from "react";
 import { ScrollView, View } from "react-native";
 
+import { DeviceIdentity } from "@/components/device-identity";
 import { Button } from "@/components/ui/button";
 import { Screen } from "@/components/ui/screen";
 import { Typography } from "@/components/ui/typography";
 import { useConnection } from "@/pager/connection-provider";
-import { DeviceIdentity } from "@/pager/device-identity";
 import { useTheme } from "@/theme/use-theme";
 
 export const OnboardingScreen: FC = () => {
   const { error, retry } = useConnection();
   const theme = useTheme();
   return (
-    <Screen headerShown={false} style={{ gap: 0 }}>
+    <Screen
+      style={{
+        paddingTop: theme.spacing.lg,
+        paddingBottom: theme.spacing.lg,
+        gap: 0,
+      }}
+    >
       <View
         style={{ flex: 1, width: "100%", maxWidth: 420, alignSelf: "center" }}
       >
@@ -36,7 +42,7 @@ export const OnboardingScreen: FC = () => {
             </Typography>
           </View>
           <DeviceIdentity />
-          {error && <Button label="Retry connection" onPress={retry} />}
+          {error && <Button onPress={retry}>Retry connection</Button>}
         </ScrollView>
       </View>
     </Screen>

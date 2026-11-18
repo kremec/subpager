@@ -5,7 +5,6 @@ import type {
   MessageChanges,
   MessagePreferences,
   PagerMessage,
-  RicUnit,
   SpinEvent,
   SyncTimestamp,
 } from "@/pager/types";
@@ -21,7 +20,7 @@ type MessageDocument = Omit<PagerMessage, "receptions"> & {
 };
 interface Document {
   id: string;
-  data: () => MessageDocument | RicUnit;
+  data: () => MessageDocument;
 }
 interface Change {
   type: "added" | "modified" | "removed";
@@ -37,7 +36,7 @@ interface Snapshot {
 let snapshotListener: ((snapshot: Snapshot) => void) | undefined;
 const received: MessageChanges[] = [];
 const orders: [string, string | undefined][] = [];
-const filters: [string, string, SyncTimestamp | number][] = [];
+const filters: [string, string, SyncTimestamp][] = [];
 const writes: {
   path: string;
   data: { expoPushToken?: string | null } & Partial<MessagePreferences>;
@@ -88,7 +87,7 @@ mock.module("firebase/firestore", () => ({
     orders.push([field, direction]);
     return {};
   },
-  where: (field: string, comparison: string, value: SyncTimestamp | number) => {
+  where: (field: string, comparison: string, value: SyncTimestamp) => {
     filters.push([field, comparison, value]);
     return {};
   },
@@ -119,13 +118,8 @@ mock.module("firebase/firestore", () => ({
     writes.push({ path, data });
   },
 }));
-const {
-  registerDevice,
-  saveMessagePreference,
-  watchMessages,
-  watchRicUnits,
-  watchSpinEvent,
-} = await import("@/pager/firebase");
+const { registerDevice, saveMessagePreference, watchMessages, watchSpinEvent } =
+  await import("@/pager/firebase");
 function snapshot(
   messages: MessageDocument[],
   fromCache = false,
@@ -402,13 +396,13 @@ test("Firestore document identity wins over a legacy data id field", () => {
   expect(received[0]?.messages[0]?.id).toBe("document-id");
 });
 
-test("message snapshots carry provisional links and later confirmation", () => {
+test("message snapshots carry unit names, provisional links, and later confirmation", () => {
   watchMessages(initial, accept, () => {});
   const linked: PagerMessage = {
     ...fixture,
     receptions: [
       ...fixture.receptions,
-      { ric: 456, time: "2026-10-08T10:00:01Z" },
+      { ric: 456, time: "2026-10-08T10:00:01Z", unitName: "Golo" },
       { ric: 123, time: "2026-10-09T10:00:00Z" },
     ],
     spinEventId: "472584",
@@ -424,48 +418,6 @@ test("message snapshots carry provisional links and later confirmation", () => {
     { type: "modified", doc: { id: confirmed.id, data: () => confirmed } },
   ]);
   expect(received.at(-1)?.messages[0]?.spinMatchStatus).toBe("confirmed");
-});
-
-test("RIC names query unit records without metadata and use only server-confirmed snapshots", () => {
-  const units: RicUnit[][] = [];
-  watchRicUnits(
-    (next) => units.push(next),
-    () => {},
-  );
-  expect(paths).toEqual(["ricUnits"]);
-  expect(filters).toEqual([["ric", ">=", 0]]);
-  const mappings = [{ ric: 123, unitName: "Golo" }];
-  const next: Snapshot = {
-    id: "ricUnits",
-    metadata: { fromCache: true },
-    docs: mappings.map((unit) => ({
-      id: String(unit.ric),
-      data: () => unit,
-    })),
-    docChanges: () => [],
-    data: () => undefined,
-  };
-  snapshotListener?.(next);
-  expect(units).toEqual([]);
-  snapshotListener?.({ ...next, metadata: { fromCache: false } });
-  expect(units).toEqual([mappings]);
-  const revised = [{ ric: 123, unitName: "Updated Golo" }];
-  snapshotListener?.({
-    ...next,
-    metadata: { fromCache: false },
-    docs: revised.map((unit) => ({ id: String(unit.ric), data: () => unit })),
-  });
-  expect(units).toEqual([mappings, revised]);
-});
-
-test("an empty RIC server snapshot clears the mapping list", () => {
-  const units: RicUnit[][] = [];
-  watchRicUnits(
-    (next) => units.push(next),
-    () => {},
-  );
-  snapshot([]);
-  expect(units).toEqual([[]]);
 });
 
 test("user tokens are scoped to Firebase UID, preserve approval fields and can be explicitly cleared", async () => {

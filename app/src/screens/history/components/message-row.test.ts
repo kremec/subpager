@@ -6,15 +6,17 @@ import type { PagerMessage } from "@/pager/types";
 
 mock.module("react-native", () => ({ View: "View" }));
 mock.module("@/components/ui/typography", () => ({ Typography: "Typography" }));
-mock.module("@/pager/message-content", () => ({
+mock.module("@/screens/history/components/message-content", () => ({
   MessageContent: "MessageContent",
 }));
-mock.module("@/pager/spin-report", () => ({ SpinReport: "SpinReport" }));
+mock.module("@/screens/history/components/spin-report", () => ({
+  SpinReport: "SpinReport",
+}));
 mock.module("@/theme/use-theme", () => ({
   useTheme: () => ({ colors: {}, spacing: { xs: 4, sm: 8, lg: 16 } }),
 }));
 
-const { MessageRow } = await import("@/screens/history/message-row");
+const { MessageRow } = await import("@/screens/history/components/message-row");
 
 interface ElementProps {
   children?: ReactNode;
@@ -24,13 +26,17 @@ test("reception history hides saved echoes and keeps later pagings in chronologi
   const message: PagerMessage = {
     id: "event",
     receptions: [
-      { ric: 790193, time: "2026-10-12T15:01:02.001Z" },
+      {
+        ric: 790193,
+        time: "2026-10-12T15:01:02.001Z",
+        unitName: "PGD Example",
+      },
       { ric: 790193, time: "2026-10-12T15:00:03Z" },
       { ric: 790193, time: "2026-10-12T15:00:32Z" },
       { ric: 790193, time: "2026-10-12T15:01:02Z" },
       { ric: 790113, time: "2026-10-12T15:00:01Z" },
       { ric: 790113, time: "2026-10-12T15:00:03Z" },
-      { ric: 790193, time: "2026-10-12T15:00:02Z" },
+      { ric: 790193, time: "2026-10-12T15:00:02Z", unitName: "PGD Example" },
     ],
     function: 0,
     type: "alpha",
@@ -39,10 +45,7 @@ test("reception history hides saved echoes and keeps later pagings in chronologi
   // Hermes does not implement Array.prototype.toSorted.
   Object.defineProperty(message.receptions, "toSorted", { value: undefined });
   // oxlint-disable-next-line react-hooks/rules-of-hooks -- Exercise the component with its theme mocked.
-  const row = MessageRow({
-    message,
-    unitNames: new Map([[790193, "PGD Example"]]),
-  }) as ReactElement<ElementProps>;
+  const row = MessageRow({ message }) as ReactElement<ElementProps>;
   const children = row.props.children as ReactElement<ElementProps>[];
   const receptions = children[0]!.props
     .children as ReactElement<ElementProps>[];

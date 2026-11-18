@@ -2,16 +2,15 @@ import { type FC, type ReactNode, useEffect, useState } from "react";
 import { AppState } from "react-native";
 
 import { showErrorToast } from "@/components/ui/toast";
-import { useConnection } from "@/pager/connection-provider";
 import {
-  cachedHistory,
+  cachedMessages,
   cachedSpinEvents,
   cachedSync,
   cacheMessages,
-  cacheRicUnits,
   cacheSpinEvent,
-} from "@/pager/database";
-import { watchMessages, watchRicUnits, watchSpinEvent } from "@/pager/firebase";
+} from "@/db/pager-cache";
+import { useConnection } from "@/pager/connection-provider";
+import { watchMessages, watchSpinEvent } from "@/pager/firebase";
 import type { CachedSync, PagerMessage, SpinEvent } from "@/pager/types";
 import { HistoryContext } from "@/pager/use-message-history";
 
@@ -20,14 +19,13 @@ interface HistoryProviderProps {
 }
 
 export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
+  "use no memo"; // Read current Firebase access on each render.
+
   const { connection, hasAccess, showTestMessages, showVajaMessages } =
     useConnection();
   const uid = connection?.uid;
   const [historyUid, setHistoryUid] = useState<string>();
   const [messages, setMessages] = useState<PagerMessage[]>([]);
-  const [unitNames, setUnitNames] = useState<ReadonlyMap<number, string>>(
-    new Map(),
-  );
   const [spinEvents, setSpinEvents] = useState<ReadonlyMap<string, SpinEvent>>(
     new Map(),
   );
@@ -37,7 +35,7 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
   useEffect(() => {
     let cancelled = false;
     const allowed = () => !cancelled && !!uid && hasAccess(uid);
-    let saved: ReturnType<typeof cachedHistory> = null;
+    let saved: PagerMessage[] | null = null;
     let savedSpinEvents: SpinEvent[] = [];
     let sync: CachedSync = {
       initialized: false,
@@ -45,7 +43,7 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
     };
     if (uid && hasAccess(uid)) {
       try {
-        saved = cachedHistory(uid);
+        saved = cachedMessages(uid);
         savedSpinEvents = cachedSpinEvents(uid);
         sync = cachedSync(uid);
       } catch {
@@ -54,26 +52,19 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
     }
     /* oxlint-disable react/set-state-in-effect */
     setHistoryUid(uid);
-    setMessages(saved?.messages ?? []);
-    setUnitNames(
-      new Map(saved?.units.map((unit) => [unit.ric, unit.unitName])),
-    );
+    setMessages(saved ?? []);
     setSpinEvents(new Map(savedSpinEvents.map((event) => [event.id, event])));
-    setLoading(!!uid && !saved?.messages.length);
+    setLoading(!!uid && !saved?.length);
     /* oxlint-enable react/set-state-in-effect */
     if (!uid) return;
 
     let messagesFailed = false;
-    let unitsFailed = false;
     let unsubscribeMessages = () => {};
-    let unsubscribeUnits = () => {};
     let messagesAttached = false;
-    let unitsAttached = false;
     let messageGeneration = 0;
-    let unitGeneration = 0;
     let active = AppState.currentState === "active";
     const currentMessages = new Map(
-      saved?.messages.map((message) => [message.id, message]),
+      saved?.map((message) => [message.id, message]),
     );
     const spinSubscriptions = new Map<
       string,
@@ -182,57 +173,27 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
         },
       );
     };
-    const attachUnits = () => {
-      unitsFailed = false;
-      unsubscribeUnits();
-      const generation = ++unitGeneration;
-      unitsAttached = true;
-      unsubscribeUnits = watchRicUnits(
-        (next) => {
-          if (!allowed() || generation !== unitGeneration) return;
-          setUnitNames(new Map(next.map((unit) => [unit.ric, unit.unitName])));
-          try {
-            cacheRicUnits(uid, next);
-          } catch {
-            showErrorToast("Could not save unit names.");
-          }
-        },
-        (error) => {
-          if (cancelled || generation !== unitGeneration) return;
-          unitsFailed = true;
-          if (!allowed()) return;
-          showErrorToast(error.message);
-        },
-      );
-    };
-    if (AppState.currentState === "active") {
+    if (active) {
       attachMessages();
-      attachUnits();
       attachSpinEvents();
     }
     const appState = AppState.addEventListener("change", (state) => {
       active = state === "active";
       if (state !== "active") {
         ++messageGeneration;
-        ++unitGeneration;
         if (messagesAttached) unsubscribeMessages();
-        if (unitsAttached) unsubscribeUnits();
         messagesAttached = false;
-        unitsAttached = false;
         unsubscribeMessages = () => {};
-        unsubscribeUnits = () => {};
         detachSpinEvents();
         return;
       }
       if (!allowed()) return;
       if (!messagesAttached || messagesFailed) attachMessages();
-      if (!unitsAttached || unitsFailed) attachUnits();
       attachSpinEvents();
     });
     return () => {
       cancelled = true;
       unsubscribeMessages();
-      unsubscribeUnits();
       detachSpinEvents();
       appState.remove();
     };
@@ -251,7 +212,6 @@ export const HistoryProvider: FC<HistoryProviderProps> = (props) => {
               );
             })
           : [],
-        unitNames: visible ? unitNames : new Map(),
         spinEvents: visible ? spinEvents : new Map(),
         loading: visible && loading,
         syncVersion,

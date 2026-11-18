@@ -132,7 +132,7 @@ mock.module("expo-notifications", () => ({
     cleared++;
   },
 }));
-mock.module("@/pager/database", () => ({
+mock.module("@/db/pager-cache", () => ({
   cachedMessagePreferences: () => savedPreferences,
   cacheMessagePreferences: (_uid: string, preferences: MessagePreferences) => {
     savedPreferences = preferences;

@@ -3,20 +3,19 @@ import { View } from "react-native";
 
 import { Typography } from "@/components/ui/typography";
 import { formatReceivedAt, formatRicUnit } from "@/pager/format-message";
-import { MessageContent } from "@/pager/message-content";
-import { SpinReport } from "@/pager/spin-report";
 import type { PagerMessage, SpinEvent } from "@/pager/types";
+import { MessageContent } from "@/screens/history/components/message-content";
+import { SpinReport } from "@/screens/history/components/spin-report";
 import { useTheme } from "@/theme/use-theme";
-
-import { withoutEchoes } from "../../../../shared/pager-receptions";
+import { withoutEchoes } from "@shared/pager-receptions";
 
 interface MessageRowProps {
   message: PagerMessage;
-  unitNames?: ReadonlyMap<number, string>;
   spinEvent?: SpinEvent;
 }
+
 export const MessageRow: FC<MessageRowProps> = (props) => {
-  const { message, unitNames, spinEvent } = props;
+  const { message, spinEvent } = props;
   const theme = useTheme();
   return (
     <View
@@ -40,13 +39,13 @@ export const MessageRow: FC<MessageRowProps> = (props) => {
             }}
           >
             <Typography
-              variant="bodySmall"
-              style={{ flexShrink: 0, maxWidth: "100%", fontWeight: "600" }}
+              variant="bodySmallSemibold"
+              style={{ flexShrink: 0, maxWidth: "100%" }}
             >
-              {formatRicUnit(
-                reception.ric,
-                unitNames?.get(reception.ric),
-              ).replace(/\s/g, "\u00a0")}
+              {formatRicUnit(reception.ric, reception.unitName).replace(
+                /\s/g,
+                "\u00a0",
+              )}
             </Typography>
             <Typography
               variant="caption"

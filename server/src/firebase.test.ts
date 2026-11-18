@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Timestamp,
+  FieldPath,
   FieldValue,
   Firestore,
   type Transaction,
@@ -20,6 +21,8 @@ interface Reference {
 class Collection {
   filters: { key: string; operation: string; value: string | boolean }[] = [];
   descending = false;
+  byId = false;
+  afterId?: string;
   maximum = Infinity;
   constructor(
     readonly path: string,
@@ -46,8 +49,13 @@ class Collection {
     this.maximum = maximum;
     return this;
   }
-  orderBy(_key: string, direction: string) {
+  orderBy(key: string | FieldPath, direction?: string) {
+    this.byId = key instanceof FieldPath && key.isEqual(FieldPath.documentId());
     this.descending = direction === "desc";
+    return this;
+  }
+  startAfter(id: string) {
+    this.afterId = id;
     return this;
   }
   get() {
@@ -72,7 +80,12 @@ class Collection {
       docs.sort((a, b) =>
         String(b.get("receivedAt")).localeCompare(String(a.get("receivedAt"))),
       );
-    return { docs: docs.slice(0, this.maximum) };
+    if (this.byId) docs.sort((a, b) => a.id.localeCompare(b.id));
+    return {
+      docs: docs
+        .filter(({ id }) => !this.afterId || id.localeCompare(this.afterId) > 0)
+        .slice(0, this.maximum),
+    };
   }
   onSnapshot(success: (snapshot: ReturnType<Collection["get"]>) => void) {
     let cancelled = false;
@@ -122,8 +135,8 @@ function database() {
         },
       };
     },
-    runTransaction: async (
-      callback: (transaction: Transaction) => Promise<void>,
+    runTransaction: async <T>(
+      callback: (transaction: Transaction) => Promise<T>,
     ) => {
       const writes: (() => void)[] = [];
       const transaction = {
@@ -150,10 +163,11 @@ function database() {
         delete: (reference: Reference) =>
           writes.push(() => documents.delete(reference.path)),
       };
-      await callback(transaction as never);
+      const result = await callback(transaction as never);
       if (failCommit) throw new Error("Commit not acknowledged");
       for (const write of writes) write();
       if (loseAcknowledgement) throw new Error("Commit acknowledgement lost");
+      return result;
     },
   };
   return {
@@ -284,6 +298,9 @@ test("deletions retain a readable marker, remove pending jobs atomically and sup
     location: "Old location",
     spinEventId: "472470",
     spinMatchStatus: "confirmed",
+    receptions: [
+      { ric: reception.ric, time: reception.receivedAt, unitName: "Golo" },
+    ],
   });
   documents.set(`locationJobs/${reception.sourceId}`, { active: true });
   documents.set(`spinJobs/${reception.sourceId}`, { active: true });
@@ -492,6 +509,21 @@ test("out-of-order uploads preserve chronological history, including genuine rep
   expect(
     [...documents.keys()].filter((path) => path.startsWith("messages/")),
   ).toHaveLength(1);
+});
+
+test("each saved reception carries only its own mapping's unit name", async () => {
+  const { backend, documents } = database();
+  documents.set("ricUnits/123", { ric: 123, unitName: "  PGD Golo  " });
+  documents.set("ricUnits/789", { ric: 789, unitName: "PGD Unrelated" });
+  const first = page();
+  const second = { ...page(20_000), ric: 456 };
+  const echo = page(30_000);
+  documents.set("ricUnits/456", { unitName: " " });
+  await backend.ingest([first, second, echo], false);
+  expect(documents.get(`messages/${first.sourceId}`)?.receptions).toEqual([
+    { ric: 123, time: first.receivedAt, unitName: "PGD Golo" },
+    { ric: 456, time: second.receivedAt },
+  ]);
 });
 
 test("same-RIC echoes add no receptions or jobs, while different RICs and later paging remain", async () => {
@@ -740,22 +772,60 @@ test("one thousand RIC mappings publish as flat documents and empty imports clea
   expect(documents.size).toBe(0);
 });
 
-test("RIC import updates names and removes omitted mappings without changing messages", async () => {
+test("RIC import updates and clears reception names without replacing event data", async () => {
   const { backend, documents } = database();
-  documents.set("messages/example", { content: "Original pager" });
+  const first = { ric: 123, time: page().receivedAt };
+  const second = { ric: 456, time: page(10_000).receivedAt };
+  const event = {
+    content: "Original pager",
+    location: "Golo",
+    spinEventId: "linked",
+  };
+  documents.set("messages/example", { ...event, receptions: [first, second] });
   await backend.syncRicUnits([
     { ric: 123, unitName: "Old name" },
     { ric: 456, unitName: "Removed unit" },
   ]);
-  await backend.syncRicUnits([{ ric: 123, unitName: "New name" }]);
+  expect(documents.get("messages/example")?.receptions).toEqual([
+    { ...first, unitName: "Old name" },
+    { ...second, unitName: "Removed unit" },
+  ]);
+  expect(await backend.syncRicUnits([{ ric: 123, unitName: "New name" }])).toBe(
+    1,
+  );
   expect(documents.get("ricUnits/123")).toEqual({
     ric: 123,
     unitName: "New name",
   });
   expect(documents.has("ricUnits/456")).toBe(false);
   expect(documents.get("messages/example")).toEqual({
-    content: "Original pager",
+    ...event,
+    receptions: [{ ...first, unitName: "New name" }, second],
+    updatedAt: FieldValue.serverTimestamp(),
   });
+});
+
+test("event refresh skips deletion markers and up-to-date names and visits later pages", async () => {
+  const { backend, documents } = database();
+  const time = page().receivedAt;
+  const named = { ric: 123, time, unitName: "PGD Golo" };
+  const current = { receptions: [named], updatedAt: Timestamp.fromMillis(1) };
+  const deleted = { receptions: [{ ric: 123, time }], deleted: true };
+  documents.set("ricUnits/123", { unitName: "PGD Golo" });
+  documents.set("messages/deleted", deleted);
+  for (let i = 0; i < 100; i++) documents.set(`messages/current-${i}`, current);
+  documents.set("messages/legacy", { ric: 123, receivedAt: time });
+
+  expect(await backend.refreshEventUnitNames()).toBe(1);
+  expect(documents.get("messages/legacy")).toEqual({
+    ric: 123,
+    receivedAt: time,
+    receptions: [named],
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  expect(documents.get("messages/current-0")).toBe(current);
+  expect(documents.get("messages/deleted")).toBe(deleted);
+  expect(await backend.refreshEventUnitNames()).toBe(0);
 });
 
 test.each(["../message", "", "23", "invalid-ID-of-20-char"])(

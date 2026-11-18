@@ -7,7 +7,7 @@ import { Typography } from "@/components/ui/typography";
 import { previewSpinEvent } from "@/pager/spin-preview-data";
 import type { PagerMessage } from "@/pager/types";
 import { useMessageHistory } from "@/pager/use-message-history";
-import { MessageRow } from "@/screens/history/message-row";
+import { MessageRow } from "@/screens/history/components/message-row";
 import {
   indexMessages,
   searchMessages,
@@ -33,7 +33,7 @@ export const MessageList: FC<MessageListProps> = (props) => {
     onScrollBeginDrag,
   } = props;
   const theme = useTheme();
-  const { unitNames, spinEvents: savedSpinEvents } = useMessageHistory();
+  const { spinEvents: savedSpinEvents } = useMessageHistory();
   const { messages, spinEvents } = useMemo(() => {
     if (!__DEV__ || !spinPreview)
       return { messages: receivedMessages, spinEvents: savedSpinEvents };
@@ -49,9 +49,8 @@ export const MessageList: FC<MessageListProps> = (props) => {
   }, [receivedMessages, savedSpinEvents, spinPreview]);
   const searching = query !== undefined;
   const index = useMemo(
-    () =>
-      searching ? indexMessages(messages, unitNames, spinEvents) : undefined,
-    [messages, unitNames, spinEvents, searching],
+    () => (searching ? indexMessages(messages, spinEvents) : undefined),
+    [messages, spinEvents, searching],
   );
   const filtered = useMemo(
     () => (index && query?.trim() ? searchMessages(index, query) : messages),
@@ -67,12 +66,11 @@ export const MessageList: FC<MessageListProps> = (props) => {
       style={{ flex: 1 }}
       data={filtered}
       recycleItems
-      extraData={{ unitNames, spinEvents, spinPreview }}
+      extraData={spinEvents}
       keyExtractor={(message) => message.id}
       renderItem={({ item }) => (
         <MessageRow
           message={item}
-          unitNames={unitNames}
           spinEvent={
             item.spinEventId ? spinEvents.get(item.spinEventId) : undefined
           }

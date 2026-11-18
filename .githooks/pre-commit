@@ -1,6 +1,13 @@
 #!/usr/bin/env sh
 set -eu
 
-bun run check
-bun run format:check
-bun run lint
+(
+  cd app
+  bun --check
+  bunx --no-install oxfmt --check
+  bunx --no-install oxlint src
+)
+
+bun run --cwd server check
+bun run --cwd server format:check
+bun run --cwd server lint

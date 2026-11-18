@@ -6,7 +6,6 @@ const normalize = (text: string) =>
 
 export function indexMessages(
   messages: PagerMessage[],
-  unitNames?: ReadonlyMap<number, string>,
   spinEvents?: ReadonlyMap<string, SpinEvent>,
 ): Map<PagerMessage, string> {
   return new Map(
@@ -17,7 +16,7 @@ export function indexMessages(
       return [
         message,
         normalize(
-          `${message.receptions.map((reception) => `${formatRic(reception.ric)} ${unitNames?.get(reception.ric) ?? ""}`).join(" ")} ${formatMessageContent(message.content) || "Tone-only call"} ${event?.title ?? ""} ${event?.description ?? ""} ${event?.municipality ?? ""} ${event?.category ?? ""}`,
+          `${message.receptions.map((reception) => `${formatRic(reception.ric)} ${reception.unitName ?? ""}`).join(" ")} ${formatMessageContent(message.content) || "Tone-only call"} ${event?.title ?? ""} ${event?.description ?? ""} ${event?.municipality ?? ""} ${event?.category ?? ""}`,
         ),
       ];
     }),

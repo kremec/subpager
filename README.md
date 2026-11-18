@@ -42,7 +42,7 @@ This command affects live access and indexes. Changing repository files alone do
 
 The existing EAS project remains `@subbyte/subpager`. Its GitHub connection uses `kremec/subpager` with `app` as the base directory. `app/eas.json` and `app/.eas/workflows/release.yml` stay beside the Expo app.
 
-Pushes to `main` that change app files or root dependency/build configuration trigger a production Android AAB build, followed by submission of that exact build to Google Play internal testing. Server-only and documentation-only changes do not trigger releases. Use `develop` for ongoing work.
+Pushes to `main` that change `app/`, `shared/`, or root build configuration trigger a production Android AAB build, followed by submission of that exact build to Google Play internal testing. Server-only and documentation-only changes do not trigger releases. The shared `bun.lock` is used during builds but does not trigger them; release app dependency updates that only change the lockfile manually. The receiver deploys only when you run `bun run server:deploy`. Use `develop` for ongoing work.
 
 Run manual EAS commands from `app/`:
 
@@ -51,9 +51,11 @@ cd app
 bun run eas:deploy
 ```
 
-The root `.easignore` excludes local server data and credentials from build uploads. The public Firebase client configuration comes from the existing EAS file variable or ignored `app/google-services.json` for local uploads.
+The root `.easignore` excludes the receiver directory from build uploads except for its workspace manifest. The public Firebase client configuration comes from the existing EAS file variable or ignored `app/google-services.json` for local uploads.
 
-## Git history
+## Branches and commits
+
+Use `develop` for ongoing work and PRs, and `main` for releases. Branch from `develop`, use short Conventional Commit titles such as `fix(app): preserve the feed scroll position`, and title release commits `feat: vX.Y.Z`.
 
 The monorepo preserves both original histories. The app and receiver snapshots imported during the migration are `80fed3f` and `92ade0a`, respectively.
 

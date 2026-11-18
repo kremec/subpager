@@ -101,7 +101,7 @@ mock.module("@/components/ui/toast", () => ({
   showErrorToast: (message: string) => failures.push(message),
 }));
 
-const { useNotifications } = await import("@/pager/use-notifications");
+const { useNotifications } = await import("@/notifications/use-notifications");
 
 async function settle() {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));

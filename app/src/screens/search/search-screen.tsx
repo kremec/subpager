@@ -1,15 +1,15 @@
 import { type FC, useRef, useState } from "react";
 import { TextInput, View } from "react-native";
 
-import { useRouter } from "expo-router";
+import { router } from "expo-router";
 
 import { type LegendListRef } from "@legendapp/list/react-native";
-import { IconCircleX, IconX } from "@tabler/icons-react-native";
 
+import { Icon, IconName } from "@/components/ui/icon";
 import { IconButton } from "@/components/ui/icon-button";
 import { Screen } from "@/components/ui/screen";
 import { useMessageHistory } from "@/pager/use-message-history";
-import { MessageList } from "@/screens/history/message-list";
+import { MessageList } from "@/screens/history/components/message-list";
 import { useTheme } from "@/theme/use-theme";
 
 interface SearchScreenProps {
@@ -17,8 +17,8 @@ interface SearchScreenProps {
 }
 
 export const SearchScreen: FC<SearchScreenProps> = (props) => {
+  const { spinPreview } = props;
   const theme = useTheme();
-  const router = useRouter();
   const { messages, loading } = useMessageHistory();
   const [query, setQuery] = useState("");
   const list = useRef<LegendListRef>(null);
@@ -29,7 +29,7 @@ export const SearchScreen: FC<SearchScreenProps> = (props) => {
   };
 
   return (
-    <Screen headerShown={false} style={{ padding: 0, gap: 0 }}>
+    <Screen style={{ paddingHorizontal: 0, paddingTop: 0, gap: 0 }}>
       <View
         style={{
           height: 56,
@@ -64,7 +64,7 @@ export const SearchScreen: FC<SearchScreenProps> = (props) => {
             style={{
               flex: 1,
               color: theme.colors.text,
-              fontSize: theme.typography.body,
+              fontSize: theme.typography.body.fontSize,
               paddingVertical: theme.spacing.sm,
             }}
           />
@@ -72,17 +72,13 @@ export const SearchScreen: FC<SearchScreenProps> = (props) => {
             <IconButton
               accessibilityLabel="Clear search"
               onPress={() => changeQuery("")}
-              style={{
-                borderWidth: 0,
-                backgroundColor: "transparent",
-                width: 36,
-                height: 36,
-              }}
+              plain
+              size={36}
             >
-              <IconCircleX
+              <Icon
+                name={IconName.CIRCLE_X}
                 color={theme.colors.textSecondary}
                 size={18}
-                strokeWidth={1.8}
               />
             </IconButton>
           )}
@@ -90,20 +86,19 @@ export const SearchScreen: FC<SearchScreenProps> = (props) => {
         <IconButton
           accessibilityLabel="Close search"
           onPress={() => router.back()}
+          plain
           style={({ pressed }) => ({
-            borderWidth: 0,
-            backgroundColor: "transparent",
             opacity: pressed ? 0.45 : 1,
           })}
         >
-          <IconX color={theme.colors.text} size={24} strokeWidth={1.8} />
+          <Icon name={IconName.X} color={theme.colors.text} size={24} />
         </IconButton>
       </View>
       <MessageList
         messages={messages}
         loading={loading}
         query={query}
-        spinPreview={props.spinPreview}
+        spinPreview={spinPreview}
         listRef={list}
       />
     </Screen>

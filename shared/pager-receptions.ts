@@ -11,8 +11,8 @@ export function isEcho(receptions: PagerReception[], reception: PagerReception) 
   );
 }
 
-export function withoutEchoes(receptions: PagerReception[]) {
-  const retained: PagerReception[] = [];
+export function withoutEchoes<T extends PagerReception>(receptions: T[]) {
+  const retained: T[] = [];
   for (const reception of [...receptions].sort((a, b) => a.time.localeCompare(b.time))) {
     if (!isEcho(retained, reception)) retained.push(reception);
   }

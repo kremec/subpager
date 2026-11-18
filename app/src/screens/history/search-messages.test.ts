@@ -64,21 +64,23 @@ test("search follows displayed spaces instead of matching decoder markers", () =
   expect(searchMessages(index, "lf")).toEqual([]);
 });
 
-test("unit renames update search for existing messages while RIC remains searchable", () => {
-  const oldIndex = indexMessages(
-    messages,
-    new Map([[123, "Gasilska enota Šiška"]]),
-  );
-  expect(searchMessages(oldIndex, "enota siska 0000123")).toEqual([
-    messages[0],
-    messages[2],
-  ]);
-  const renamed = indexMessages(messages, new Map([[123, "Nova enota"]]));
-  expect(searchMessages(renamed, "siska enota")).toEqual([]);
-  expect(searchMessages(renamed, "nova enota")).toEqual([
-    messages[0],
-    messages[2],
-  ]);
+test("search follows the current event unit name and still matches its RIC", () => {
+  const message = {
+    ...messages[0]!,
+    receptions: [
+      { ...messages[0]!.receptions[0]!, unitName: "Gasilska enota Šiška" },
+    ],
+  };
+  expect(
+    searchMessages(indexMessages([message]), "enota siska 0000123"),
+  ).toEqual([message]);
+  const renamed = {
+    ...message,
+    receptions: [{ ...message.receptions[0]!, unitName: "Nova enota" }],
+  };
+  const index = indexMessages([renamed]);
+  expect(searchMessages(index, "siska enota")).toEqual([]);
+  expect(searchMessages(index, "nova enota")).toEqual([renamed]);
 });
 
 test("search includes the linked public SPIN report and follows its revisions", () => {
@@ -92,7 +94,7 @@ test("search includes the linked public SPIN report and follows its revisions", 
   };
   expect(
     searchMessages(
-      indexMessages([message], undefined, new Map([[event.id, event]])),
+      indexMessages([message], new Map([[event.id, event]])),
       "fasado ig",
     ),
   ).toEqual([message]);
@@ -104,7 +106,7 @@ test("search includes the linked public SPIN report and follows its revisions", 
   };
   expect(
     searchMessages(
-      indexMessages([message], undefined, new Map([[event.id, titleOnly]])),
+      indexMessages([message], new Map([[event.id, titleOnly]])),
       "tehnicna pomoc",
     ),
   ).toEqual([message]);
@@ -112,7 +114,6 @@ test("search includes the linked public SPIN report and follows its revisions", 
     searchMessages(
       indexMessages(
         [message],
-        undefined,
         new Map([
           [event.id, { ...event, description: "Poročilo posodobljeno." }],
         ]),
@@ -127,11 +128,11 @@ test("search includes every stored RIC and mapped unit in one row", () => {
     ...messages[0]!,
     receptions: [
       messages[0]!.receptions[0]!,
-      { ric: 789, time: "2026-10-08T10:00:01Z" },
+      { ric: 789, time: "2026-10-08T10:00:01Z", unitName: "PGD Golo" },
       { ric: 123, time: "2026-10-08T10:00:02Z" },
     ],
   };
-  const index = indexMessages([message], new Map([[789, "PGD Golo"]]));
+  const index = indexMessages([message]);
   expect(searchMessages(index, "0000789 golo")).toEqual([message]);
   expect(searchMessages(index, "0000123")).toEqual([message]);
 });
